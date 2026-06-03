@@ -1,0 +1,128 @@
+:root {
+  color: #1f2937;
+  background: #f6f7f9;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: #f7f8fa;
+}
+
+.topBar,
+.sectionCard,
+.permissionGroup,
+.blockGroup,
+.permissionBlock,
+.testCard,
+.evidencePanel,
+.softEmpty {
+  border-color: #dbe1ea;
+}
+
+.topBar {
+  background: #ffffff;
+}
+
+.sectionCard {
+  background: #ffffff;
+}
+
+.permissionGroup,
+.blockGroup {
+  background: #fafbfc;
+}
+
+.permissionBlock {
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.testCard,
+.evidencePanel {
+  background: #fbfcfd;
+}
+
+.softEmpty {
+  background: #f8fafc;
+}
+
+.permissionFields {
+  display: grid;
+  grid-template-columns: minmax(8rem, 10rem) minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.microPermissionRow {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, 6rem) minmax(7rem, 9rem) minmax(0, 1fr) 2.25rem;
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.75rem;
+  border: 1px solid #e5eaf1;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.testHeaderGrid {
+  display: grid;
+  grid-template-columns: 2.125rem minmax(14rem, 1fr) minmax(10rem, 12rem) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.testModeControl {
+  min-width: 10rem;
+}
+
+.testActions {
+  align-self: end;
+  padding-bottom: 0.0625rem;
+}
+
+.imagePreview {
+  width: 96px;
+  height: 72px;
+  flex: 0 0 96px;
+  border: 1px solid var(--mantine-color-gray-3);
+  border-radius: var(--mantine-radius-md);
+  object-fit: contain;
+  background: var(--mantine-color-gray-0);
+}
+
+@media (max-width: 720px) {
+  .permissionFields,
+  .microPermissionRow,
+  .testHeaderGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .testModeControl,
+  .testActions {
+    width: 100%;
+  }
+
+  .testActions {
+    justify-content: flex-end;
+  }
+
+  .microPermissionRow {
+    gap: 0.625rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .imagePreview {
+    width: 72px;
+    height: 58px;
+    flex-basis: 72px;
+  }
+}
