@@ -19,15 +19,18 @@ import {
   TextInput,
   Title,
   Tooltip,
+  useMantineColorScheme,
 } from "@mantine/core";
 import {
   ArrowDown,
   ArrowUp,
   Download,
   ImagePlus,
+  Moon,
   Plus,
   RotateCcw,
   Save,
+  Sun,
   Trash2,
   X,
 } from "lucide-react";
@@ -58,9 +61,11 @@ const testModeOptions: { value: PermissionTestMode; label: string }[] = [
 ];
 
 export default function App() {
+  const { colorScheme, toggleColorScheme } = useMantineColorScheme();
   const [documentData, setDocumentData] = useState<OtDocument>(() => loadDraft());
   const [isExporting, setIsExporting] = useState(false);
   const [draftStatus, setDraftStatus] = useState("Rascunho salvo");
+  const isDarkMode = colorScheme === "dark";
 
   const selectedGroups = useMemo(
     () => selectedPermissionGroups(documentData.permissionGroups),
@@ -415,6 +420,17 @@ export default function App() {
               >
                 {draftStatus}
               </Badge>
+              <Tooltip label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}>
+                <ActionIcon
+                  variant="light"
+                  color={isDarkMode ? "yellow" : "blue"}
+                  size="lg"
+                  onClick={toggleColorScheme}
+                  aria-label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}
+                >
+                  {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+                </ActionIcon>
+              </Tooltip>
               <Button
                 variant="light"
                 color="gray"
@@ -434,7 +450,7 @@ export default function App() {
           </Group>
         </Paper>
 
-        <Section title="Documento">
+        <Section title="Documento" tone="document">
           <Stack gap="sm">
             <TextInput
               label="Tela"
@@ -481,6 +497,7 @@ export default function App() {
 
         <Section
           title="Passo a passo"
+          tone="steps"
           action={
             <Button variant="light" leftSection={<Plus size={17} />} onClick={addStep}>
               Adicionar
@@ -520,6 +537,7 @@ export default function App() {
 
         <Section
           title="Permissões"
+          tone="permissions"
           action={
             <Button variant="light" leftSection={<Plus size={17} />} onClick={addMacroGroup}>
               Adicionar macro
@@ -547,7 +565,7 @@ export default function App() {
           </Stack>
         </Section>
 
-        <Section title="Blocos de permissão">
+        <Section title="Blocos de permissão" tone="blocks">
           <Stack gap="md">
             {selectedGroups.map((macro) => (
               <PermissionBlockGroup
@@ -583,15 +601,23 @@ export default function App() {
 
 function Section({
   title,
+  tone,
   action,
   children,
 }: {
   title: string;
+  tone: "document" | "steps" | "permissions" | "blocks";
   action?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <Card withBorder shadow="xs" padding="lg" radius="md" className="sectionCard">
+    <Card
+      withBorder
+      shadow="xs"
+      padding="lg"
+      radius="md"
+      className={`sectionCard sectionCard--${tone}`}
+    >
       <Group justify="space-between" mb="md" align="center">
         <Title order={2} size="h4">
           {title}
@@ -1060,11 +1086,13 @@ function TestResultEditor({
 
       <EvidenceUploader
         title="Legado"
+        tone="legacy"
         images={result.legacyImages}
         onChange={(updater) => updateImages("legacyImages", updater)}
       />
       <EvidenceUploader
         title="Novo"
+        tone="new"
         images={result.newImages}
         onChange={(updater) => updateImages("newImages", updater)}
       />
@@ -1074,10 +1102,12 @@ function TestResultEditor({
 
 function EvidenceUploader({
   title,
+  tone,
   images,
   onChange,
 }: {
   title: string;
+  tone: "legacy" | "new";
   images: EvidenceImage[];
   onChange: (updater: (images: EvidenceImage[]) => EvidenceImage[]) => void;
 }) {
@@ -1119,7 +1149,7 @@ function EvidenceUploader({
   }
 
   return (
-    <Paper withBorder p="sm" className="evidencePanel">
+    <Paper withBorder p="sm" className={`evidencePanel evidencePanel--${tone}`}>
       <Stack gap="sm">
         <Group justify="space-between">
           <Text fw={700}>{title}</Text>
