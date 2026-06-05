@@ -306,6 +306,8 @@ body {
   background: var(--evidence-bg);
   border-color: var(--evidence-border);
   border-left: 4px solid var(--evidence-accent);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
 }
 
 .evidencePanel--legacy {
@@ -322,6 +324,17 @@ body {
 
 .evidencePanel > .mantine-Stack-root > .mantine-Group-root:first-child .mantine-Text-root {
   color: var(--evidence-accent);
+}
+
+.evidencePanel:focus,
+.evidencePanel:focus-within {
+  outline-color: color-mix(in srgb, var(--evidence-accent) 62%, transparent);
+}
+
+.pasteIndicator {
+  flex: 0 0 auto;
+  color: var(--evidence-accent);
+  opacity: 0.78;
 }
 
 .softEmpty {

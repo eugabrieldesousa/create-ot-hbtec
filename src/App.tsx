@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import type { ClipboardEvent, ReactNode } from "react";
 import {
   ActionIcon,
   Badge,
@@ -24,6 +24,7 @@ import {
 import {
   ArrowDown,
   ArrowUp,
+  ClipboardPaste,
   Download,
   ImagePlus,
   Moon,
@@ -1111,6 +1112,17 @@ function EvidenceUploader({
   images: EvidenceImage[];
   onChange: (updater: (images: EvidenceImage[]) => EvidenceImage[]) => void;
 }) {
+  async function handlePaste(event: ClipboardEvent<HTMLDivElement>): Promise<void> {
+    const files = getPastedImageFiles(event.clipboardData);
+
+    if (!files.length) {
+      return;
+    }
+
+    event.preventDefault();
+    await addFiles(files);
+  }
+
   async function addFiles(files: File[] | File | null): Promise<void> {
     const fileList = Array.isArray(files) ? files : files ? [files] : [];
     if (!fileList.length) {
@@ -1119,7 +1131,7 @@ function EvidenceUploader({
 
     const evidence = await Promise.all(
       fileList
-        .filter((file) => file.type.startsWith("image/"))
+        .filter(isImageFile)
         .map(async (file) => {
           const dataUrl = await fileToDataUrl(file);
           const size = await readImageSize(dataUrl);
@@ -1149,10 +1161,24 @@ function EvidenceUploader({
   }
 
   return (
-    <Paper withBorder p="sm" className={`evidencePanel evidencePanel--${tone}`}>
+    <Paper
+      withBorder
+      p="sm"
+      className={`evidencePanel evidencePanel--${tone}`}
+      onPaste={(event) => {
+        void handlePaste(event);
+      }}
+      tabIndex={0}
+      aria-label={`${title}: cole uma imagem copiada`}
+    >
       <Stack gap="sm">
         <Group justify="space-between">
-          <Text fw={700}>{title}</Text>
+          <Group gap="xs">
+            <Text fw={700}>{title}</Text>
+            <Tooltip label="Também aceita imagem colada">
+              <ClipboardPaste size={16} className="pasteIndicator" aria-hidden="true" />
+            </Tooltip>
+          </Group>
           <FileButton
             onChange={(files) => {
               void addFiles(files);
@@ -1319,4 +1345,24 @@ function readImageSize(dataUrl: string): Promise<{ width: number; height: number
     image.onerror = () => resolve({ width: 560, height: 320 });
     image.src = dataUrl;
   });
+}
+
+function getPastedImageFiles(clipboardData: DataTransfer): File[] {
+  const itemFiles = Array.from(clipboardData.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null && isImageFile(file));
+
+  if (itemFiles.length > 0) {
+    return itemFiles;
+  }
+
+  return Array.from(clipboardData.files).filter(isImageFile);
+}
+
+function isImageFile(file: File): boolean {
+  return (
+    file.type.startsWith("image/") ||
+    /\.(avif|bmp|gif|jfif|jpe?g|png|svg|webp)$/i.test(file.name)
+  );
 }

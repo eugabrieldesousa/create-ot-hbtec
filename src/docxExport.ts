@@ -6,8 +6,10 @@ import {
   ImageRun,
   Packer,
   Paragraph,
+  ShadingType,
   Table,
   TableCell,
+  TableLayoutType,
   TableRow,
   TextRun,
   VerticalAlign,
@@ -31,6 +33,19 @@ const PAGE_MARGIN = {
   right: 1800,
   bottom: 1440,
   left: 1800,
+};
+
+const COLORS = {
+  title: "111827",
+  text: "1F2937",
+  muted: "6B7280",
+  border: "AEB7C2",
+  borderSoft: "D8DEE6",
+  sectionFill: "E7F0FA",
+  labelFill: "F2F6FA",
+  testFill: "F6FAFE",
+  selectedFill: "EAF7EF",
+  emptyFill: "F8FAFC",
 };
 
 export async function exportOtDocument(documentData: OtDocument): Promise<void> {
@@ -93,20 +108,19 @@ export async function exportOtDocument(documentData: OtDocument): Promise<void> 
 function buildDocumentChildren(documentData: OtDocument) {
   const selectedGroups = selectedPermissionGroups(documentData.permissionGroups);
   const children = [
-    heading("OBSERVABILIDADE DE TESTES (PERMISSÕES + NAVEGAÇÃO)", true),
-    paragraph([
-      run("Objetivo: ", { bold: true }),
-      run(documentData.objective || " "),
-    ]),
+    documentTitle("OBSERVABILIDADE DE TESTES (PERMISSÕES + NAVEGAÇÃO)"),
+    labeledBox("Objetivo", documentData.objective || " "),
     metadataTable(documentData),
-    heading("Passo a Passo para Acessar a Tela"),
-    ...documentData.accessSteps
-      .filter((step) => step.text.trim())
-      .map((step, index) => paragraph([run(`${index + 1}. ${step.text}`)])),
-    heading("Tipos de Permissão para Testar"),
-    ...buildPermissionSummary(selectedGroups),
-    heading("TESTES"),
+    sectionHeading("Passo a Passo para Acessar a Tela"),
+    accessStepsTable(documentData),
+    sectionHeading("Tipos de Permissão para Testar"),
+    permissionSummaryTable(selectedGroups),
+    sectionHeading("TESTES"),
   ];
+
+  if (selectedGroups.length === 0) {
+    children.push(emptyParagraph("Nenhuma permissão selecionada para gerar testes."));
+  }
 
   for (const macro of selectedGroups) {
     for (const micro of macro.microPermissions) {
@@ -117,13 +131,40 @@ function buildDocumentChildren(documentData: OtDocument) {
   return children;
 }
 
-function buildPermissionSummary(groups: PermissionGroup[]): Paragraph[] {
-  return groups.flatMap((macro) => [
-    paragraph([run("Macro-permissão: ", { bold: true }), run(formatPermission(macro))]),
-    ...macro.microPermissions.map((micro) =>
-      paragraph([run("Micro-permissão: ", { bold: true }), run(formatPermission(micro))]),
-    ),
-  ]);
+function accessStepsTable(documentData: OtDocument): Table {
+  const steps = documentData.accessSteps.filter((step) => step.text.trim());
+
+  if (steps.length === 0) {
+    return simpleTable([[cell("Passo", true), cell("Nenhum passo informado.")]], [16, 84]);
+  }
+
+  return simpleTable(
+    steps.map((step, index) => [
+      cell(`${index + 1}.`, true, { alignment: AlignmentType.CENTER }),
+      cell(step.text.trim()),
+    ]),
+    [10, 90],
+  );
+}
+
+function permissionSummaryTable(groups: PermissionGroup[]): Table {
+  if (groups.length === 0) {
+    return simpleTable(
+      [[cell("Permissões", true), cell("Nenhuma permissão selecionada.")]],
+      [24, 76],
+    );
+  }
+
+  return simpleTable(
+    groups.flatMap((macro) => [
+      [cell("Macro-permissão", true), cell(formatPermission(macro))],
+      ...macro.microPermissions.map((micro) => [
+        cell("Micro-permissão", true),
+        cell(formatPermission(micro)),
+      ]),
+    ]),
+    [28, 72],
+  );
 }
 
 function metadataTable(documentData: OtDocument): Table {
@@ -135,29 +176,10 @@ function metadataTable(documentData: OtDocument): Table {
     ["Elaborada por:", documentData.metadata.author],
   ];
 
-  return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    borders: tableBorders(),
-    rows: rows.map(
-      ([label, value]) =>
-        new TableRow({
-          children: [
-            new TableCell({
-              width: { size: 34, type: WidthType.PERCENTAGE },
-              margins: cellMargins(),
-              verticalAlign: VerticalAlign.CENTER,
-              children: [paragraph([run(label, { bold: true })])],
-            }),
-            new TableCell({
-              width: { size: 66, type: WidthType.PERCENTAGE },
-              margins: cellMargins(),
-              verticalAlign: VerticalAlign.CENTER,
-              children: [paragraph([run(value || " ")])],
-            }),
-          ],
-        }),
-    ),
-  });
+  return simpleTable(
+    rows.map(([label, value]) => [cell(label, true), cell(value || " ")]),
+    [34, 66],
+  );
 }
 
 function buildPermissionBlock(
@@ -167,33 +189,32 @@ function buildPermissionBlock(
 ) {
   const key = createPermissionKey(macro.id, micro.id);
   const block = documentData.permissionBlocks[key] ?? createEmptyBlock();
-  const children = [
-    paragraph([run("MACRO-PERMISSÃO", { bold: true, italics: true })]),
-    heading(`Tipo de usuário: ${formatPermission(macro)}`),
-    paragraph([run("MICRO-PERMISSÃO", { bold: true, italics: true })]),
-    heading(`Tipo de permissão: ${formatPermission(micro)}`),
+  const children: (Paragraph | Table)[] = [
+    permissionContextTable(macro, micro),
+    spacerParagraph(),
   ];
+
+  if (block.tests.length === 0) {
+    children.push(emptyParagraph("Nenhum teste informado para esta permissão."));
+    return children;
+  }
 
   block.tests.forEach((test, index) => {
     if (test.mode === "idem") {
-      children.push(idemTestHeader(index + 1, test));
       children.push(
-        paragraph([
-          run(
-            `IDEM ao teste: ${
-              getPermissionTestLabel(documentData, test.idemReferenceKey) ||
-              "referência não informada"
-            }`,
-            { bold: true },
-          ),
-        ]),
+        idemTestTable(
+          index + 1,
+          test,
+          getPermissionTestLabel(documentData, test.idemReferenceKey) ||
+            "referência não informada",
+        ),
       );
       return;
     }
 
-    children.push(testHeader(index + 1, test));
+    children.push(testResultTable(index + 1, test));
     if (test.result.observations.trim()) {
-      children.push(paragraph([run(test.result.observations.trim(), { bold: true })]));
+      children.push(labeledBox("Observações", test.result.observations.trim()));
     }
 
     children.push(...evidenceSection("Legado:", test.result.legacyImages));
@@ -203,31 +224,55 @@ function buildPermissionBlock(
   return children;
 }
 
-function idemTestHeader(index: number, test: PermissionBlockTest): Paragraph {
-  return new Paragraph({
-    heading: HeadingLevel.HEADING_2,
-    spacing: { before: 180, after: 120 },
-    children: [run(`${index} - ${test.title || "Teste"}  `, { bold: true })],
-  });
+function permissionContextTable(macro: PermissionGroup, micro: PermissionItem): Table {
+  return simpleTable(
+    [
+      [cell("MACRO-PERMISSÃO", true), cell(`Tipo de usuário: ${formatPermission(macro)}`)],
+      [cell("MICRO-PERMISSÃO", true), cell(`Tipo de permissão: ${formatPermission(micro)}`)],
+    ],
+    [28, 72],
+  );
 }
 
-function testHeader(index: number, test: PermissionBlockTest): Paragraph {
-  return new Paragraph({
-    heading: HeadingLevel.HEADING_2,
-    spacing: { before: 180, after: 120 },
-    children: [
-      run(`${index} - ${test.title || "Teste"}  `, { bold: true }),
-      ...checkOrder.flatMap((key) => [
-        run(`${test.result.checks[key] ? "( X )" : "(    )"} ${checkLabels[key]} `, {
-          bold: key === "bothIssue" && test.result.checks[key],
+function idemTestTable(
+  index: number,
+  test: PermissionBlockTest,
+  referenceLabel: string,
+): Table {
+  return simpleTable(
+    [
+      [cell(`${index} - ${test.title || "Teste"}`, true, { columnSpan: 2, fill: COLORS.testFill })],
+      [cell("IDEM ao teste", true), cell(referenceLabel)],
+    ],
+    [24, 76],
+  );
+}
+
+function testResultTable(index: number, test: PermissionBlockTest): Table {
+  return simpleTable(
+    [
+      [cell(`${index} - ${test.title || "Teste"}`, true, { columnSpan: 2, fill: COLORS.testFill })],
+      ...checkOrder.map((key) => [
+        cell(test.result.checks[key] ? "( X )" : "(   )", test.result.checks[key], {
+          alignment: AlignmentType.CENTER,
+          fill: test.result.checks[key] ? COLORS.selectedFill : undefined,
+        }),
+        cell(checkLabels[key], key === "bothIssue" && test.result.checks[key], {
+          fill: test.result.checks[key] ? COLORS.selectedFill : undefined,
         }),
       ]),
     ],
-  });
+    [14, 86],
+  );
 }
 
 function evidenceSection(label: string, images: EvidenceImage[]) {
-  const children = [paragraph([run(label, { bold: true })])];
+  const children = [
+    new Paragraph({
+      spacing: { before: 80, after: 60 },
+      children: [run(label, { bold: true, color: COLORS.title })],
+    }),
+  ];
 
   if (images.length === 0) {
     return children;
@@ -235,11 +280,17 @@ function evidenceSection(label: string, images: EvidenceImage[]) {
 
   for (const image of images) {
     if (image.label.trim()) {
-      children.push(paragraph([run(image.label.trim(), { bold: true })]));
+      children.push(
+        new Paragraph({
+          spacing: { before: 20, after: 60 },
+          children: [run(image.label.trim(), { bold: true, color: COLORS.text })],
+        }),
+      );
     }
 
     children.push(
       new Paragraph({
+        alignment: AlignmentType.CENTER,
         spacing: { after: 160 },
         children: [createImageRun(image)],
       }),
@@ -294,51 +345,135 @@ function imageType(dataUrl: string): "png" | "jpg" | "gif" | "bmp" {
   return "png";
 }
 
-function heading(text: string, centered = false): Paragraph {
+type CellDefinition = {
+  text: string;
+  bold?: boolean;
+  alignment?: (typeof AlignmentType)[keyof typeof AlignmentType];
+  columnSpan?: number;
+  fill?: string;
+};
+
+function documentTitle(text: string): Paragraph {
   return new Paragraph({
-    heading: HeadingLevel.HEADING_2,
-    alignment: centered ? AlignmentType.CENTER : AlignmentType.LEFT,
-    children: [run(text, { bold: true, italics: true })],
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 220 },
+    children: [run(text, { bold: true, italics: true, color: COLORS.title, size: 28 })],
   });
 }
 
-function paragraph(children: TextRun[]): Paragraph {
+function sectionHeading(text: string): Paragraph {
   return new Paragraph({
-    children,
-    spacing: { after: 120 },
+    heading: HeadingLevel.HEADING_2,
+    spacing: { before: 260, after: 120 },
+    shading: { type: ShadingType.CLEAR, fill: COLORS.sectionFill },
+    children: [run(text, { bold: true, italics: true, color: COLORS.title })],
   });
+}
+
+function labeledBox(label: string, value: string): Table {
+  return simpleTable([[cell(`${label}:`, true), cell(value || " ")]], [22, 78]);
+}
+
+function emptyParagraph(text: string): Paragraph {
+  return new Paragraph({
+    spacing: { after: 120 },
+    shading: { type: ShadingType.CLEAR, fill: COLORS.emptyFill },
+    children: [run(text, { italics: true, color: COLORS.muted })],
+  });
+}
+
+function spacerParagraph(): Paragraph {
+  return new Paragraph({
+    spacing: { after: 80 },
+    children: [run(" ", { size: 2 })],
+  });
+}
+
+function simpleTable(rows: CellDefinition[][], columnWidths: number[]): Table {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    layout: TableLayoutType.FIXED,
+    borders: tableBorders(),
+    rows: rows.map(
+      (row) =>
+        new TableRow({
+          children: row.map((definition, index) => {
+            const columnSpan = definition.columnSpan ?? 1;
+            const width = columnWidths
+              .slice(index, index + columnSpan)
+              .reduce((total, value) => total + value, 0);
+            const fill = definition.fill ?? (definition.bold ? COLORS.labelFill : undefined);
+
+            return new TableCell({
+              width: { size: width || 100, type: WidthType.PERCENTAGE },
+              columnSpan: definition.columnSpan,
+              margins: cellMargins(),
+              verticalAlign: VerticalAlign.CENTER,
+              shading: fill
+                ? { type: ShadingType.CLEAR, fill, color: "auto" }
+                : undefined,
+              children: [
+                new Paragraph({
+                  alignment: definition.alignment ?? AlignmentType.LEFT,
+                  spacing: { before: 0, after: 0 },
+                  children: [
+                    run(definition.text || " ", {
+                      bold: definition.bold,
+                      color: definition.bold ? COLORS.title : COLORS.text,
+                    }),
+                  ],
+                }),
+              ],
+            });
+          }),
+        }),
+    ),
+  });
+}
+
+function cell(
+  text: string,
+  bold = false,
+  options: Omit<CellDefinition, "text" | "bold"> = {},
+): CellDefinition {
+  return {
+    text,
+    bold,
+    ...options,
+  };
 }
 
 function run(
   text: string,
-  options: { bold?: boolean; italics?: boolean } = {},
+  options: { bold?: boolean; italics?: boolean; color?: string; size?: number } = {},
 ): TextRun {
   return new TextRun({
     text,
     bold: options.bold,
     italics: options.italics,
+    color: options.color ?? COLORS.text,
     font: "Arial",
-    size: 22,
+    size: options.size ?? 22,
   });
 }
 
 function tableBorders() {
   return {
-    top: { style: BorderStyle.SINGLE, size: 1, color: "666666" },
-    bottom: { style: BorderStyle.SINGLE, size: 1, color: "666666" },
-    left: { style: BorderStyle.SINGLE, size: 1, color: "666666" },
-    right: { style: BorderStyle.SINGLE, size: 1, color: "666666" },
-    insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: "666666" },
-    insideVertical: { style: BorderStyle.SINGLE, size: 1, color: "666666" },
+    top: { style: BorderStyle.SINGLE, size: 1, color: COLORS.border },
+    bottom: { style: BorderStyle.SINGLE, size: 1, color: COLORS.border },
+    left: { style: BorderStyle.SINGLE, size: 1, color: COLORS.border },
+    right: { style: BorderStyle.SINGLE, size: 1, color: COLORS.border },
+    insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: COLORS.borderSoft },
+    insideVertical: { style: BorderStyle.SINGLE, size: 1, color: COLORS.borderSoft },
   };
 }
 
 function cellMargins() {
   return {
-    top: 90,
-    bottom: 90,
-    left: 140,
-    right: 140,
+    top: 110,
+    bottom: 110,
+    left: 160,
+    right: 160,
   };
 }
 
