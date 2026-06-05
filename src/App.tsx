@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Collapse,
   Container,
   Divider,
   FileButton,
@@ -24,6 +25,7 @@ import {
 import {
   ArrowDown,
   ArrowUp,
+  ChevronDown,
   ClipboardPaste,
   Download,
   ImagePlus,
@@ -64,6 +66,7 @@ const testModeOptions: { value: PermissionTestMode; label: string }[] = [
 export default function App() {
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
   const [documentData, setDocumentData] = useState<OtDocument>(() => loadDraft());
+  const [expandedTests, setExpandedTests] = useState<Record<string, boolean>>({});
   const [isExporting, setIsExporting] = useState(false);
   const [draftStatus, setDraftStatus] = useState("Rascunho salvo");
   const isDarkMode = colorScheme === "dark";
@@ -246,12 +249,16 @@ export default function App() {
   }
 
   function addBlockTest(blockKey: string): void {
+    const testId = createId();
+
+    setTestExpansion(createTestReferenceKey(blockKey, testId), true);
+
     updateBlock(blockKey, (block) => ({
       ...block,
       tests: [
         ...block.tests,
         {
-          id: createId(),
+          id: testId,
           title: "",
           mode: "test",
           result: createEmptyTestResult(),
@@ -270,6 +277,13 @@ export default function App() {
   }
 
   function removeBlockTest(blockKey: string, testId: string): void {
+    const referenceKey = createTestReferenceKey(blockKey, testId);
+
+    setExpandedTests((current) => {
+      const { [referenceKey]: _removed, ...rest } = current;
+      return rest;
+    });
+
     updateBlock(blockKey, (block) => ({
       ...block,
       tests: block.tests.filter((test) => test.id !== testId),
@@ -361,6 +375,13 @@ export default function App() {
     }));
   }
 
+  function setTestExpansion(referenceKey: string, expanded: boolean): void {
+    setExpandedTests((current) => ({
+      ...current,
+      [referenceKey]: expanded,
+    }));
+  }
+
   async function handleExport(): Promise<void> {
     const invalidIdem = permissionBlockEntries.some((entry) => {
       const block = documentData.permissionBlocks[entry.key];
@@ -396,12 +417,13 @@ export default function App() {
 
     clearDraft();
     setDocumentData(loadDraft());
+    setExpandedTests({});
   }
 
   return (
     <Container size="xl" py="xl">
       <Stack gap="lg">
-        <Paper withBorder shadow="sm" p="lg" className="topBar">
+        <Paper withBorder p="lg" className="topBar">
           <Group justify="space-between" align="flex-start" gap="md">
             <div>
               <Title order={1} size="h2">
@@ -424,7 +446,7 @@ export default function App() {
               <Tooltip label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}>
                 <ActionIcon
                   variant="light"
-                  color={isDarkMode ? "yellow" : "blue"}
+                  color="gray"
                   size="lg"
                   onClick={toggleColorScheme}
                   aria-label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}
@@ -508,7 +530,7 @@ export default function App() {
           <Stack gap="xs">
             {documentData.accessSteps.map((step, index) => (
               <Group key={step.id} align="flex-end" wrap="nowrap">
-                <Badge color="blue" variant="light" w={34} h={34}>
+                <Badge color="gray" variant="outline" w={34} h={34}>
                   {index + 1}
                 </Badge>
                 <TextInput
@@ -578,8 +600,10 @@ export default function App() {
                   micro,
                 }))}
                 blocks={documentData.permissionBlocks}
+                expandedTests={expandedTests}
                 referenceOptions={referenceOptions}
                 onAddTest={addBlockTest}
+                onTestExpansionChange={setTestExpansion}
                 onTestTitleChange={updateBlockTestTitle}
                 onTestModeChange={updateBlockTestMode}
                 onTestReferenceChange={updateTestIdemReference}
@@ -614,7 +638,6 @@ function Section({
   return (
     <Card
       withBorder
-      shadow="xs"
       padding="lg"
       radius="md"
       className={`sectionCard sectionCard--${tone}`}
@@ -652,7 +675,7 @@ function PermissionGroupEditor({
       <Stack gap="sm">
         <Group justify="space-between" align="center">
           <Group gap="xs">
-            <Badge variant="light" color="indigo">
+            <Badge variant="outline" color="gray">
               Macro {index + 1}
             </Badge>
             <Checkbox
@@ -756,8 +779,10 @@ function PermissionBlockGroup({
   macro,
   entries,
   blocks,
+  expandedTests,
   referenceOptions,
   onAddTest,
+  onTestExpansionChange,
   onTestTitleChange,
   onTestModeChange,
   onTestReferenceChange,
@@ -768,8 +793,10 @@ function PermissionBlockGroup({
   macro: PermissionGroup;
   entries: PermissionBlockEntry[];
   blocks: Record<string, PermissionBlock>;
+  expandedTests: Record<string, boolean>;
   referenceOptions: { value: string; label: string }[];
   onAddTest: (blockKey: string) => void;
+  onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
   onTestTitleChange: (blockKey: string, testId: string, title: string) => void;
   onTestModeChange: (
     blockKey: string,
@@ -801,7 +828,7 @@ function PermissionBlockGroup({
               {formatPermission(macro)}
             </Title>
           </div>
-          <Badge variant="light" color="indigo">
+          <Badge variant="outline" color="gray">
             {entries.length} micro{entries.length === 1 ? "" : "s"}
           </Badge>
         </Group>
@@ -812,8 +839,10 @@ function PermissionBlockGroup({
               key={entry.key}
               entry={entry}
               block={blocks[entry.key] ?? createEmptyBlock()}
+              expandedTests={expandedTests}
               referenceOptions={referenceOptions}
               onAddTest={() => onAddTest(entry.key)}
+              onTestExpansionChange={onTestExpansionChange}
               onTestTitleChange={(testId, title) =>
                 onTestTitleChange(entry.key, testId, title)
               }
@@ -839,8 +868,10 @@ function PermissionBlockGroup({
 function PermissionBlockEditor({
   entry,
   block,
+  expandedTests,
   referenceOptions,
   onAddTest,
+  onTestExpansionChange,
   onTestTitleChange,
   onTestModeChange,
   onTestReferenceChange,
@@ -850,8 +881,10 @@ function PermissionBlockEditor({
 }: {
   entry: PermissionBlockEntry;
   block: PermissionBlock;
+  expandedTests: Record<string, boolean>;
   referenceOptions: { value: string; label: string }[];
   onAddTest: () => void;
+  onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
   onTestTitleChange: (testId: string, title: string) => void;
   onTestModeChange: (testId: string, mode: PermissionTestMode) => void;
   onTestReferenceChange: (testId: string, referenceKey: string | null) => void;
@@ -865,7 +898,7 @@ function PermissionBlockEditor({
         <Group justify="space-between" align="center" gap="md">
           <div>
             <Group gap="xs" mb={4}>
-              <Badge variant="light" color="cyan">
+              <Badge variant="outline" color="gray">
                 Micro
               </Badge>
               <Text fw={700}>{formatPermission(entry.micro)}</Text>
@@ -898,8 +931,12 @@ function PermissionBlockEditor({
                   (option) => option.value !== selfReferenceKey,
                 )}
                 selfReferenceKey={selfReferenceKey}
+                isExpanded={expandedTests[selfReferenceKey] ?? false}
                 canMoveUp={index > 0}
                 canMoveDown={index < block.tests.length - 1}
+                onExpandedChange={(expanded) =>
+                  onTestExpansionChange(selfReferenceKey, expanded)
+                }
                 onTitleChange={(title) => onTestTitleChange(test.id, title)}
                 onModeChange={(mode) => onTestModeChange(test.id, mode)}
                 onReferenceChange={(referenceKey) =>
@@ -927,8 +964,10 @@ function BlockTestEditor({
   test,
   referenceOptions,
   selfReferenceKey,
+  isExpanded,
   canMoveUp,
   canMoveDown,
+  onExpandedChange,
   onTitleChange,
   onModeChange,
   onReferenceChange,
@@ -941,8 +980,10 @@ function BlockTestEditor({
   test: PermissionBlockTest;
   referenceOptions: { value: string; label: string }[];
   selfReferenceKey: string;
+  isExpanded: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  onExpandedChange: (expanded: boolean) => void;
   onTitleChange: (title: string) => void;
   onModeChange: (mode: PermissionTestMode) => void;
   onReferenceChange: (referenceKey: string | null) => void;
@@ -956,14 +997,39 @@ function BlockTestEditor({
     test.idemReferenceKey,
     referenceOptions,
   );
+  const selectedCheckCount = checkOrder.filter((key) => test.result.checks[key]).length;
+  const evidenceCount = test.result.legacyImages.length + test.result.newImages.length;
+  const testPanelId = `test-details-${toDomId(selfReferenceKey)}`;
 
   return (
-    <Paper withBorder p="md" className="testCard">
+    <Paper
+      withBorder
+      p="md"
+      className={`testCard ${isExpanded ? "testCard--expanded" : "testCard--collapsed"}`}
+    >
       <Stack gap="sm">
         <div className="testHeaderGrid">
-          <Badge color="green" variant="light" w={34} h={34}>
-            {index + 1}
-          </Badge>
+          <Group gap={6} wrap="nowrap" className="testIndexCell">
+            <Tooltip label={isExpanded ? "Recolher teste" : "Abrir teste"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onExpandedChange(!isExpanded)}
+                aria-label={isExpanded ? "Recolher teste" : "Abrir teste"}
+                aria-expanded={isExpanded}
+                aria-controls={testPanelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${
+                    isExpanded ? "testToggleIcon--open" : ""
+                  }`}
+                />
+              </ActionIcon>
+            </Tooltip>
+            <Badge color="gray" variant="outline" w={34} h={34}>
+              {index + 1}
+            </Badge>
+          </Group>
           <TextInput
             label="Nome do teste"
             value={test.title}
@@ -981,7 +1047,19 @@ function BlockTestEditor({
               onChange={(value) => onModeChange(value as PermissionTestMode)}
             />
           </Stack>
-          <Group gap={4} wrap="nowrap" className="testActions">
+          <Group gap={4} wrap="wrap" className="testActions">
+            <Badge color="gray" variant="outline" className="testMetaBadge">
+              {test.mode === "idem"
+                ? hasValidReference
+                  ? "IDEM ok"
+                  : "IDEM pendente"
+                : `${selectedCheckCount}/${checkOrder.length} checks`}
+            </Badge>
+            {test.mode === "test" && evidenceCount > 0 ? (
+              <Badge color="gray" variant="outline" className="testMetaBadge">
+                {evidenceCount} img
+              </Badge>
+            ) : null}
             <Tooltip label="Mover para cima">
               <ActionIcon
                 variant="subtle"
@@ -1015,19 +1093,23 @@ function BlockTestEditor({
           </Group>
         </div>
 
-        {test.mode === "idem" ? (
-          <Select
-            label="IDEM ao teste"
-            placeholder="Selecione macro, micro e teste de referência"
-            data={referenceOptions}
-            value={hasValidReference ? test.idemReferenceKey ?? null : null}
-            onChange={onReferenceChange}
-            disabled={referenceOptions.length === 0}
-            error={!hasValidReference ? "Selecione um teste de referência" : undefined}
-          />
-        ) : (
-          <TestResultEditor result={test.result} onChange={onResultChange} />
-        )}
+        <Collapse in={isExpanded}>
+          <div id={testPanelId} className="testBody">
+            {test.mode === "idem" ? (
+              <Select
+                label="IDEM ao teste"
+                placeholder="Selecione macro, micro e teste de referência"
+                data={referenceOptions}
+                value={hasValidReference ? test.idemReferenceKey ?? null : null}
+                onChange={onReferenceChange}
+                disabled={referenceOptions.length === 0}
+                error={!hasValidReference ? "Selecione um teste de referência" : undefined}
+              />
+            ) : (
+              <TestResultEditor result={test.result} onChange={onResultChange} />
+            )}
+          </div>
+        </Collapse>
       </Stack>
     </Paper>
   );
@@ -1298,6 +1380,10 @@ function isValidTestReference(
 
 function createTestReferenceKey(blockKey: string, testId: string): string {
   return `${blockKey}::${testId}`;
+}
+
+function toDomId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
 function removePermissionBlocks(
