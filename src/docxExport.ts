@@ -34,6 +34,8 @@ const PAGE_MARGIN = {
   bottom: 1440,
   left: 1800,
 };
+const PAGE_CONTENT_WIDTH_TWIPS =
+  PAGE_WIDTH_TWIPS - PAGE_MARGIN.left - PAGE_MARGIN.right;
 
 const COLORS = {
   title: "111827",
@@ -390,22 +392,28 @@ function spacerParagraph(): Paragraph {
 }
 
 function simpleTable(rows: CellDefinition[][], columnWidths: number[]): Table {
+  const columnWidthTwips = toTwipColumnWidths(columnWidths);
+
   return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
+    width: { size: PAGE_CONTENT_WIDTH_TWIPS, type: WidthType.DXA },
+    columnWidths: columnWidthTwips,
     layout: TableLayoutType.FIXED,
     borders: tableBorders(),
     rows: rows.map(
-      (row) =>
-        new TableRow({
-          children: row.map((definition, index) => {
+      (row) => {
+        let columnIndex = 0;
+
+        return new TableRow({
+          children: row.map((definition) => {
             const columnSpan = definition.columnSpan ?? 1;
-            const width = columnWidths
-              .slice(index, index + columnSpan)
+            const width = columnWidthTwips
+              .slice(columnIndex, columnIndex + columnSpan)
               .reduce((total, value) => total + value, 0);
             const fill = definition.fill ?? (definition.bold ? COLORS.labelFill : undefined);
+            columnIndex += columnSpan;
 
             return new TableCell({
-              width: { size: width || 100, type: WidthType.PERCENTAGE },
+              width: { size: width || PAGE_CONTENT_WIDTH_TWIPS, type: WidthType.DXA },
               columnSpan: definition.columnSpan,
               margins: cellMargins(),
               verticalAlign: VerticalAlign.CENTER,
@@ -426,9 +434,18 @@ function simpleTable(rows: CellDefinition[][], columnWidths: number[]): Table {
               ],
             });
           }),
-        }),
+        });
+      },
     ),
   });
+}
+
+function toTwipColumnWidths(widths: number[]): number[] {
+  const total = widths.reduce((sum, width) => sum + width, 0) || 100;
+
+  return widths.map((width) =>
+    Math.max(1, Math.round((PAGE_CONTENT_WIDTH_TWIPS * width) / total)),
+  );
 }
 
 function cell(
