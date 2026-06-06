@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import type { ClipboardEvent, ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ClipboardEvent, DragEvent, ReactNode } from "react";
 import {
   ActionIcon,
   Badge,
@@ -11,10 +11,11 @@ import {
   Divider,
   FileButton,
   Group,
+  Modal,
   Paper,
   SegmentedControl,
-  Select,
   Stack,
+  Tabs,
   Text,
   Textarea,
   TextInput,
@@ -26,29 +27,62 @@ import {
   ArrowDown,
   ArrowUp,
   ChevronDown,
+  ChevronsDown,
+  ChevronsUp,
   ClipboardPaste,
+  AlertCircle,
+  CheckCircle2,
+  CircleHelp,
+  ClipboardList,
+  Copy,
   Download,
+  FileText,
+  FileUp,
   ImagePlus,
+  ListChecks,
   Moon,
   Plus,
   RotateCcw,
   Save,
+  SearchCheck,
   Sun,
   Trash2,
+  Wand2,
   X,
 } from "lucide-react";
 import { checkLabels, checkOrder, createEmptyTestResult, createPermissionKey } from "./defaultDocument";
-import { exportOtDocument } from "./docxExport";
-import { clearDraft, loadDraft, saveDraft } from "./storage";
+import { exportOtDocument, exportTeaDocument } from "./docxExport";
+import { parseDocxFile } from "./docxImport";
+import type { DocxImportResult } from "./docxImport";
+import {
+  deleteEvidenceImageData,
+  hydrateDocumentImages,
+  hydrateTeaDocumentImages,
+  persistEmbeddedEvidenceImages,
+  persistEmbeddedTeaImages,
+  saveEvidenceImageData,
+} from "./imageStorage";
+import { optimizeImageFile } from "./imageOptimizer";
+import {
+  clearDraft,
+  clearTeaDraft,
+  loadDraft,
+  loadTeaDraft,
+  saveDraft,
+  saveTeaDraft,
+} from "./storage";
 import type {
   CheckKey,
   EvidenceImage,
   OtDocument,
   PermissionBlock,
-  PermissionTestMode,
   PermissionBlockTest,
   PermissionGroup,
   PermissionItem,
+  TeaActivity,
+  TeaDocument,
+  TeaSubActivity,
+  TeaTextItem,
   TestResult,
 } from "./types";
 
@@ -58,17 +92,217 @@ type PermissionBlockEntry = {
   micro: PermissionItem;
 };
 
-const testModeOptions: { value: PermissionTestMode; label: string }[] = [
-  { value: "test", label: "Testar" },
-  { value: "idem", label: "IDEM" },
+type ActiveTab = "document" | "permissions" | "tests" | "review" | "help";
+type TeaTab = "document" | "activities" | "review";
+type DocumentKind = "ot" | "tea";
+
+type DraftStatus =
+  | "Alterações pendentes"
+  | "Salvando..."
+  | "Rascunho salvo"
+  | "Rascunho grande demais";
+
+type ReviewSummary = {
+  selectedPermissions: number;
+  testCount: number;
+  imageCount: number;
+  issues: ReviewIssue[];
+};
+
+type ReviewIssue = {
+  id: string;
+  label: string;
+  detail: string;
+  tab: Exclude<ActiveTab, "help">;
+  targetId?: string;
+  blockKey?: string;
+  testId?: string;
+};
+
+type TeaReviewSummary = {
+  activityCount: number;
+  imageCount: number;
+  issues: TeaReviewIssue[];
+};
+
+type TeaReviewIssue = {
+  id: string;
+  label: string;
+  detail: string;
+  tab: TeaTab;
+};
+
+type FaqSection = {
+  title: string;
+  items: Array<{
+    title: string;
+    description: string;
+    example?: string;
+  }>;
+};
+
+type TestBlockFilter = "all" | "withoutTests" | "withoutImages" | "withPending" | "withProblem";
+
+const standardTestTitles = ["Criação", "Edição", "Consulta", "Exclusão"];
+
+const problemCheckKeys: CheckKey[] = ["possibleIssue", "bothIssue", "newIssue", "errorReport"];
+
+const quickCheckLabels: Record<CheckKey, string> = {
+  sameBehavior: "OK",
+  possibleIssue: "Possível",
+  bothIssue: "Ambos",
+  newIssue: "Novo",
+  errorReport: "Erros",
+};
+
+const testBlockFilterLabels: Record<TestBlockFilter, string> = {
+  all: "Todos",
+  withoutTests: "Sem testes",
+  withoutImages: "Sem imagens",
+  withPending: "Com pendência",
+  withProblem: "Com problema",
+};
+
+const testBlockFilterOrder: TestBlockFilter[] = [
+  "all",
+  "withoutTests",
+  "withoutImages",
+  "withPending",
+  "withProblem",
+];
+
+const faqSections: FaqSection[] = [
+  {
+    title: "Fluxo recomendado",
+    items: [
+      {
+        title: "Comece pelo Documento",
+        description:
+          "Preencha tela, responsável, data, ambiente, elaborada por e objetivo. Esses campos montam o cabeçalho e ajudam a Revisão a avisar o que falta.",
+      },
+      {
+        title: "Monte as permissões antes dos testes",
+        description:
+          "A aba Testes nasce das macros e micros marcadas como Usar. Se uma permissão não estiver selecionada, ela não aparece nos blocos nem no DOCX.",
+      },
+      {
+        title: "Feche pela Revisão",
+        description:
+          "A Revisão mostra pendências, contadores de testes e imagens. Use Próxima pendência para ir direto ao primeiro ponto incompleto.",
+      },
+    ],
+  },
+  {
+    title: "Documento e passos",
+    items: [
+      {
+        title: "Editar passos em lote",
+        description:
+          "Cada linha do campo vira um passo do documento. Enter cria uma nova linha; passos vazios podem ficar enquanto você edita e são ignorados na exportação.",
+        example:
+          "Acessar o menu Cadastros\nAbrir a tela de usuários\nSelecionar um registro",
+      },
+      {
+        title: "Campos individuais de passo",
+        description:
+          "Servem para ajuste fino, remoção e revisão visual. Ao colar várias linhas em uma etapa, o sistema divide o texto em passos separados.",
+      },
+      {
+        title: "Limpar",
+        description:
+          "Apaga o rascunho salvo no navegador e volta para o documento padrão. Use com cuidado quando quiser começar uma OT do zero.",
+      },
+    ],
+  },
+  {
+    title: "Permissões",
+    items: [
+      {
+        title: "Lista rápida",
+        description:
+          "Permite criar macros e micros em texto. Macro fica sem recuo; micro fica com espaços no começo ou com hífen.",
+        example:
+          "AO - Administrador Geral\n  AT - Atualização\n  SC - Somente Consulta\nUS - Usuário\n  CO - Consulta",
+      },
+      {
+        title: "Carregar atual",
+        description:
+          "Copia as permissões já cadastradas para o campo de Lista rápida. É útil para reorganizar ou corrigir tudo em bloco.",
+      },
+      {
+        title: "Aplicar lista",
+        description:
+          "Substitui a lista de permissões pelo texto informado. Quando os códigos de macro e micro batem com os antigos, os testes existentes são preservados.",
+      },
+    ],
+  },
+  {
+    title: "Testes e evidências",
+    items: [
+      {
+        title: "Padrão em todos",
+        description:
+          "Adiciona Criação, Edição, Consulta e Exclusão em todos os blocos de permissão selecionados, sem duplicar títulos que já existem no bloco.",
+      },
+      {
+        title: "Adicionar pacote padrão",
+        description:
+          "Faz a mesma lista padrão, mas apenas no bloco de permissão onde o botão foi clicado.",
+      },
+      {
+        title: "Copiar para vazios",
+        description:
+          "Copia os testes do bloco atual para outros blocos que ainda não têm testes. Copia títulos, checks e observações, mas não copia imagens.",
+      },
+      {
+        title: "Checks e imagens",
+        description:
+          "Os botões OK, Possível, Ambos, Novo e Erros marcam rapidamente o resultado. Em Legado e Novo, você pode colar, arrastar ou selecionar imagens.",
+      },
+    ],
+  },
+  {
+    title: "Saída e rascunho",
+    items: [
+      {
+        title: "Importar DOCX",
+        description:
+          "Lê um documento existente, mostra uma prévia e só substitui o rascunho quando você confirma.",
+      },
+      {
+        title: "Exportar DOCX",
+        description:
+          "Salva o rascunho atual e gera o arquivo final com cabeçalho, objetivo, passos, permissões, testes, observações e imagens.",
+      },
+      {
+        title: "Salvamento automático",
+        description:
+          "As alterações ficam salvas no navegador. O selo do topo mostra se há alterações pendentes, salvando, salvo ou rascunho grande demais.",
+      },
+    ],
+  },
 ];
 
 export default function App() {
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
+  const [documentKind, setDocumentKind] = useState<DocumentKind>("ot");
   const [documentData, setDocumentData] = useState<OtDocument>(() => loadDraft());
+  const [teaData, setTeaData] = useState<TeaDocument>(() => loadTeaDraft());
   const [expandedTests, setExpandedTests] = useState<Record<string, boolean>>({});
+  const [activeTab, setActiveTab] = useState<ActiveTab>("document");
+  const [teaActiveTab, setTeaActiveTab] = useState<TeaTab>("document");
+  const [testBlockFilter, setTestBlockFilter] = useState<TestBlockFilter>("all");
   const [isExporting, setIsExporting] = useState(false);
-  const [draftStatus, setDraftStatus] = useState("Rascunho salvo");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importPreview, setImportPreview] = useState<DocxImportResult | null>(null);
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("Rascunho salvo");
+  const [permissionBulkText, setPermissionBulkText] = useState(() =>
+    formatPermissionBulk(documentData.permissionGroups),
+  );
+  const documentDataRef = useRef(documentData);
+  const teaDataRef = useRef(teaData);
+  const documentKindRef = useRef<DocumentKind>(documentKind);
+  const saveTimerRef = useRef<number | undefined>();
   const isDarkMode = colorScheme === "dark";
 
   const selectedGroups = useMemo(
@@ -88,32 +322,272 @@ export default function App() {
     [selectedGroups],
   );
 
-  const referenceOptions = useMemo(
-    () =>
-      permissionBlockEntries.flatMap((entry) => {
-        const block = documentData.permissionBlocks[entry.key] ?? createEmptyBlock();
-
-        return block.tests.map((test, index) => ({
-          value: createTestReferenceKey(entry.key, test.id),
-          label: `${formatPermission(entry.macro)} / ${formatPermission(entry.micro)} / ${
-            test.title.trim() || `Teste ${index + 1}`
-          }`,
-        }));
-      }),
+  const testBlockFilterCounts = useMemo(
+    () => buildTestBlockFilterCounts(permissionBlockEntries, documentData.permissionBlocks),
     [documentData.permissionBlocks, permissionBlockEntries],
   );
 
+  const filteredPermissionBlockGroups = useMemo(
+    () =>
+      selectedGroups
+        .map((macro) => {
+          const entries = macro.microPermissions
+            .map((micro) => ({
+              key: createPermissionKey(macro.id, micro.id),
+              macro,
+              micro,
+            }))
+            .filter((entry) =>
+              testBlockMatchesFilter(
+                documentData.permissionBlocks[entry.key] ?? createEmptyBlock(),
+                testBlockFilter,
+              ),
+            );
+
+          return { macro, entries };
+        })
+        .filter((group) => group.entries.length > 0),
+    [documentData.permissionBlocks, selectedGroups, testBlockFilter],
+  );
+
+  const visibleTestCount = useMemo(
+    () =>
+      filteredPermissionBlockGroups.reduce(
+        (total, group) =>
+          total +
+          group.entries.reduce(
+            (entryTotal, entry) =>
+              entryTotal + (documentData.permissionBlocks[entry.key]?.tests.length ?? 0),
+            0,
+          ),
+        0,
+      ),
+    [documentData.permissionBlocks, filteredPermissionBlockGroups],
+  );
+
   useEffect(() => {
+    documentDataRef.current = documentData;
+  }, [documentData]);
+
+  useEffect(() => {
+    teaDataRef.current = teaData;
+  }, [teaData]);
+
+  useEffect(() => {
+    documentKindRef.current = documentKind;
+  }, [documentKind]);
+
+  const flushDraft = useCallback(() => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+    }
+
     try {
-      saveDraft(documentData);
+      setDraftStatus("Salvando...");
+      if (documentKindRef.current === "tea") {
+        saveTeaDraft(teaDataRef.current);
+      } else {
+        saveDraft(documentDataRef.current);
+      }
       setDraftStatus("Rascunho salvo");
     } catch {
       setDraftStatus("Rascunho grande demais");
     }
-  }, [documentData]);
+  }, []);
+
+  useEffect(() => {
+    setDraftStatus("Alterações pendentes");
+
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = undefined;
+      flushDraft();
+    }, 700);
+
+    return () => {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = undefined;
+      }
+    };
+  }, [documentData, teaData, documentKind, flushDraft]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function prepareImages(): Promise<void> {
+      try {
+        const migratedDocument = await persistEmbeddedEvidenceImages(documentDataRef.current);
+        const hydratedDocument = await hydrateDocumentImages(migratedDocument);
+        const migratedTeaDocument = await persistEmbeddedTeaImages(teaDataRef.current);
+        const hydratedTeaDocument = await hydrateTeaDocumentImages(migratedTeaDocument);
+
+        if (isMounted) {
+          setDocumentData(hydratedDocument);
+          setTeaData(hydratedTeaDocument);
+        }
+      } catch {
+        // A falta do IndexedDB nao deve impedir o preenchimento do documento atual.
+      }
+    }
+
+    void prepareImages();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      flushDraft();
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [flushDraft]);
+
+  const reviewSummary = useMemo(
+    () => buildReviewSummary(documentData, permissionBlockEntries),
+    [documentData, permissionBlockEntries],
+  );
+
+  const teaReviewSummary = useMemo(() => buildTeaReviewSummary(teaData), [teaData]);
 
   function updateDocument(updater: (current: OtDocument) => OtDocument): void {
     setDocumentData((current) => updater(current));
+  }
+
+  function updateTeaDocument(updater: (current: TeaDocument) => TeaDocument): void {
+    setTeaData((current) => updater(current));
+  }
+
+  function selectDocumentKind(nextKind: DocumentKind): void {
+    if (nextKind === documentKindRef.current) {
+      return;
+    }
+
+    flushDraft();
+    setDocumentKind(nextKind);
+  }
+
+  function updateTeaMetadata(field: keyof TeaDocument["metadata"], value: string): void {
+    updateTeaDocument((current) => ({
+      ...current,
+      metadata: {
+        ...current.metadata,
+        [field]: value,
+      },
+    }));
+  }
+
+  function updateTeaActivity(
+    activityId: string,
+    updater: (activity: TeaActivity) => TeaActivity,
+  ): void {
+    updateTeaDocument((current) => ({
+      ...current,
+      activities: current.activities.map((activity) =>
+        activity.id === activityId ? updater(activity) : activity,
+      ),
+    }));
+  }
+
+  function addTeaActivity(): void {
+    updateTeaDocument((current) => ({
+      ...current,
+      activities: [
+        ...current.activities,
+        {
+          id: createId(),
+          title: "",
+          description: "",
+          items: [],
+          images: [],
+          subActivities: [],
+        },
+      ],
+    }));
+  }
+
+  function removeTeaActivity(activityId: string): void {
+    updateTeaDocument((current) => ({
+      ...current,
+      activities: current.activities.filter((activity) => activity.id !== activityId),
+    }));
+  }
+
+  function updateTeaActivityItems(activityId: string, value: string): void {
+    const items = teaItemsFromBulk(value);
+
+    updateTeaActivity(activityId, (activity) => ({
+      ...activity,
+      items: items.map((text, index) => ({
+        id: activity.items[index]?.id ?? createId(),
+        text,
+      })),
+    }));
+  }
+
+  function addTeaSubActivity(activityId: string): void {
+    updateTeaActivity(activityId, (activity) => ({
+      ...activity,
+      subActivities: [
+        ...activity.subActivities,
+        {
+          id: createId(),
+          title: "",
+          description: "",
+          items: [],
+          images: [],
+        },
+      ],
+    }));
+  }
+
+  function updateTeaSubActivity(
+    activityId: string,
+    subActivityId: string,
+    updater: (subActivity: TeaSubActivity) => TeaSubActivity,
+  ): void {
+    updateTeaActivity(activityId, (activity) => ({
+      ...activity,
+      subActivities: activity.subActivities.map((subActivity) =>
+        subActivity.id === subActivityId ? updater(subActivity) : subActivity,
+      ),
+    }));
+  }
+
+  function removeTeaSubActivity(activityId: string, subActivityId: string): void {
+    updateTeaActivity(activityId, (activity) => ({
+      ...activity,
+      subActivities: activity.subActivities.filter(
+        (subActivity) => subActivity.id !== subActivityId,
+      ),
+    }));
+  }
+
+  function updateTeaSubActivityItems(
+    activityId: string,
+    subActivityId: string,
+    value: string,
+  ): void {
+    const items = teaItemsFromBulk(value);
+
+    updateTeaSubActivity(activityId, subActivityId, (subActivity) => ({
+      ...subActivity,
+      items: items.map((text, index) => ({
+        id: subActivity.items[index]?.id ?? createId(),
+        text,
+      })),
+    }));
   }
 
   function updateMetadata(field: keyof OtDocument["metadata"], value: string): void {
@@ -146,6 +620,18 @@ export default function App() {
     updateDocument((current) => ({
       ...current,
       accessSteps: current.accessSteps.filter((step) => step.id !== stepId),
+    }));
+  }
+
+  function replaceAccessStepsFromBulk(value: string): void {
+    const steps = splitBulkLines(value);
+
+    updateDocument((current) => ({
+      ...current,
+      accessSteps: steps.map((text, index) => ({
+        id: current.accessSteps[index]?.id ?? createId(),
+        text,
+      })),
     }));
   }
 
@@ -248,6 +734,41 @@ export default function App() {
     }));
   }
 
+  function applyPermissionBulk(): void {
+    const parsedGroups = parsePermissionBulk(permissionBulkText);
+
+    if (parsedGroups.length === 0) {
+      return;
+    }
+
+    updateDocument((current) => {
+      const existingBlocks = blocksByPermissionCode(current);
+      const permissionGroups = parsedGroups.map((macro) => ({
+        ...macro,
+        id: `macro-${createId()}`,
+        microPermissions: macro.microPermissions.map((micro) => ({
+          ...micro,
+          id: `micro-${createId()}`,
+        })),
+      }));
+      const permissionBlocks: Record<string, PermissionBlock> = {};
+
+      permissionGroups.forEach((macro) => {
+        macro.microPermissions.forEach((micro) => {
+          const codeKey = permissionCodeKey(macro.code, micro.code);
+          const blockKey = createPermissionKey(macro.id, micro.id);
+          permissionBlocks[blockKey] = existingBlocks.get(codeKey) ?? createEmptyBlock();
+        });
+      });
+
+      return {
+        ...current,
+        permissionGroups,
+        permissionBlocks,
+      };
+    });
+  }
+
   function addBlockTest(blockKey: string): void {
     const testId = createId();
 
@@ -255,16 +776,109 @@ export default function App() {
 
     updateBlock(blockKey, (block) => ({
       ...block,
-      tests: [
-        ...block.tests,
-        {
-          id: testId,
-          title: "",
-          mode: "test",
-          result: createEmptyTestResult(),
-        },
-      ],
+      tests: [...block.tests, createBlockTest(testId)],
     }));
+  }
+
+  function addStandardTests(blockKey: string): void {
+    const tests = standardTestTitles.map((title) => createBlockTest(createId(), title));
+    const firstReferenceKey = createTestReferenceKey(blockKey, tests[0]?.id ?? "");
+
+    if (tests[0]) {
+      setTestExpansion(firstReferenceKey, true);
+    }
+
+    updateBlock(blockKey, (block) => ({
+      ...block,
+      tests: [...block.tests, ...tests],
+    }));
+  }
+
+  function addStandardTestsToAll(): void {
+    updateDocument((current) => ({
+      ...current,
+      permissionBlocks: {
+        ...current.permissionBlocks,
+        ...Object.fromEntries(
+          permissionBlockEntries.map((entry) => {
+            const block = current.permissionBlocks[entry.key] ?? createEmptyBlock();
+            const existingTitles = new Set(
+              block.tests.map((test) => normalizeTextKey(test.title)),
+            );
+            const missingTests = standardTestTitles
+              .filter((title) => !existingTitles.has(normalizeTextKey(title)))
+              .map((title) => createBlockTest(createId(), title));
+
+            return [entry.key, { ...block, tests: [...block.tests, ...missingTests] }];
+          }),
+        ),
+      },
+    }));
+  }
+
+  function duplicateBlockStructureToEmpty(sourceBlockKey: string): void {
+    const sourceBlock = documentDataRef.current.permissionBlocks[sourceBlockKey];
+
+    if (!sourceBlock || sourceBlock.tests.length === 0) {
+      return;
+    }
+
+    updateDocument((current) => ({
+      ...current,
+      permissionBlocks: {
+        ...current.permissionBlocks,
+        ...Object.fromEntries(
+          permissionBlockEntries
+            .filter((entry) => entry.key !== sourceBlockKey)
+            .filter((entry) => (current.permissionBlocks[entry.key]?.tests.length ?? 0) === 0)
+            .map((entry) => [
+              entry.key,
+              {
+                tests: sourceBlock.tests.map((test) => ({
+                  id: createId(),
+                  title: test.title,
+                  result: {
+                    checks: { ...test.result.checks },
+                    observations: test.result.observations,
+                    legacyImages: [],
+                    newImages: [],
+                  },
+                })),
+              },
+            ]),
+        ),
+      },
+    }));
+  }
+
+  function duplicateBlockTest(blockKey: string, testId: string): void {
+    const duplicatedId = createId();
+
+    setTestExpansion(createTestReferenceKey(blockKey, duplicatedId), true);
+
+    updateBlock(blockKey, (block) => {
+      const index = block.tests.findIndex((test) => test.id === testId);
+
+      if (index === -1) {
+        return block;
+      }
+
+      const source = block.tests[index];
+      const duplicated: PermissionBlockTest = {
+        id: duplicatedId,
+        title: source.title,
+        result: {
+          checks: { ...source.result.checks },
+          observations: source.result.observations,
+          legacyImages: [],
+          newImages: [],
+        },
+      };
+      const tests = [...block.tests];
+      tests.splice(index + 1, 0, duplicated);
+
+      return { ...block, tests };
+    });
   }
 
   function updateBlockTestTitle(blockKey: string, testId: string, title: string): void {
@@ -305,50 +919,6 @@ export default function App() {
     });
   }
 
-  function updateBlockTestMode(
-    blockKey: string,
-    testId: string,
-    mode: PermissionTestMode,
-  ): void {
-    updateBlock(blockKey, (block) => ({
-      ...block,
-      tests: block.tests.map((test) =>
-        test.id === testId
-          ? {
-              ...test,
-              mode,
-              idemReferenceKey:
-                mode === "idem" &&
-                test.idemReferenceKey !== createTestReferenceKey(blockKey, testId)
-                  ? test.idemReferenceKey
-                  : undefined,
-            }
-          : test,
-      ),
-    }));
-  }
-
-  function updateTestIdemReference(
-    blockKey: string,
-    testId: string,
-    referenceKey: string | null,
-  ): void {
-    updateBlock(blockKey, (block) => ({
-      ...block,
-      tests: block.tests.map((test) =>
-        test.id === testId
-          ? {
-              ...test,
-              idemReferenceKey:
-                referenceKey && referenceKey !== createTestReferenceKey(blockKey, testId)
-                  ? referenceKey
-                  : undefined,
-            }
-          : test,
-      ),
-    }));
-  }
-
   function updateTestResult(
     blockKey: string,
     testId: string,
@@ -375,6 +945,41 @@ export default function App() {
     }));
   }
 
+  function handleStepPaste(stepId: string, event: ClipboardEvent<HTMLInputElement>): void {
+    const lines = event.clipboardData
+      .getData("text")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length <= 1) {
+      return;
+    }
+
+    event.preventDefault();
+
+    updateDocument((current) => {
+      const stepIndex = current.accessSteps.findIndex((step) => step.id === stepId);
+
+      if (stepIndex === -1) {
+        return current;
+      }
+
+      const nextSteps = [...current.accessSteps];
+      nextSteps.splice(
+        stepIndex,
+        1,
+        { ...nextSteps[stepIndex], text: lines[0] },
+        ...lines.slice(1).map((text) => ({ id: createId(), text })),
+      );
+
+      return {
+        ...current,
+        accessSteps: nextSteps,
+      };
+    });
+  }
+
   function setTestExpansion(referenceKey: string, expanded: boolean): void {
     setExpandedTests((current) => ({
       ...current,
@@ -382,67 +987,206 @@ export default function App() {
     }));
   }
 
-  async function handleExport(): Promise<void> {
-    const invalidIdem = permissionBlockEntries.some((entry) => {
-      const block = documentData.permissionBlocks[entry.key];
-      return block?.tests.some(
-        (test) =>
-          test.mode === "idem" &&
-          !isValidTestReference(
-            createTestReferenceKey(entry.key, test.id),
-            test.idemReferenceKey,
-            referenceOptions,
-          ),
-      );
-    });
+  function setVisibleTestsExpansion(expanded: boolean): void {
+    const visibleReferenceKeys = filteredPermissionBlockGroups.flatMap((group) =>
+      group.entries.flatMap((entry) =>
+        (documentDataRef.current.permissionBlocks[entry.key]?.tests ?? []).map((test) =>
+          createTestReferenceKey(entry.key, test.id),
+        ),
+      ),
+    );
 
-    if (invalidIdem) {
-      window.alert("Selecione a referência de todos os testes marcados como IDEM.");
+    setExpandedTests((current) => {
+      const next = { ...current };
+
+      visibleReferenceKeys.forEach((referenceKey) => {
+        if (expanded) {
+          next[referenceKey] = true;
+        } else {
+          delete next[referenceKey];
+        }
+      });
+
+      return next;
+    });
+  }
+
+  function handleReviewIssueClick(issue: ReviewIssue): void {
+    setActiveTab(issue.tab);
+
+    if (issue.blockKey && issue.testId) {
+      setTestExpansion(createTestReferenceKey(issue.blockKey, issue.testId), true);
+    }
+
+    window.setTimeout(() => {
+      if (issue.targetId) {
+        window.document.getElementById(issue.targetId)?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }
+    }, 40);
+  }
+
+  function goToNextIssue(): void {
+    const [issue] = reviewSummary.issues;
+
+    if (issue) {
+      handleReviewIssueClick(issue);
+    }
+  }
+
+  function handleTeaReviewIssueClick(issue: TeaReviewIssue): void {
+    setTeaActiveTab(issue.tab);
+  }
+
+  async function handleImportFile(file: File | null): Promise<void> {
+    if (!file) {
       return;
     }
 
+    setIsImporting(true);
+
+    try {
+      setImportPreview(await parseDocxFile(file));
+    } catch {
+      window.alert("Nao foi possivel importar este DOCX.");
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  async function confirmImport(): Promise<void> {
+    if (!importPreview) {
+      return;
+    }
+
+    try {
+      await persistEmbeddedEvidenceImages(importPreview.document);
+    } catch {
+      window.alert("O documento foi importado, mas algumas imagens podem nao ficar salvas no rascunho.");
+    }
+
+    setDocumentData(importPreview.document);
+    setPermissionBulkText(formatPermissionBulk(importPreview.document.permissionGroups));
+    setExpandedTests({});
+    setActiveTab("review");
+    setImportPreview(null);
+  }
+
+  async function handleExport(): Promise<void> {
+    flushDraft();
     setIsExporting(true);
 
     try {
-      await exportOtDocument(documentData);
+      if (documentKindRef.current === "tea") {
+        await exportTeaDocument(teaDataRef.current);
+      } else {
+        await exportOtDocument(documentDataRef.current);
+      }
     } finally {
       setIsExporting(false);
     }
   }
 
-  function handleClearDraft(): void {
+  async function handleClearDraft(): Promise<void> {
     if (!window.confirm("Limpar o rascunho atual?")) {
       return;
     }
 
-    clearDraft();
-    setDocumentData(loadDraft());
-    setExpandedTests({});
+    if (documentKindRef.current === "tea") {
+      await clearTeaDraft();
+      setTeaData(loadTeaDraft());
+      setTeaActiveTab("document");
+    } else {
+      await clearDraft();
+      const nextDocument = loadDraft();
+      setDocumentData(nextDocument);
+      setPermissionBulkText(formatPermissionBulk(nextDocument.permissionGroups));
+      setExpandedTests({});
+    }
+
+    setDraftStatus("Rascunho salvo");
   }
 
   return (
+    <>
     <Container size="xl" py="xl">
       <Stack gap="lg">
         <Paper withBorder p="lg" className="topBar">
           <Group justify="space-between" align="flex-start" gap="md">
-            <div>
-              <Title order={1} size="h2">
-                Gerador de OT
-              </Title>
+            <div className="topBarTitle">
+              <Group gap="sm" align="center">
+                <Title order={1} size="h2">
+                  {documentKind === "tea" ? "Gerador de TEA" : "Gerador de OT"}
+                </Title>
+                <SegmentedControl
+                  value={documentKind}
+                  onChange={(value) => selectDocumentKind(value as DocumentKind)}
+                  data={[
+                    { value: "ot", label: "OT" },
+                    { value: "tea", label: "TEA" },
+                  ]}
+                  size="xs"
+                  className="documentKindSwitch"
+                />
+              </Group>
               <Text c="dimmed" mt={4}>
-                {documentData.metadata.screen || "Documento sem tela definida"}
+                {documentKind === "tea"
+                  ? teaData.metadata.subject ||
+                    teaData.metadata.serviceOrder ||
+                    "TEA sem assunto definido"
+                  : documentData.metadata.screen || "Documento sem tela definida"}
               </Text>
             </div>
 
             <Group gap="xs">
               <Badge
                 variant="light"
-                color={draftStatus.includes("grande") ? "red" : "green"}
+                color={draftStatusColor(draftStatus)}
                 leftSection={<Save size={14} />}
                 h={30}
               >
                 {draftStatus}
               </Badge>
+              {documentKind === "ot" ? (
+                <>
+              <FileButton
+                onChange={(file) => {
+                  void handleImportFile(file);
+                }}
+                accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              >
+                {(props) => (
+                  <Button
+                    {...props}
+                    variant="light"
+                    leftSection={<FileUp size={17} />}
+                    loading={isImporting}
+                  >
+                    Importar DOCX
+                  </Button>
+                )}
+              </FileButton>
+              <Button
+                variant="light"
+                leftSection={<Wand2 size={17} />}
+                disabled={permissionBlockEntries.length === 0}
+                onClick={addStandardTestsToAll}
+              >
+                Padrão em todos
+              </Button>
+              <Button
+                variant="light"
+                color={reviewSummary.issues.length > 0 ? "yellow" : "gray"}
+                leftSection={<SearchCheck size={17} />}
+                disabled={reviewSummary.issues.length === 0}
+                onClick={goToNextIssue}
+              >
+                Próxima pendência
+              </Button>
+                </>
+              ) : null}
               <Tooltip label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}>
                 <ActionIcon
                   variant="light"
@@ -458,7 +1202,9 @@ export default function App() {
                 variant="light"
                 color="gray"
                 leftSection={<RotateCcw size={17} />}
-                onClick={handleClearDraft}
+                onClick={() => {
+                  void handleClearDraft();
+                }}
               >
                 Limpar
               </Button>
@@ -473,8 +1219,39 @@ export default function App() {
           </Group>
         </Paper>
 
+        {documentKind === "ot" ? (
+        <Tabs
+          value={activeTab}
+          onChange={(value) => {
+            if (value) {
+              setActiveTab(value as ActiveTab);
+            }
+          }}
+          className="workspaceTabs"
+        >
+          <Tabs.List>
+            <Tabs.Tab value="document" leftSection={<ClipboardList size={16} />}>
+              Documento
+            </Tabs.Tab>
+            <Tabs.Tab value="permissions" leftSection={<ListChecks size={16} />}>
+              Permissões
+            </Tabs.Tab>
+            <Tabs.Tab value="tests" leftSection={<CheckCircle2 size={16} />}>
+              Testes
+            </Tabs.Tab>
+            <Tabs.Tab value="review" leftSection={<AlertCircle size={16} />}>
+              Revisão
+            </Tabs.Tab>
+            <Tabs.Tab value="help" leftSection={<CircleHelp size={16} />}>
+              FAQ
+            </Tabs.Tab>
+          </Tabs.List>
+
+          <Tabs.Panel value="document" pt="md">
+            <Stack gap="md">
         <Section title="Documento" tone="document">
           <Stack gap="sm">
+            <div className="documentFields">
             <TextInput
               label="Tela"
               value={documentData.metadata.screen}
@@ -501,10 +1278,11 @@ export default function App() {
               value={documentData.metadata.author}
               onChange={(event) => updateMetadata("author", event.currentTarget.value)}
             />
+            </div>
             <Textarea
               label="Objetivo"
               minRows={4}
-              autosize
+              styles={{ input: { resize: "vertical" } }}
               value={documentData.objective}
               onChange={(event) => {
                 const value = event.currentTarget.value;
@@ -528,6 +1306,13 @@ export default function App() {
           }
         >
           <Stack gap="xs">
+            <Textarea
+              label="Editar passos em lote"
+              minRows={3}
+              autosize
+              value={documentData.accessSteps.map((step) => step.text).join("\n")}
+              onChange={(event) => replaceAccessStepsFromBulk(event.currentTarget.value)}
+            />
             {documentData.accessSteps.map((step, index) => (
               <Group key={step.id} align="flex-end" wrap="nowrap">
                 <Badge color="gray" variant="outline" w={34} h={34}>
@@ -537,6 +1322,7 @@ export default function App() {
                   label={index === 0 ? "Etapa" : undefined}
                   value={step.text}
                   onChange={(event) => updateStep(step.id, event.currentTarget.value)}
+                  onPaste={(event) => handleStepPaste(step.id, event)}
                   style={{ flex: 1 }}
                 />
                 <Tooltip label="Remover passo">
@@ -558,6 +1344,10 @@ export default function App() {
           </Stack>
         </Section>
 
+            </Stack>
+          </Tabs.Panel>
+
+          <Tabs.Panel value="permissions" pt="md">
         <Section
           title="Permissões"
           tone="permissions"
@@ -568,6 +1358,36 @@ export default function App() {
           }
         >
           <Stack gap="sm">
+            <Paper withBorder p="sm" className="bulkEditor">
+              <Stack gap="xs">
+                <Group justify="space-between" align="center">
+                  <Text fw={700} size="sm">
+                    Lista rápida
+                  </Text>
+                  <Group gap="xs">
+                    <Button
+                      variant="subtle"
+                      size="xs"
+                      onClick={() =>
+                        setPermissionBulkText(formatPermissionBulk(documentData.permissionGroups))
+                      }
+                    >
+                      Carregar atual
+                    </Button>
+                    <Button variant="light" size="xs" onClick={applyPermissionBulk}>
+                      Aplicar lista
+                    </Button>
+                  </Group>
+                </Group>
+                <Textarea
+                  minRows={4}
+                  autosize
+                  value={permissionBulkText}
+                  placeholder={"AO - Administrador Geral\n  AT - Atualização\n  SC - Somente Consulta"}
+                  onChange={(event) => setPermissionBulkText(event.currentTarget.value)}
+                />
+              </Stack>
+            </Paper>
             {documentData.permissionGroups.map((macro, index) => (
               <PermissionGroupEditor
                 key={macro.id}
@@ -588,25 +1408,61 @@ export default function App() {
           </Stack>
         </Section>
 
-        <Section title="Blocos de permissão" tone="blocks">
+          </Tabs.Panel>
+
+          <Tabs.Panel value="tests" pt="md">
+        <Section
+          title="Blocos de permissão"
+          tone="blocks"
+          action={
+            <Badge variant="light" color={testBlockFilter === "all" ? "gray" : "blue"}>
+              {filteredPermissionBlockGroups.reduce(
+                (total, group) => total + group.entries.length,
+                0,
+              )}
+              /{permissionBlockEntries.length} blocos
+            </Badge>
+          }
+        >
           <Stack gap="md">
-            {selectedGroups.map((macro) => (
+            <TestBlockFilterBar
+              value={testBlockFilter}
+              counts={testBlockFilterCounts}
+              onChange={setTestBlockFilter}
+            />
+            <Group gap="xs" justify="flex-end" className="testExpansionActions">
+              <Button
+                variant="light"
+                size="xs"
+                leftSection={<ChevronsDown size={15} />}
+                disabled={visibleTestCount === 0}
+                onClick={() => setVisibleTestsExpansion(true)}
+              >
+                Expandir todos
+              </Button>
+              <Button
+                variant="light"
+                size="xs"
+                leftSection={<ChevronsUp size={15} />}
+                disabled={visibleTestCount === 0}
+                onClick={() => setVisibleTestsExpansion(false)}
+              >
+                Recolher todos
+              </Button>
+            </Group>
+            {filteredPermissionBlockGroups.map(({ macro, entries }) => (
               <PermissionBlockGroup
                 key={macro.id}
                 macro={macro}
-                entries={macro.microPermissions.map((micro) => ({
-                  key: createPermissionKey(macro.id, micro.id),
-                  macro,
-                  micro,
-                }))}
+                entries={entries}
                 blocks={documentData.permissionBlocks}
                 expandedTests={expandedTests}
-                referenceOptions={referenceOptions}
                 onAddTest={addBlockTest}
+                onAddStandardTests={addStandardTests}
+                onDuplicateBlockStructure={duplicateBlockStructureToEmpty}
+                onDuplicateTest={duplicateBlockTest}
                 onTestExpansionChange={setTestExpansion}
                 onTestTitleChange={updateBlockTestTitle}
-                onTestModeChange={updateBlockTestMode}
-                onTestReferenceChange={updateTestIdemReference}
                 onTestRemove={removeBlockTest}
                 onTestMove={moveBlockTest}
                 onResultChange={updateTestResult}
@@ -617,10 +1473,480 @@ export default function App() {
                 <Text c="dimmed">Nenhuma macro com micro-permissão selecionada.</Text>
               </Paper>
             ) : null}
+            {permissionBlockEntries.length > 0 && filteredPermissionBlockGroups.length === 0 ? (
+              <Paper withBorder p="md" ta="center" className="softEmpty">
+                <Stack gap="xs" align="center">
+                  <Text c="dimmed">Nenhum bloco encontrado para este filtro.</Text>
+                  <Button
+                    variant="light"
+                    size="xs"
+                    onClick={() => setTestBlockFilter("all")}
+                  >
+                    Mostrar todos
+                  </Button>
+                </Stack>
+              </Paper>
+            ) : null}
           </Stack>
         </Section>
+
+          </Tabs.Panel>
+
+          <Tabs.Panel value="review" pt="md">
+            <ReviewPanel summary={reviewSummary} onIssueClick={handleReviewIssueClick} />
+          </Tabs.Panel>
+
+          <Tabs.Panel value="help" pt="md">
+            <FaqPanel />
+          </Tabs.Panel>
+        </Tabs>
+        ) : (
+          <TeaWorkspace
+            documentData={teaData}
+            activeTab={teaActiveTab}
+            reviewSummary={teaReviewSummary}
+            onTabChange={setTeaActiveTab}
+            onMetadataChange={updateTeaMetadata}
+            onOverviewChange={(overview) =>
+              updateTeaDocument((current) => ({ ...current, overview }))
+            }
+            onActivityIntroChange={(activityIntro) =>
+              updateTeaDocument((current) => ({ ...current, activityIntro }))
+            }
+            onActivityImagesChange={(updater) =>
+              updateTeaDocument((current) => ({
+                ...current,
+                activityImages: updater(current.activityImages),
+              }))
+            }
+            onAddActivity={addTeaActivity}
+            onActivityChange={updateTeaActivity}
+            onActivityRemove={removeTeaActivity}
+            onActivityItemsChange={updateTeaActivityItems}
+            onAddSubActivity={addTeaSubActivity}
+            onSubActivityChange={updateTeaSubActivity}
+            onSubActivityRemove={removeTeaSubActivity}
+            onSubActivityItemsChange={updateTeaSubActivityItems}
+            onReviewIssueClick={handleTeaReviewIssueClick}
+          />
+        )}
       </Stack>
     </Container>
+    <ImportPreviewModal
+      result={importPreview}
+      onClose={() => setImportPreview(null)}
+      onConfirm={() => {
+        void confirmImport();
+      }}
+    />
+    </>
+  );
+}
+
+function TeaWorkspace({
+  documentData,
+  activeTab,
+  reviewSummary,
+  onTabChange,
+  onMetadataChange,
+  onOverviewChange,
+  onActivityIntroChange,
+  onActivityImagesChange,
+  onAddActivity,
+  onActivityChange,
+  onActivityRemove,
+  onActivityItemsChange,
+  onAddSubActivity,
+  onSubActivityChange,
+  onSubActivityRemove,
+  onSubActivityItemsChange,
+  onReviewIssueClick,
+}: {
+  documentData: TeaDocument;
+  activeTab: TeaTab;
+  reviewSummary: TeaReviewSummary;
+  onTabChange: (tab: TeaTab) => void;
+  onMetadataChange: (field: keyof TeaDocument["metadata"], value: string) => void;
+  onOverviewChange: (value: string) => void;
+  onActivityIntroChange: (value: string) => void;
+  onActivityImagesChange: (updater: (images: EvidenceImage[]) => EvidenceImage[]) => void;
+  onAddActivity: () => void;
+  onActivityChange: (
+    activityId: string,
+    updater: (activity: TeaActivity) => TeaActivity,
+  ) => void;
+  onActivityRemove: (activityId: string) => void;
+  onActivityItemsChange: (activityId: string, value: string) => void;
+  onAddSubActivity: (activityId: string) => void;
+  onSubActivityChange: (
+    activityId: string,
+    subActivityId: string,
+    updater: (subActivity: TeaSubActivity) => TeaSubActivity,
+  ) => void;
+  onSubActivityRemove: (activityId: string, subActivityId: string) => void;
+  onSubActivityItemsChange: (activityId: string, subActivityId: string, value: string) => void;
+  onReviewIssueClick: (issue: TeaReviewIssue) => void;
+}) {
+  return (
+    <Tabs
+      value={activeTab}
+      onChange={(value) => {
+        if (value) {
+          onTabChange(value as TeaTab);
+        }
+      }}
+      className="workspaceTabs"
+    >
+      <Tabs.List>
+        <Tabs.Tab value="document" leftSection={<FileText size={16} />}>
+          Documento
+        </Tabs.Tab>
+        <Tabs.Tab value="activities" leftSection={<ListChecks size={16} />}>
+          Atividades
+        </Tabs.Tab>
+        <Tabs.Tab value="review" leftSection={<AlertCircle size={16} />}>
+          Revisão
+        </Tabs.Tab>
+      </Tabs.List>
+
+      <Tabs.Panel value="document" pt="md">
+        <Stack gap="md">
+          <Section title="Documento TEA" tone="document">
+            <Stack gap="sm">
+              <div className="documentFields">
+                <TextInput
+                  label="Ordem de Serviço"
+                  value={documentData.metadata.serviceOrder}
+                  placeholder="OS2171 - Login/Menu/Prestador/Documentos Vencidos"
+                  onChange={(event) =>
+                    onMetadataChange("serviceOrder", event.currentTarget.value)
+                  }
+                />
+                <TextInput
+                  label="Fase/Etapa"
+                  value={documentData.metadata.phase}
+                  placeholder="Etapa 5"
+                  onChange={(event) => onMetadataChange("phase", event.currentTarget.value)}
+                />
+                <TextInput
+                  label="Chamado"
+                  value={documentData.metadata.ticket}
+                  placeholder="Chamado 202504000396"
+                  onChange={(event) => onMetadataChange("ticket", event.currentTarget.value)}
+                />
+                <TextInput
+                  label="Assunto"
+                  value={documentData.metadata.subject}
+                  placeholder="Telas - Novo Layout"
+                  onChange={(event) => onMetadataChange("subject", event.currentTarget.value)}
+                />
+                <TextInput
+                  label="Data"
+                  type="date"
+                  value={documentData.metadata.date}
+                  onChange={(event) => onMetadataChange("date", event.currentTarget.value)}
+                />
+                <TextInput
+                  label="Elaborado por"
+                  value={documentData.metadata.author}
+                  onChange={(event) => onMetadataChange("author", event.currentTarget.value)}
+                />
+              </div>
+              <Textarea
+                label="1. Visão geral"
+                minRows={5}
+                autosize
+                styles={{ input: { resize: "vertical" } }}
+                value={documentData.overview}
+                onChange={(event) => onOverviewChange(event.currentTarget.value)}
+              />
+              <Textarea
+                label="Texto inicial das atividades"
+                minRows={2}
+                autosize
+                styles={{ input: { resize: "vertical" } }}
+                value={documentData.activityIntro}
+                onChange={(event) => onActivityIntroChange(event.currentTarget.value)}
+              />
+            </Stack>
+          </Section>
+
+          <Section title="Imagem geral" tone="steps">
+            <EvidenceUploader
+              title="Atividades realizadas"
+              tone="new"
+              images={documentData.activityImages}
+              onChange={onActivityImagesChange}
+            />
+          </Section>
+        </Stack>
+      </Tabs.Panel>
+
+      <Tabs.Panel value="activities" pt="md">
+        <Section
+          title="Atividades"
+          tone="blocks"
+          action={
+            <Button variant="light" leftSection={<Plus size={17} />} onClick={onAddActivity}>
+              Adicionar atividade
+            </Button>
+          }
+        >
+          <Stack gap="md">
+            {documentData.activities.map((activity, index) => (
+              <TeaActivityEditor
+                key={activity.id}
+                index={index}
+                activity={activity}
+                onChange={(updater) => onActivityChange(activity.id, updater)}
+                onRemove={() => onActivityRemove(activity.id)}
+                onItemsChange={(value) => onActivityItemsChange(activity.id, value)}
+                onAddSubActivity={() => onAddSubActivity(activity.id)}
+                onSubActivityChange={(subActivityId, updater) =>
+                  onSubActivityChange(activity.id, subActivityId, updater)
+                }
+                onSubActivityRemove={(subActivityId) =>
+                  onSubActivityRemove(activity.id, subActivityId)
+                }
+                onSubActivityItemsChange={(subActivityId, value) =>
+                  onSubActivityItemsChange(activity.id, subActivityId, value)
+                }
+              />
+            ))}
+
+            {documentData.activities.length === 0 ? (
+              <EmptyState actionLabel="Adicionar atividade" onAction={onAddActivity} />
+            ) : null}
+          </Stack>
+        </Section>
+      </Tabs.Panel>
+
+      <Tabs.Panel value="review" pt="md">
+        <TeaReviewPanel summary={reviewSummary} onIssueClick={onReviewIssueClick} />
+      </Tabs.Panel>
+    </Tabs>
+  );
+}
+
+function TeaActivityEditor({
+  index,
+  activity,
+  onChange,
+  onRemove,
+  onItemsChange,
+  onAddSubActivity,
+  onSubActivityChange,
+  onSubActivityRemove,
+  onSubActivityItemsChange,
+}: {
+  index: number;
+  activity: TeaActivity;
+  onChange: (updater: (activity: TeaActivity) => TeaActivity) => void;
+  onRemove: () => void;
+  onItemsChange: (value: string) => void;
+  onAddSubActivity: () => void;
+  onSubActivityChange: (
+    subActivityId: string,
+    updater: (subActivity: TeaSubActivity) => TeaSubActivity,
+  ) => void;
+  onSubActivityRemove: (subActivityId: string) => void;
+  onSubActivityItemsChange: (subActivityId: string, value: string) => void;
+}) {
+  return (
+    <Paper withBorder p="md" className="teaActivityCard">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center">
+          <Group gap="xs">
+            <Badge variant="outline" color="gray">
+              2.{index + 1}
+            </Badge>
+            <Text fw={800}>Atividade</Text>
+          </Group>
+          <Tooltip label="Remover atividade">
+            <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label="Remover atividade">
+              <Trash2 size={17} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+
+        <TextInput
+          label="Título"
+          value={activity.title}
+          placeholder="Seletor Situação do Prestador"
+          onChange={(event) =>
+            onChange((current) => ({ ...current, title: event.currentTarget.value }))
+          }
+        />
+        <Textarea
+          label="Descrição"
+          minRows={4}
+          autosize
+          styles={{ input: { resize: "vertical" } }}
+          value={activity.description}
+          onChange={(event) =>
+            onChange((current) => ({ ...current, description: event.currentTarget.value }))
+          }
+        />
+        <Textarea
+          label="Itens em lista"
+          minRows={2}
+          autosize
+          placeholder="Um item por linha"
+          value={activity.items.map((item) => item.text).join("\n")}
+          onChange={(event) => onItemsChange(event.currentTarget.value)}
+        />
+        <EvidenceUploader
+          title="Imagens da atividade"
+          tone="new"
+          images={activity.images}
+          onChange={(updater) =>
+            onChange((current) => ({ ...current, images: updater(current.images) }))
+          }
+        />
+
+        <Divider />
+
+        <Group justify="space-between" align="center">
+          <Text fw={700} size="sm">
+            Subtópicos
+          </Text>
+          <Button
+            variant="subtle"
+            size="xs"
+            leftSection={<Plus size={15} />}
+            onClick={onAddSubActivity}
+          >
+            Adicionar subtópico
+          </Button>
+        </Group>
+
+        <Stack gap="sm">
+          {activity.subActivities.map((subActivity, subIndex) => (
+            <TeaSubActivityEditor
+              key={subActivity.id}
+              activityIndex={index}
+              index={subIndex}
+              subActivity={subActivity}
+              onChange={(updater) => onSubActivityChange(subActivity.id, updater)}
+              onRemove={() => onSubActivityRemove(subActivity.id)}
+              onItemsChange={(value) => onSubActivityItemsChange(subActivity.id, value)}
+            />
+          ))}
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+
+function TeaSubActivityEditor({
+  activityIndex,
+  index,
+  subActivity,
+  onChange,
+  onRemove,
+  onItemsChange,
+}: {
+  activityIndex: number;
+  index: number;
+  subActivity: TeaSubActivity;
+  onChange: (updater: (subActivity: TeaSubActivity) => TeaSubActivity) => void;
+  onRemove: () => void;
+  onItemsChange: (value: string) => void;
+}) {
+  return (
+    <Paper withBorder p="sm" className="teaSubActivityCard">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center">
+          <Badge variant="outline" color="gray">
+            2.{activityIndex + 1}.{index + 1}
+          </Badge>
+          <Tooltip label="Remover subtópico">
+            <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label="Remover subtópico">
+              <Trash2 size={17} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+
+        <TextInput
+          label="Título"
+          value={subActivity.title}
+          placeholder="Botão de Anexo"
+          onChange={(event) =>
+            onChange((current) => ({ ...current, title: event.currentTarget.value }))
+          }
+        />
+        <Textarea
+          label="Descrição"
+          minRows={3}
+          autosize
+          styles={{ input: { resize: "vertical" } }}
+          value={subActivity.description}
+          onChange={(event) =>
+            onChange((current) => ({ ...current, description: event.currentTarget.value }))
+          }
+        />
+        <Textarea
+          label="Itens em lista"
+          minRows={2}
+          autosize
+          placeholder="Um item por linha"
+          value={subActivity.items.map((item) => item.text).join("\n")}
+          onChange={(event) => onItemsChange(event.currentTarget.value)}
+        />
+        <EvidenceUploader
+          title="Imagens do subtópico"
+          tone="legacy"
+          images={subActivity.images}
+          onChange={(updater) =>
+            onChange((current) => ({ ...current, images: updater(current.images) }))
+          }
+        />
+      </Stack>
+    </Paper>
+  );
+}
+
+function TeaReviewPanel({
+  summary,
+  onIssueClick,
+}: {
+  summary: TeaReviewSummary;
+  onIssueClick: (issue: TeaReviewIssue) => void;
+}) {
+  const totalIssues = summary.issues.length;
+
+  return (
+    <Section
+      title="Revisão"
+      tone="document"
+      action={
+        <Badge color={totalIssues > 0 ? "yellow" : "green"} variant="light">
+          {totalIssues > 0 ? "Pendências" : "Pronto"}
+        </Badge>
+      }
+    >
+      <Stack gap="md">
+        <div className="reviewMetrics">
+          <ReviewMetric label="Atividades" value={summary.activityCount} />
+          <ReviewMetric label="Imagens" value={summary.imageCount} />
+          <ReviewMetric label="Pendências" value={totalIssues} />
+        </div>
+
+        {summary.issues.length > 0 ? (
+          <ReviewIssueGroup
+            title="Pendências para revisar"
+            tone="warning"
+            issues={summary.issues}
+            onIssueClick={onIssueClick}
+          />
+        ) : (
+          <Group gap="xs" className="reviewOk">
+            <CheckCircle2 size={18} />
+            <Text fw={700}>Nenhuma pendência encontrada.</Text>
+          </Group>
+        )}
+      </Stack>
+    </Section>
   );
 }
 
@@ -650,6 +1976,58 @@ function Section({
       </Group>
       {children}
     </Card>
+  );
+}
+
+function TestBlockFilterBar({
+  value,
+  counts,
+  onChange,
+}: {
+  value: TestBlockFilter;
+  counts: Record<TestBlockFilter, number>;
+  onChange: (value: TestBlockFilter) => void;
+}) {
+  return (
+    <Paper withBorder p="sm" className="testBlockFilterBar">
+      <Stack gap="xs">
+        <Group justify="space-between" align="center" gap="sm">
+          <div>
+            <Text fw={750} size="sm">
+              Filtrar blocos por situação
+            </Text>
+            <Text c="dimmed" size="xs">
+              Reduza a lista para revisar só o que precisa de ação.
+            </Text>
+          </div>
+          <Badge variant="outline" color={value === "all" ? "gray" : "blue"}>
+            {counts[value]} bloco{counts[value] === 1 ? "" : "s"}
+          </Badge>
+        </Group>
+
+        <div className="testBlockFilters" role="tablist" aria-label="Filtros de blocos">
+          {testBlockFilterOrder.map((option) => {
+            const isActive = value === option;
+            const isEmpty = option !== "all" && counts[option] === 0;
+
+            return (
+              <button
+                key={option}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                className={`testBlockFilter ${isActive ? "testBlockFilter--active" : ""}`}
+                disabled={!isActive && isEmpty}
+                onClick={() => onChange(option)}
+              >
+                <span>{testBlockFilterLabels[option]}</span>
+                <strong>{counts[option]}</strong>
+              </button>
+            );
+          })}
+        </div>
+      </Stack>
+    </Paper>
   );
 }
 
@@ -780,12 +2158,12 @@ function PermissionBlockGroup({
   entries,
   blocks,
   expandedTests,
-  referenceOptions,
   onAddTest,
+  onAddStandardTests,
+  onDuplicateBlockStructure,
+  onDuplicateTest,
   onTestExpansionChange,
   onTestTitleChange,
-  onTestModeChange,
-  onTestReferenceChange,
   onTestRemove,
   onTestMove,
   onResultChange,
@@ -794,20 +2172,12 @@ function PermissionBlockGroup({
   entries: PermissionBlockEntry[];
   blocks: Record<string, PermissionBlock>;
   expandedTests: Record<string, boolean>;
-  referenceOptions: { value: string; label: string }[];
   onAddTest: (blockKey: string) => void;
+  onAddStandardTests: (blockKey: string) => void;
+  onDuplicateBlockStructure: (blockKey: string) => void;
+  onDuplicateTest: (blockKey: string, testId: string) => void;
   onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
   onTestTitleChange: (blockKey: string, testId: string, title: string) => void;
-  onTestModeChange: (
-    blockKey: string,
-    testId: string,
-    mode: PermissionTestMode,
-  ) => void;
-  onTestReferenceChange: (
-    blockKey: string,
-    testId: string,
-    referenceKey: string | null,
-  ) => void;
   onTestRemove: (blockKey: string, testId: string) => void;
   onTestMove: (blockKey: string, index: number, direction: -1 | 1) => void;
   onResultChange: (
@@ -840,18 +2210,14 @@ function PermissionBlockGroup({
               entry={entry}
               block={blocks[entry.key] ?? createEmptyBlock()}
               expandedTests={expandedTests}
-              referenceOptions={referenceOptions}
               onAddTest={() => onAddTest(entry.key)}
+              onAddStandardTests={() => onAddStandardTests(entry.key)}
+              onDuplicateBlockStructure={() => onDuplicateBlockStructure(entry.key)}
               onTestExpansionChange={onTestExpansionChange}
               onTestTitleChange={(testId, title) =>
                 onTestTitleChange(entry.key, testId, title)
               }
-              onTestModeChange={(testId, mode) =>
-                onTestModeChange(entry.key, testId, mode)
-              }
-              onTestReferenceChange={(testId, referenceKey) =>
-                onTestReferenceChange(entry.key, testId, referenceKey)
-              }
+              onDuplicateTest={(testId) => onDuplicateTest(entry.key, testId)}
               onTestRemove={(testId) => onTestRemove(entry.key, testId)}
               onTestMove={(index, direction) => onTestMove(entry.key, index, direction)}
               onResultChange={(testId, updater) =>
@@ -869,12 +2235,12 @@ function PermissionBlockEditor({
   entry,
   block,
   expandedTests,
-  referenceOptions,
   onAddTest,
+  onAddStandardTests,
+  onDuplicateBlockStructure,
   onTestExpansionChange,
   onTestTitleChange,
-  onTestModeChange,
-  onTestReferenceChange,
+  onDuplicateTest,
   onTestRemove,
   onTestMove,
   onResultChange,
@@ -882,12 +2248,12 @@ function PermissionBlockEditor({
   entry: PermissionBlockEntry;
   block: PermissionBlock;
   expandedTests: Record<string, boolean>;
-  referenceOptions: { value: string; label: string }[];
   onAddTest: () => void;
+  onAddStandardTests: () => void;
+  onDuplicateBlockStructure: () => void;
   onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
   onTestTitleChange: (testId: string, title: string) => void;
-  onTestModeChange: (testId: string, mode: PermissionTestMode) => void;
-  onTestReferenceChange: (testId: string, referenceKey: string | null) => void;
+  onDuplicateTest: (testId: string) => void;
   onTestRemove: (testId: string) => void;
   onTestMove: (index: number, direction: -1 | 1) => void;
   onResultChange: (testId: string, updater: (result: TestResult) => TestResult) => void;
@@ -908,14 +2274,33 @@ function PermissionBlockEditor({
             </Text>
           </div>
 
-          <Button
-            variant="subtle"
-            size="xs"
-            leftSection={<Plus size={15} />}
-            onClick={onAddTest}
-          >
-            Adicionar teste
-          </Button>
+          <Group gap="xs">
+            <Button
+              variant="subtle"
+              size="xs"
+              leftSection={<ListChecks size={15} />}
+              onClick={onAddStandardTests}
+            >
+              Adicionar pacote padrão
+            </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              leftSection={<Copy size={15} />}
+              disabled={block.tests.length === 0}
+              onClick={onDuplicateBlockStructure}
+            >
+              Copiar para vazios
+            </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              leftSection={<Plus size={15} />}
+              onClick={onAddTest}
+            >
+              Adicionar teste
+            </Button>
+          </Group>
         </Group>
 
         <Stack gap="sm">
@@ -927,9 +2312,6 @@ function PermissionBlockEditor({
                 key={test.id}
                 index={index}
                 test={test}
-                referenceOptions={referenceOptions.filter(
-                  (option) => option.value !== selfReferenceKey,
-                )}
                 selfReferenceKey={selfReferenceKey}
                 isExpanded={expandedTests[selfReferenceKey] ?? false}
                 canMoveUp={index > 0}
@@ -938,12 +2320,9 @@ function PermissionBlockEditor({
                   onTestExpansionChange(selfReferenceKey, expanded)
                 }
                 onTitleChange={(title) => onTestTitleChange(test.id, title)}
-                onModeChange={(mode) => onTestModeChange(test.id, mode)}
-                onReferenceChange={(referenceKey) =>
-                  onTestReferenceChange(test.id, referenceKey)
-                }
                 onMoveUp={() => onTestMove(index, -1)}
                 onMoveDown={() => onTestMove(index, 1)}
+                onDuplicate={() => onDuplicateTest(test.id)}
                 onRemove={() => onTestRemove(test.id)}
                 onResultChange={(updater) => onResultChange(test.id, updater)}
               />
@@ -962,47 +2341,49 @@ function PermissionBlockEditor({
 function BlockTestEditor({
   index,
   test,
-  referenceOptions,
   selfReferenceKey,
   isExpanded,
   canMoveUp,
   canMoveDown,
   onExpandedChange,
   onTitleChange,
-  onModeChange,
-  onReferenceChange,
   onMoveUp,
   onMoveDown,
+  onDuplicate,
   onRemove,
   onResultChange,
 }: {
   index: number;
   test: PermissionBlockTest;
-  referenceOptions: { value: string; label: string }[];
   selfReferenceKey: string;
   isExpanded: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onTitleChange: (title: string) => void;
-  onModeChange: (mode: PermissionTestMode) => void;
-  onReferenceChange: (referenceKey: string | null) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  onDuplicate: () => void;
   onRemove: () => void;
   onResultChange: (updater: (result: TestResult) => TestResult) => void;
 }) {
-  const hasValidReference = isValidTestReference(
-    selfReferenceKey,
-    test.idemReferenceKey,
-    referenceOptions,
-  );
   const selectedCheckCount = checkOrder.filter((key) => test.result.checks[key]).length;
   const evidenceCount = test.result.legacyImages.length + test.result.newImages.length;
   const testPanelId = `test-details-${toDomId(selfReferenceKey)}`;
 
+  function toggleCheck(key: CheckKey): void {
+    onResultChange((current) => ({
+      ...current,
+      checks: {
+        ...current.checks,
+        [key]: !current.checks[key],
+      },
+    }));
+  }
+
   return (
     <Paper
+      id={`test-card-${toDomId(selfReferenceKey)}`}
       withBorder
       p="md"
       className={`testCard ${isExpanded ? "testCard--expanded" : "testCard--collapsed"}`}
@@ -1036,30 +2417,24 @@ function BlockTestEditor({
             placeholder="Criação, edição, consulta..."
             onChange={(event) => onTitleChange(event.currentTarget.value)}
           />
-          <Stack gap={4} className="testModeControl">
-            <Text size="xs" c="dimmed" fw={700}>
-              Modo do teste
-            </Text>
-            <SegmentedControl
-              size="xs"
-              data={testModeOptions}
-              value={test.mode}
-              onChange={(value) => onModeChange(value as PermissionTestMode)}
-            />
-          </Stack>
           <Group gap={4} wrap="wrap" className="testActions">
             <Badge color="gray" variant="outline" className="testMetaBadge">
-              {test.mode === "idem"
-                ? hasValidReference
-                  ? "IDEM ok"
-                  : "IDEM pendente"
-                : `${selectedCheckCount}/${checkOrder.length} checks`}
+              {selectedCheckCount}/{checkOrder.length} checks
             </Badge>
-            {test.mode === "test" && evidenceCount > 0 ? (
+            {evidenceCount > 0 ? (
               <Badge color="gray" variant="outline" className="testMetaBadge">
                 {evidenceCount} img
               </Badge>
             ) : null}
+            <Tooltip label="Duplicar teste">
+              <ActionIcon
+                variant="subtle"
+                onClick={onDuplicate}
+                aria-label="Duplicar teste"
+              >
+                <Copy size={17} />
+              </ActionIcon>
+            </Tooltip>
             <Tooltip label="Mover para cima">
               <ActionIcon
                 variant="subtle"
@@ -1093,29 +2468,33 @@ function BlockTestEditor({
           </Group>
         </div>
 
-        <Collapse in={isExpanded}>
+        <Group gap={6} className="quickChecks">
+          {checkOrder.map((key) => (
+            <Tooltip key={key} label={checkLabels[key]}>
+              <button
+                type="button"
+                className={`quickCheck ${test.result.checks[key] ? "quickCheck--active" : ""}`}
+                onClick={() => toggleCheck(key)}
+              >
+                {quickCheckLabels[key]}
+              </button>
+            </Tooltip>
+          ))}
+        </Group>
+
+        {isExpanded ? (
+        <Collapse in transitionDuration={0}>
           <div id={testPanelId} className="testBody">
-            {test.mode === "idem" ? (
-              <Select
-                label="IDEM ao teste"
-                placeholder="Selecione macro, micro e teste de referência"
-                data={referenceOptions}
-                value={hasValidReference ? test.idemReferenceKey ?? null : null}
-                onChange={onReferenceChange}
-                disabled={referenceOptions.length === 0}
-                error={!hasValidReference ? "Selecione um teste de referência" : undefined}
-              />
-            ) : (
-              <TestResultEditor result={test.result} onChange={onResultChange} />
-            )}
+            <TestResultEditor result={test.result} onChange={onResultChange} />
           </div>
         </Collapse>
+        ) : null}
       </Stack>
     </Paper>
   );
 }
 
-function TestResultEditor({
+const TestResultEditor = memo(function TestResultEditor({
   result,
   onChange,
 }: {
@@ -1158,7 +2537,7 @@ function TestResultEditor({
       <Textarea
         label="Observações"
         minRows={4}
-        autosize
+        styles={{ input: { resize: "vertical" } }}
         value={result.observations}
         onChange={(event) => {
           const value = event.currentTarget.value;
@@ -1181,9 +2560,9 @@ function TestResultEditor({
       />
     </Stack>
   );
-}
+});
 
-function EvidenceUploader({
+const EvidenceUploader = memo(function EvidenceUploader({
   title,
   tone,
   images,
@@ -1205,6 +2584,11 @@ function EvidenceUploader({
     await addFiles(files);
   }
 
+  async function handleDrop(event: DragEvent<HTMLDivElement>): Promise<void> {
+    event.preventDefault();
+    await addFiles(Array.from(event.dataTransfer.files));
+  }
+
   async function addFiles(files: File[] | File | null): Promise<void> {
     const fileList = Array.isArray(files) ? files : files ? [files] : [];
     if (!fileList.length) {
@@ -1215,16 +2599,25 @@ function EvidenceUploader({
       fileList
         .filter(isImageFile)
         .map(async (file) => {
-          const dataUrl = await fileToDataUrl(file);
-          const size = await readImageSize(dataUrl);
+          const optimized = await optimizeImageFile(file);
+          const id = createId();
+
+          try {
+            await saveEvidenceImageData(id, optimized.dataUrl);
+          } catch {
+            window.alert("Nao foi possivel salvar a imagem no rascunho do navegador.");
+          }
 
           return {
-            id: createId(),
+            id,
             label: "",
             name: file.name,
-            dataUrl,
-            width: size.width,
-            height: size.height,
+            dataUrl: optimized.dataUrl,
+            width: optimized.width,
+            height: optimized.height,
+            originalBytes: optimized.originalBytes,
+            savedBytes: optimized.savedBytes,
+            optimized: optimized.optimized,
           };
         }),
     );
@@ -1239,6 +2632,7 @@ function EvidenceUploader({
   }
 
   function removeImage(imageId: string): void {
+    void deleteEvidenceImageData(imageId);
     onChange((current) => current.filter((image) => image.id !== imageId));
   }
 
@@ -1250,14 +2644,18 @@ function EvidenceUploader({
       onPaste={(event) => {
         void handlePaste(event);
       }}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        void handleDrop(event);
+      }}
       tabIndex={0}
-      aria-label={`${title}: cole uma imagem copiada`}
+      aria-label={`${title}: cole ou arraste uma imagem`}
     >
       <Stack gap="sm">
         <Group justify="space-between">
           <Group gap="xs">
             <Text fw={700}>{title}</Text>
-            <Tooltip label="Também aceita imagem colada">
+            <Tooltip label="Aceita imagem colada ou arrastada">
               <ClipboardPaste size={16} className="pasteIndicator" aria-hidden="true" />
             </Tooltip>
           </Group>
@@ -1281,7 +2679,11 @@ function EvidenceUploader({
             {images.map((image) => (
               <Paper withBorder p="xs" key={image.id}>
                 <Group align="center" wrap="nowrap">
-                  <img className="imagePreview" src={image.dataUrl} alt={image.name} />
+                  {image.dataUrl ? (
+                    <img className="imagePreview" src={image.dataUrl} alt={image.name} />
+                  ) : (
+                    <div className="imagePreview imagePreview--missing">Sem preview</div>
+                  )}
                   <Stack gap={4} style={{ flex: 1, minWidth: 0 }}>
                     <TextInput
                       value={image.label}
@@ -1292,6 +2694,8 @@ function EvidenceUploader({
                     />
                     <Text size="xs" c="dimmed" truncate>
                       {image.name}
+                      {image.savedBytes ? ` · ${formatBytes(image.savedBytes)}` : ""}
+                      {image.optimized ? " · otimizada" : ""}
                     </Text>
                   </Stack>
                   <Tooltip label="Remover imagem">
@@ -1316,7 +2720,7 @@ function EvidenceUploader({
       </Stack>
     </Paper>
   );
-}
+});
 
 function EmptyState({
   actionLabel,
@@ -1335,6 +2739,568 @@ function EmptyState({
       </Stack>
     </Paper>
   );
+}
+
+function ImportPreviewModal({
+  result,
+  onClose,
+  onConfirm,
+}: {
+  result: DocxImportResult | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      opened={result !== null}
+      onClose={onClose}
+      title="Prévia da importação"
+      size="lg"
+      centered
+    >
+      {result ? (
+        <Stack gap="md">
+          <div>
+            <Text fw={800}>{result.summary.screen || result.sourceName}</Text>
+            <Text size="sm" c="dimmed">
+              {result.sourceName}
+            </Text>
+          </div>
+
+          <div className="importMetrics">
+            <ReviewMetric label="Passos" value={result.summary.accessSteps} />
+            <ReviewMetric label="Permissões" value={result.summary.selectedPermissions} />
+            <ReviewMetric label="Testes" value={result.summary.tests} />
+            <ReviewMetric label="Imagens" value={result.summary.images} />
+          </div>
+
+          {result.warnings.length > 0 ? (
+            <div className="importWarnings">
+              <Group gap="xs" mb={6}>
+                <AlertCircle size={17} />
+                <Text fw={700}>Avisos</Text>
+              </Group>
+              <Stack gap={4}>
+                {result.warnings.map((warning) => (
+                  <Text key={warning} size="sm" c="dimmed">
+                    {warning}
+                  </Text>
+                ))}
+              </Stack>
+            </div>
+          ) : null}
+
+          <Group justify="flex-end" gap="xs">
+            <Button variant="light" color="gray" onClick={onClose}>
+              Cancelar
+            </Button>
+            <Button leftSection={<FileUp size={17} />} onClick={onConfirm}>
+              Substituir rascunho
+            </Button>
+          </Group>
+        </Stack>
+      ) : null}
+    </Modal>
+  );
+}
+
+function FaqPanel() {
+  return (
+    <Stack gap="md">
+      <div className="helpIntro">
+        <div className="helpIntroIcon" aria-hidden="true">
+          <CircleHelp size={22} />
+        </div>
+        <div>
+          <Title order={2} size="h4">
+            FAQ do Gerador de OT
+          </Title>
+          <Text c="dimmed" size="sm">
+            Guia rápido para lembrar o que cada ação faz durante o preenchimento da OT.
+          </Text>
+        </div>
+      </div>
+
+      <Section title="Como usar" tone="document">
+        <div className="faqSectionList">
+          {faqSections.map((section) => (
+            <div className="faqSection" key={section.title}>
+              <Text fw={800} className="faqSectionTitle">
+                {section.title}
+              </Text>
+              <div className="faqItemList">
+                {section.items.map((item) => (
+                  <div className="faqItem" key={item.title}>
+                    <div>
+                      <Text fw={750}>{item.title}</Text>
+                      <Text size="sm" c="dimmed">
+                        {item.description}
+                      </Text>
+                    </div>
+                    {item.example ? <pre className="faqExample">{item.example}</pre> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+    </Stack>
+  );
+}
+
+function ReviewPanel({
+  summary,
+  onIssueClick,
+}: {
+  summary: ReviewSummary;
+  onIssueClick: (issue: ReviewIssue) => void;
+}) {
+  const totalIssues = summary.issues.length;
+
+  return (
+    <Section
+      title="Revisão"
+      tone="document"
+      action={
+        <Badge
+          color={totalIssues > 0 ? "yellow" : "green"}
+          variant="light"
+        >
+          {totalIssues > 0 ? "Pendências" : "Pronto"}
+        </Badge>
+      }
+    >
+      <Stack gap="md">
+        <div className="reviewMetrics">
+          <ReviewMetric label="Permissões" value={summary.selectedPermissions} />
+          <ReviewMetric label="Testes" value={summary.testCount} />
+          <ReviewMetric label="Imagens" value={summary.imageCount} />
+          <ReviewMetric label="Pendências" value={totalIssues} />
+        </div>
+
+        <div className="reviewIssues">
+          {summary.issues.length > 0 ? (
+            <ReviewIssueGroup
+              title="Pendências para revisar"
+              tone="warning"
+              issues={summary.issues}
+              onIssueClick={onIssueClick}
+            />
+          ) : null}
+          {totalIssues === 0 ? (
+            <Group gap="xs" className="reviewOk">
+              <CheckCircle2 size={18} />
+              <Text fw={700}>Nenhuma pendência encontrada.</Text>
+            </Group>
+          ) : null}
+        </div>
+      </Stack>
+    </Section>
+  );
+}
+
+function ReviewMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="reviewMetric">
+      <Text size="xs" c="dimmed" fw={700} tt="uppercase">
+        {label}
+      </Text>
+      <Text size="xl" fw={800}>
+        {value}
+      </Text>
+    </div>
+  );
+}
+
+function ReviewIssueGroup<TIssue extends { id: string; label: string; detail: string }>({
+  title,
+  tone,
+  issues,
+  onIssueClick,
+}: {
+  title: string;
+  tone: "warning";
+  issues: TIssue[];
+  onIssueClick: (issue: TIssue) => void;
+}) {
+  return (
+    <div className={`reviewIssueGroup reviewIssueGroup--${tone}`}>
+      <Group gap="xs" mb={6}>
+        <AlertCircle size={17} />
+        <Text fw={700}>{title}</Text>
+      </Group>
+      <Stack gap={4}>
+        {issues.map((issue) => (
+          <button
+            key={issue.id}
+            type="button"
+            className="reviewIssueButton"
+            onClick={() => onIssueClick(issue)}
+          >
+            <Text size="sm" fw={700}>
+              {issue.label}
+            </Text>
+            <Text size="xs" c="dimmed">
+              {issue.detail}
+            </Text>
+          </button>
+        ))}
+      </Stack>
+    </div>
+  );
+}
+
+function buildTestBlockFilterCounts(
+  entries: PermissionBlockEntry[],
+  blocks: Record<string, PermissionBlock>,
+): Record<TestBlockFilter, number> {
+  const counts: Record<TestBlockFilter, number> = {
+    all: entries.length,
+    withoutTests: 0,
+    withoutImages: 0,
+    withPending: 0,
+    withProblem: 0,
+  };
+
+  entries.forEach((entry) => {
+    const block = blocks[entry.key] ?? createEmptyBlock();
+
+    testBlockFilterOrder.forEach((filter) => {
+      if (filter !== "all" && testBlockMatchesFilter(block, filter)) {
+        counts[filter] += 1;
+      }
+    });
+  });
+
+  return counts;
+}
+
+function testBlockMatchesFilter(block: PermissionBlock, filter: TestBlockFilter): boolean {
+  const stats = getTestBlockStats(block);
+
+  if (filter === "all") {
+    return true;
+  }
+
+  if (filter === "withoutTests") {
+    return stats.testCount === 0;
+  }
+
+  if (filter === "withoutImages") {
+    return stats.testCount > 0 && stats.imageCount === 0;
+  }
+
+  if (filter === "withPending") {
+    return stats.hasPending;
+  }
+
+  return stats.hasProblem;
+}
+
+function getTestBlockStats(block: PermissionBlock) {
+  return block.tests.reduce(
+    (stats, test) => {
+      const imageCount = test.result.legacyImages.length + test.result.newImages.length;
+      const hasProblem = problemCheckKeys.some((key) => test.result.checks[key]);
+
+      return {
+        testCount: stats.testCount + 1,
+        imageCount: stats.imageCount + imageCount,
+        hasPending: stats.hasPending || !test.title.trim(),
+        hasProblem: stats.hasProblem || hasProblem,
+      };
+    },
+    {
+      testCount: 0,
+      imageCount: 0,
+      hasPending: false,
+      hasProblem: false,
+    },
+  );
+}
+
+function buildReviewSummary(
+  documentData: OtDocument,
+  entries: PermissionBlockEntry[],
+): ReviewSummary {
+  const summary: ReviewSummary = {
+    selectedPermissions: entries.length,
+    testCount: 0,
+    imageCount: 0,
+    issues: [],
+  };
+
+  if (!documentData.metadata.screen.trim()) {
+    summary.issues.push({
+      id: "missing-screen",
+      label: "Tela sem nome",
+      detail: "Preencha o campo Tela antes de exportar.",
+      tab: "document",
+    });
+  }
+
+  if (!documentData.objective.trim()) {
+    summary.issues.push({
+      id: "missing-objective",
+      label: "Objetivo vazio",
+      detail: "Preencha o objetivo do documento.",
+      tab: "document",
+    });
+  }
+
+  if (documentData.accessSteps.filter((step) => step.text.trim()).length === 0) {
+    summary.issues.push({
+      id: "missing-steps",
+      label: "Sem passo a passo",
+      detail: "Inclua ao menos uma etapa de acesso.",
+      tab: "document",
+    });
+  }
+
+  if (entries.length === 0) {
+    summary.issues.push({
+      id: "missing-permissions",
+      label: "Sem permissões selecionadas",
+      detail: "Selecione macro e micro-permissões para gerar testes.",
+      tab: "permissions",
+    });
+  }
+
+  entries.forEach((entry) => {
+    const block = documentData.permissionBlocks[entry.key] ?? createEmptyBlock();
+
+    block.tests.forEach((test, index) => {
+      const testLabel = `${formatPermission(entry.macro)} / ${formatPermission(entry.micro)} / ${
+        test.title.trim() || `Teste ${index + 1}`
+      }`;
+
+      summary.testCount += 1;
+      summary.imageCount += test.result.legacyImages.length + test.result.newImages.length;
+
+      if (!test.title.trim()) {
+        const referenceKey = createTestReferenceKey(entry.key, test.id);
+        summary.issues.push({
+          id: `unnamed-${referenceKey}`,
+          label: "Teste sem nome",
+          detail: testLabel,
+          tab: "tests",
+          targetId: `test-card-${toDomId(referenceKey)}`,
+          blockKey: entry.key,
+          testId: test.id,
+        });
+      }
+    });
+  });
+
+  return summary;
+}
+
+function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
+  const summary: TeaReviewSummary = {
+    activityCount: documentData.activities.length,
+    imageCount:
+      documentData.activityImages.length +
+      documentData.activities.reduce(
+        (total, activity) =>
+          total +
+          activity.images.length +
+          activity.subActivities.reduce(
+            (subTotal, subActivity) => subTotal + subActivity.images.length,
+            0,
+          ),
+        0,
+      ),
+    issues: [],
+  };
+
+  if (!documentData.metadata.serviceOrder.trim()) {
+    summary.issues.push({
+      id: "missing-service-order",
+      label: "Ordem de serviço vazia",
+      detail: "Preencha a ordem de serviço do TEA.",
+      tab: "document",
+    });
+  }
+
+  if (!documentData.metadata.subject.trim()) {
+    summary.issues.push({
+      id: "missing-subject",
+      label: "Assunto vazio",
+      detail: "Preencha o assunto usado no cabeçalho e nome do arquivo.",
+      tab: "document",
+    });
+  }
+
+  if (!documentData.overview.trim()) {
+    summary.issues.push({
+      id: "missing-overview",
+      label: "Visão geral vazia",
+      detail: "Preencha a seção 1 do documento.",
+      tab: "document",
+    });
+  }
+
+  if (documentData.activities.length === 0) {
+    summary.issues.push({
+      id: "missing-activities",
+      label: "Sem atividades",
+      detail: "Adicione ao menos uma atividade realizada.",
+      tab: "activities",
+    });
+  }
+
+  documentData.activities.forEach((activity, index) => {
+    if (!activity.title.trim()) {
+      summary.issues.push({
+        id: `activity-title-${activity.id}`,
+        label: "Atividade sem título",
+        detail: `Atividade 2.${index + 1}`,
+        tab: "activities",
+      });
+    }
+  });
+
+  return summary;
+}
+
+function createBlockTest(id: string, title = ""): PermissionBlockTest {
+  return {
+    id,
+    title,
+    result: createEmptyTestResult(),
+  };
+}
+
+function formatPermissionBulk(groups: PermissionGroup[]): string {
+  return groups
+    .map((macro) => {
+      const macroLine = formatPermissionBulkLine(macro);
+      const microLines = macro.microPermissions.map(
+        (micro) => `  ${formatPermissionBulkLine(micro)}`,
+      );
+
+      return [macroLine, ...microLines].join("\n");
+    })
+    .join("\n");
+}
+
+function formatPermissionBulkLine(permission: PermissionItem): string {
+  return [permission.code, permission.label].filter(Boolean).join(" - ");
+}
+
+function parsePermissionBulk(value: string): PermissionGroup[] {
+  const groups: PermissionGroup[] = [];
+  let currentMacro: PermissionGroup | undefined;
+
+  value.split(/\r?\n/).forEach((line) => {
+    if (!line.trim()) {
+      return;
+    }
+
+    const permission = parsePermissionLine(line);
+    const isMicro = /^\s+/.test(line) || line.trim().startsWith("-");
+
+    if (!isMicro) {
+      currentMacro = {
+        id: "",
+        code: permission.code,
+        label: permission.label,
+        selected: true,
+        microPermissions: [],
+      };
+      groups.push(currentMacro);
+      return;
+    }
+
+    if (!currentMacro) {
+      return;
+    }
+
+    currentMacro.microPermissions.push({
+      id: "",
+      code: permission.code,
+      label: permission.label,
+      selected: true,
+    });
+  });
+
+  return groups.filter((group) => group.code && group.microPermissions.length > 0);
+}
+
+function parsePermissionLine(line: string): Pick<PermissionItem, "code" | "label"> {
+  const cleaned = line.trim().replace(/^-\s*/, "");
+  const parenthesized = cleaned.match(/^([A-Za-z0-9_-]+)\s*\(([^)]+)\)$/);
+
+  if (parenthesized) {
+    return {
+      code: parenthesized[1].toUpperCase(),
+      label: parenthesized[2].trim(),
+    };
+  }
+
+  const [code = "", ...labelParts] = cleaned.split(/\s+-\s+|:\s+/);
+
+  return {
+    code: code.trim().toUpperCase(),
+    label: labelParts.join(" - ").trim(),
+  };
+}
+
+function splitBulkLines(value: string): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value.replace(/\r\n/g, "\n").split("\n").map((line) => line.trim());
+}
+
+function teaItemsFromBulk(value: string): string[] {
+  return splitBulkLines(value).filter(Boolean);
+}
+
+function blocksByPermissionCode(documentData: OtDocument): Map<string, PermissionBlock> {
+  const blocks = new Map<string, PermissionBlock>();
+
+  documentData.permissionGroups.forEach((macro) => {
+    macro.microPermissions.forEach((micro) => {
+      const block = documentData.permissionBlocks[createPermissionKey(macro.id, micro.id)];
+      if (block) {
+        blocks.set(permissionCodeKey(macro.code, micro.code), block);
+      }
+    });
+  });
+
+  return blocks;
+}
+
+function permissionCodeKey(macroCode: string, microCode: string): string {
+  return `${normalizeTextKey(macroCode)}:${normalizeTextKey(microCode)}`;
+}
+
+function normalizeTextKey(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function draftStatusColor(status: DraftStatus): "green" | "yellow" | "blue" | "red" {
+  if (status === "Rascunho grande demais") {
+    return "red";
+  }
+
+  if (status === "Salvando...") {
+    return "blue";
+  }
+
+  if (status === "Alterações pendentes") {
+    return "yellow";
+  }
+
+  return "green";
 }
 
 function selectedPermissionGroups(groups: PermissionGroup[]): PermissionGroup[] {
@@ -1366,18 +3332,6 @@ function createEmptyBlock(): PermissionBlock {
   return { tests: [] };
 }
 
-function isValidTestReference(
-  selfReferenceKey: string,
-  referenceKey: string | undefined,
-  referenceOptions: { value: string; label: string }[],
-): boolean {
-  return (
-    !!referenceKey &&
-    referenceKey !== selfReferenceKey &&
-    referenceOptions.some((option) => option.value === referenceKey)
-  );
-}
-
 function createTestReferenceKey(blockKey: string, testId: string): string {
   return `${blockKey}::${testId}`;
 }
@@ -1395,19 +3349,7 @@ function removePermissionBlocks(
   return Object.fromEntries(
     Object.entries(blocks)
       .filter(([key]) => !removedKeys.has(key))
-      .map(([key, block]) => [
-        key,
-        {
-          ...block,
-          tests: block.tests.map((test) => {
-            const pointsToRemovedBlock = Array.from(removedKeys).some((removedKey) =>
-              test.idemReferenceKey?.startsWith(`${removedKey}::`),
-            );
-
-            return pointsToRemovedBlock ? { ...test, idemReferenceKey: undefined } : test;
-          }),
-        },
-      ]),
+      .map(([key, block]) => [key, block]),
   );
 }
 
@@ -1415,22 +3357,16 @@ function createId(): string {
   return window.crypto.randomUUID();
 }
 
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
 
-function readImageSize(dataUrl: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 560, height: 320 });
-    image.src = dataUrl;
-  });
+  if (bytes < 1024 * 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function getPastedImageFiles(clipboardData: DataTransfer): File[] {

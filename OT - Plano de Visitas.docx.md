@@ -50,7 +50,7 @@ AV
 
 ## **Tipo de usuário:** AO (Administrador Geral)  ***MICRO-PERMISSÃO***
 
-## **Tipo de permissão:** SC (Somente Consulta)  IDEM  ***MACRO-PERMISSÃO***
+## **Tipo de permissão:** SC (Somente Consulta)  ***MACRO-PERMISSÃO***
 
 ## **Tipo de usuário:** AO (Administrador Geral)  ***MICRO-PERMISSÃO***
 

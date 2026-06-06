@@ -16,6 +16,8 @@ import {
   WidthType,
 } from "docx";
 import { checkLabels, checkOrder, createPermissionKey } from "./defaultDocument";
+import { hydrateDocumentImages, hydrateTeaDocumentImages } from "./imageStorage";
+import { optimizeImageDataUrl } from "./imageOptimizer";
 import type {
   EvidenceImage,
   OtDocument,
@@ -23,8 +25,13 @@ import type {
   PermissionBlockTest,
   PermissionGroup,
   PermissionItem,
+  TeaActivity,
+  TeaDocument,
+  TeaSubActivity,
   TestResult,
 } from "./types";
+
+type ExportableEvidenceImage = EvidenceImage & { dataUrl: string };
 
 const PAGE_WIDTH_TWIPS = 12240;
 const PAGE_HEIGHT_TWIPS = 15840;
@@ -36,6 +43,8 @@ const PAGE_MARGIN = {
 };
 const PAGE_CONTENT_WIDTH_TWIPS =
   PAGE_WIDTH_TWIPS - PAGE_MARGIN.left - PAGE_MARGIN.right;
+const TEA_HEADER_TABLE_WIDTH_TWIPS = 8640;
+const TEA_HEADER_COLUMN_WIDTHS = [2175, 6465];
 
 const COLORS = {
   title: "111827",
@@ -51,6 +60,8 @@ const COLORS = {
 };
 
 export async function exportOtDocument(documentData: OtDocument): Promise<void> {
+  const hydratedDocument = await hydrateDocumentImages(documentData);
+  const exportDocument = await optimizeOtDocumentImages(hydratedDocument);
   const doc = new Document({
     styles: {
       default: {
@@ -93,18 +104,349 @@ export async function exportOtDocument(documentData: OtDocument): Promise<void> 
             margin: PAGE_MARGIN,
           },
         },
-        children: buildDocumentChildren(documentData),
+        children: buildDocumentChildren(exportDocument),
       },
     ],
   });
 
+  await downloadDocument(doc, createFileName(exportDocument));
+}
+
+export async function exportTeaDocument(documentData: TeaDocument): Promise<void> {
+  const hydratedDocument = await hydrateTeaDocumentImages(documentData);
+  const exportDocument = await optimizeTeaDocumentImages(hydratedDocument);
+  const doc = new Document({
+    styles: {
+      default: {
+        document: {
+          run: {
+            font: "Arial",
+            size: 22,
+          },
+          paragraph: {
+            spacing: { after: 200, line: 276 },
+          },
+        },
+      },
+      paragraphStyles: [
+        {
+          id: "Title",
+          name: "Title",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: {
+            bold: true,
+            size: 36,
+            font: "Calibri",
+          },
+          paragraph: {
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 200 },
+          },
+        },
+        {
+          id: "Heading1",
+          name: "Heading 1",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: {
+            bold: true,
+            italics: true,
+            size: 28,
+            font: "Calibri",
+          },
+          paragraph: {
+            spacing: { before: 260, after: 120 },
+          },
+        },
+        {
+          id: "Heading2",
+          name: "Heading 2",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: {
+            bold: true,
+            size: 26,
+            font: "Calibri",
+          },
+          paragraph: {
+            spacing: { before: 220, after: 100 },
+          },
+        },
+      ],
+    },
+    sections: [
+      {
+        properties: {
+          page: {
+            size: {
+              width: PAGE_WIDTH_TWIPS,
+              height: PAGE_HEIGHT_TWIPS,
+            },
+            margin: PAGE_MARGIN,
+          },
+        },
+        children: buildTeaDocumentChildren(exportDocument),
+      },
+    ],
+  });
+
+  await downloadDocument(doc, createTeaFileName(exportDocument));
+}
+
+async function downloadDocument(doc: Document, fileName: string): Promise<void> {
   const blob = await Packer.toBlob(doc);
   const url = URL.createObjectURL(blob);
   const anchor = window.document.createElement("a");
   anchor.href = url;
-  anchor.download = createFileName(documentData);
+  anchor.download = fileName;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+async function optimizeOtDocumentImages(documentData: OtDocument): Promise<OtDocument> {
+  return {
+    ...documentData,
+    permissionBlocks: Object.fromEntries(
+      await Promise.all(
+        Object.entries(documentData.permissionBlocks).map(async ([blockKey, block]) => [
+          blockKey,
+          {
+            ...block,
+            tests: await Promise.all(
+              block.tests.map(async (test) => ({
+                ...test,
+                result: {
+                  ...test.result,
+                  legacyImages: await optimizeEvidenceImagesForExport(
+                    test.result.legacyImages,
+                  ),
+                  newImages: await optimizeEvidenceImagesForExport(test.result.newImages),
+                },
+              })),
+            ),
+          },
+        ]),
+      ),
+    ),
+  };
+}
+
+async function optimizeTeaDocumentImages(documentData: TeaDocument): Promise<TeaDocument> {
+  return {
+    ...documentData,
+    activityImages: await optimizeEvidenceImagesForExport(documentData.activityImages),
+    activities: await Promise.all(
+      documentData.activities.map(async (activity) => ({
+        ...activity,
+        images: await optimizeEvidenceImagesForExport(activity.images),
+        subActivities: await Promise.all(
+          activity.subActivities.map(async (subActivity) => ({
+            ...subActivity,
+            images: await optimizeEvidenceImagesForExport(subActivity.images),
+          })),
+        ),
+      })),
+    ),
+  };
+}
+
+async function optimizeEvidenceImagesForExport(
+  images: EvidenceImage[],
+): Promise<EvidenceImage[]> {
+  return Promise.all(images.map(optimizeEvidenceImageForExport));
+}
+
+async function optimizeEvidenceImageForExport(image: EvidenceImage): Promise<EvidenceImage> {
+  if (!hasImageData(image)) {
+    return image;
+  }
+
+  const optimized = await optimizeImageDataUrl(image.dataUrl);
+
+  return {
+    ...image,
+    dataUrl: optimized.dataUrl,
+    width: optimized.width,
+    height: optimized.height,
+    originalBytes: image.originalBytes ?? optimized.originalBytes,
+    savedBytes: optimized.savedBytes,
+    optimized: image.optimized || optimized.optimized,
+  };
+}
+
+function buildTeaDocumentChildren(documentData: TeaDocument) {
+  const children: (Paragraph | Table)[] = [
+    teaTitle("Termo de Entrega de Atividade (TEA)"),
+    teaMetadataTable(documentData),
+    teaHeading1("1. VISÃO GERAL"),
+    ...teaParagraphs(documentData.overview || " "),
+    teaHeading1("2. ATIVIDADES REALIZADAS"),
+    ...teaParagraphs(
+      documentData.activityIntro ||
+        "A seguir serao apresentadas, a nova interface e as suas funcionalidades:",
+    ),
+    ...teaEvidenceSection(documentData.activityImages),
+  ];
+
+  documentData.activities.forEach((activity, index) => {
+    children.push(...teaActivitySection(activity, index + 1));
+  });
+
+  return children;
+}
+
+function teaActivitySection(activity: TeaActivity, index: number): (Paragraph | Table)[] {
+  const children: (Paragraph | Table)[] = [
+    teaHeading2(`2.${index} - ${activity.title || "Atividade"}:`),
+    ...teaParagraphs(activity.description),
+    ...teaBullets(activity.items),
+    ...teaEvidenceSection(activity.images),
+  ];
+
+  activity.subActivities.forEach((subActivity, subIndex) => {
+    children.push(...teaSubActivitySection(subActivity, index, subIndex + 1));
+  });
+
+  return children;
+}
+
+function teaSubActivitySection(
+  subActivity: TeaSubActivity,
+  activityIndex: number,
+  subIndex: number,
+): (Paragraph | Table)[] {
+  return [
+    teaSubHeading(`2.${activityIndex}.${subIndex} - ${subActivity.title || "Subatividade"}:`),
+    ...teaParagraphs(subActivity.description),
+    ...teaBullets(subActivity.items),
+    ...teaEvidenceSection(subActivity.images),
+  ];
+}
+
+function teaMetadataTable(documentData: TeaDocument): Table {
+  const rows = [
+    ["Ordem de Serviço:", documentData.metadata.serviceOrder],
+    ["Fase/Etapa", documentData.metadata.phase],
+    ["Chamado:", documentData.metadata.ticket],
+    ["Assunto:", documentData.metadata.subject],
+    ["Data:", formatDisplayDate(documentData.metadata.date)],
+    ["Elaborado por:", documentData.metadata.author],
+  ];
+
+  return new Table({
+    width: { size: TEA_HEADER_TABLE_WIDTH_TWIPS, type: WidthType.DXA },
+    columnWidths: TEA_HEADER_COLUMN_WIDTHS,
+    layout: TableLayoutType.FIXED,
+    borders: teaTableBorders(),
+    rows: rows.map(
+      ([label, value]) =>
+        new TableRow({
+          children: [
+            teaCell(label, true, TEA_HEADER_COLUMN_WIDTHS[0]),
+            teaCell(value || " ", false, TEA_HEADER_COLUMN_WIDTHS[1]),
+          ],
+        }),
+    ),
+  });
+}
+
+function teaTitle(text: string): Paragraph {
+  return new Paragraph({
+    heading: HeadingLevel.TITLE,
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 200 },
+    children: [teaRun(text, { bold: true, font: "Calibri", size: 36 })],
+  });
+}
+
+function teaHeading1(text: string): Paragraph {
+  return new Paragraph({
+    heading: HeadingLevel.HEADING_1,
+    spacing: { before: 260, after: 120 },
+    children: [teaRun(text, { bold: true, italics: true, font: "Calibri", size: 28 })],
+  });
+}
+
+function teaHeading2(text: string): Paragraph {
+  return new Paragraph({
+    heading: HeadingLevel.HEADING_2,
+    spacing: { before: 220, after: 100 },
+    children: [teaRun(text, { bold: true, font: "Calibri", size: 26 })],
+  });
+}
+
+function teaSubHeading(text: string): Paragraph {
+  return new Paragraph({
+    spacing: { before: 160, after: 80 },
+    children: [teaRun(text, { bold: true })],
+  });
+}
+
+function teaParagraphs(value: string): Paragraph[] {
+  const paragraphs = value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) {
+    return [];
+  }
+
+  return paragraphs.map(
+    (text) =>
+      new Paragraph({
+        spacing: { after: 200, line: 276 },
+        children: [teaRun(text)],
+      }),
+  );
+}
+
+function teaBullets(items: { text: string }[]): Paragraph[] {
+  return items
+    .map((item) => item.text.trim())
+    .filter(Boolean)
+    .map(
+      (text) =>
+        new Paragraph({
+          bullet: { level: 0 },
+          spacing: { after: 120, line: 276 },
+          children: [teaRun(text)],
+        }),
+    );
+}
+
+function teaEvidenceSection(images: EvidenceImage[]): Paragraph[] {
+  return images.flatMap((image) => {
+    if (!hasImageData(image)) {
+      return [];
+    }
+
+    const paragraphs: Paragraph[] = [];
+
+    if (image.label.trim()) {
+      paragraphs.push(
+        new Paragraph({
+          spacing: { before: 40, after: 80 },
+          children: [teaRun(image.label.trim(), { bold: true })],
+        }),
+      );
+    }
+
+    paragraphs.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 180 },
+        children: [createImageRun(image, { maxWidth: 576, maxHeight: 720 })],
+      }),
+    );
+
+    return paragraphs;
+  });
 }
 
 function buildDocumentChildren(documentData: OtDocument) {
@@ -202,18 +544,6 @@ function buildPermissionBlock(
   }
 
   block.tests.forEach((test, index) => {
-    if (test.mode === "idem") {
-      children.push(
-        idemTestTable(
-          index + 1,
-          test,
-          getPermissionTestLabel(documentData, test.idemReferenceKey) ||
-            "referência não informada",
-        ),
-      );
-      return;
-    }
-
     children.push(testResultTable(index + 1, test));
     if (test.result.observations.trim()) {
       children.push(labeledBox("Observações", test.result.observations.trim()));
@@ -233,20 +563,6 @@ function permissionContextTable(macro: PermissionGroup, micro: PermissionItem): 
       [cell("MICRO-PERMISSÃO", true), cell(`Tipo de permissão: ${formatPermission(micro)}`)],
     ],
     [28, 72],
-  );
-}
-
-function idemTestTable(
-  index: number,
-  test: PermissionBlockTest,
-  referenceLabel: string,
-): Table {
-  return simpleTable(
-    [
-      [cell(`${index} - ${test.title || "Teste"}`, true, { columnSpan: 2, fill: COLORS.testFill })],
-      [cell("IDEM ao teste", true), cell(referenceLabel)],
-    ],
-    [24, 76],
   );
 }
 
@@ -281,6 +597,11 @@ function evidenceSection(label: string, images: EvidenceImage[]) {
   }
 
   for (const image of images) {
+    if (!hasImageData(image)) {
+      children.push(emptyParagraph(`${image.name || "Imagem"} nao encontrada no rascunho.`));
+      continue;
+    }
+
     if (image.label.trim()) {
       children.push(
         new Paragraph({
@@ -302,9 +623,12 @@ function evidenceSection(label: string, images: EvidenceImage[]) {
   return children;
 }
 
-function createImageRun(image: EvidenceImage): ImageRun {
-  const maxWidth = 560;
-  const maxHeight = 420;
+function createImageRun(
+  image: ExportableEvidenceImage,
+  options: { maxWidth?: number; maxHeight?: number } = {},
+): ImageRun {
+  const maxWidth = options.maxWidth ?? 560;
+  const maxHeight = options.maxHeight ?? 420;
   const width = image.width || maxWidth;
   const height = image.height || maxHeight;
   const scale = Math.min(maxWidth / width, maxHeight / height, 1);
@@ -317,6 +641,10 @@ function createImageRun(image: EvidenceImage): ImageRun {
     },
     type: imageType(image.dataUrl),
   } as never);
+}
+
+function hasImageData(image: EvidenceImage): image is ExportableEvidenceImage {
+  return typeof image.dataUrl === "string" && image.dataUrl.trim().length > 0;
 }
 
 function dataUrlToUint8Array(dataUrl: string): Uint8Array {
@@ -485,6 +813,49 @@ function tableBorders() {
   };
 }
 
+function teaCell(text: string, bold: boolean, width: number): TableCell {
+  return new TableCell({
+    width: { size: width, type: WidthType.DXA },
+    margins: cellMargins(),
+    verticalAlign: VerticalAlign.CENTER,
+    children: [
+      new Paragraph({
+        spacing: { before: 0, after: 0 },
+        children: [teaRun(text || " ", { bold })],
+      }),
+    ],
+  });
+}
+
+function teaRun(
+  text: string,
+  options: {
+    bold?: boolean;
+    italics?: boolean;
+    font?: string;
+    size?: number;
+  } = {},
+): TextRun {
+  return new TextRun({
+    text,
+    bold: options.bold,
+    italics: options.italics,
+    font: options.font ?? "Arial",
+    size: options.size ?? 22,
+  });
+}
+
+function teaTableBorders() {
+  return {
+    top: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+    bottom: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+    left: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+    right: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+    insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+    insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+  };
+}
+
 function cellMargins() {
   return {
     top: 110,
@@ -508,32 +879,6 @@ function selectedPermissions(permissions: PermissionItem[]): PermissionItem[] {
   return permissions.filter((permission) => permission.selected && permission.code.trim());
 }
 
-function getPermissionTestLabel(
-  documentData: OtDocument,
-  referenceKey: string | undefined,
-): string {
-  if (!referenceKey) {
-    return "";
-  }
-
-  for (const macro of documentData.permissionGroups) {
-    for (const micro of macro.microPermissions) {
-      const blockKey = createPermissionKey(macro.id, micro.id);
-      const block = documentData.permissionBlocks[blockKey];
-
-      for (const [index, test] of (block?.tests ?? []).entries()) {
-        if (createTestReferenceKey(blockKey, test.id) === referenceKey) {
-          return `${formatPermission(macro)} / ${formatPermission(micro)} / ${
-            test.title.trim() || `Teste ${index + 1}`
-          }`;
-        }
-      }
-    }
-  }
-
-  return "";
-}
-
 function formatPermission(permission: PermissionItem): string {
   const code = permission.code.trim();
   const label = permission.label.trim();
@@ -549,10 +894,6 @@ function createEmptyBlock(): PermissionBlock {
   return { tests: [] };
 }
 
-function createTestReferenceKey(blockKey: string, testId: string): string {
-  return `${blockKey}::${testId}`;
-}
-
 function formatDisplayDate(value: string): string {
   if (!value) {
     return "";
@@ -566,6 +907,14 @@ function createFileName(documentData: OtDocument): string {
   const screen = sanitizeFileName(documentData.metadata.screen || "Documento");
   const date = documentData.metadata.date || new Date().toISOString().slice(0, 10);
   return `OT - ${screen} - ${date}.docx`;
+}
+
+function createTeaFileName(documentData: TeaDocument): string {
+  const base = sanitizeFileName(
+    documentData.metadata.subject || documentData.metadata.serviceOrder || "Documento",
+  );
+  const date = documentData.metadata.date || new Date().toISOString().slice(0, 10);
+  return `TEA - ${base} - ${date}.docx`;
 }
 
 function sanitizeFileName(value: string): string {

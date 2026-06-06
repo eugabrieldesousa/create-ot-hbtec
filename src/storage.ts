@@ -1,15 +1,27 @@
 import { createDefaultDocument, createEmptyTestResult, createPermissionKey } from "./defaultDocument";
+import { createDefaultTeaDocument } from "./defaultTeaDocument";
+import {
+  deleteEvidenceImageData,
+  stripImageDataFromDocument,
+  stripImageDataFromTeaDocument,
+} from "./imageStorage";
 import type {
   AccessStep,
+  EvidenceImage,
   OtDocument,
   PermissionBlock,
   PermissionBlockTest,
   PermissionGroup,
   PermissionItem,
+  TeaActivity,
+  TeaDocument,
+  TeaSubActivity,
+  TeaTextItem,
   TestResult,
 } from "./types";
 
 const STORAGE_KEY = "create-ot-draft-v3";
+const TEA_STORAGE_KEY = "create-tea-draft-v1";
 const LEGACY_STORAGE_KEYS = ["create-ot-draft-v2"];
 
 type LegacyTestDefinition = {
@@ -18,9 +30,6 @@ type LegacyTestDefinition = {
 };
 
 type LegacyPermissionBlock = {
-  status?: "complete" | "idem" | "no-access";
-  mode?: "test" | "idem";
-  idemReferenceKey?: string;
   results?: Record<string, TestResult>;
   tests?: PermissionBlockTest[];
 };
@@ -48,12 +57,45 @@ export function loadDraft(): OtDocument {
 }
 
 export function saveDraft(document: OtDocument): void {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(document));
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(stripImageDataFromDocument(document)));
 }
 
-export function clearDraft(): void {
+export async function clearDraft(): Promise<void> {
+  const imageIds = getOtImageIds(loadDraft());
+
   window.localStorage.removeItem(STORAGE_KEY);
   LEGACY_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+
+  await deleteEvidenceImages(imageIds);
+}
+
+export function loadTeaDraft(): TeaDocument {
+  const fallback = createDefaultTeaDocument();
+
+  try {
+    const saved = window.localStorage.getItem(TEA_STORAGE_KEY);
+    if (!saved) {
+      return fallback;
+    }
+
+    return normalizeTeaDraft(JSON.parse(saved), fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveTeaDraft(document: TeaDocument): void {
+  window.localStorage.setItem(
+    TEA_STORAGE_KEY,
+    JSON.stringify(stripImageDataFromTeaDocument(document)),
+  );
+}
+
+export async function clearTeaDraft(): Promise<void> {
+  const imageIds = getTeaImageIds(loadTeaDraft());
+
+  window.localStorage.removeItem(TEA_STORAGE_KEY);
+  await deleteEvidenceImages(imageIds);
 }
 
 function findSavedDraft(): string | null {
@@ -184,7 +226,7 @@ function normalizePermissionBlocks(
     });
   }
 
-  return clearInvalidIdemReferences(nextBlocks);
+  return nextBlocks;
 }
 
 function normalizePermissionBlock(
@@ -199,26 +241,19 @@ function normalizePermissionBlock(
 
   if (Array.isArray(block.tests)) {
     return {
-      tests: normalizeBlockTests(block.tests, block),
+      tests: normalizeBlockTests(block.tests),
     };
   }
 
   return {
-    tests: normalizeLegacyTests(legacyTests, block.results ?? {}, block),
+    tests: normalizeLegacyTests(legacyTests, block.results ?? {}),
   };
 }
 
-function normalizeBlockTests(
-  tests: PermissionBlockTest[],
-  block: LegacyPermissionBlock,
-): PermissionBlockTest[] {
-  const legacyMode = block.status === "idem" || block.mode === "idem" ? "idem" : "test";
-
+function normalizeBlockTests(tests: PermissionBlockTest[]): PermissionBlockTest[] {
   return tests.map((test, index) => ({
     id: textOrFallback(test.id, `test-${index + 1}`),
     title: textOrFallback(test.title, ""),
-    mode: test.mode ?? legacyMode,
-    idemReferenceKey: textOrUndefined(test.idemReferenceKey),
     result: normalizeTestResult(test.result),
   }));
 }
@@ -226,18 +261,14 @@ function normalizeBlockTests(
 function normalizeLegacyTests(
   tests: LegacyTestDefinition[] | undefined,
   results: Record<string, TestResult>,
-  block?: LegacyPermissionBlock,
 ): PermissionBlockTest[] {
   if (!Array.isArray(tests)) {
     return [];
   }
 
-  const mode = block?.status === "idem" || block?.mode === "idem" ? "idem" : "test";
-
   return tests.map((test, index) => ({
     id: textOrFallback(test.id, `test-${index + 1}`),
     title: textOrFallback(test.title, ""),
-    mode,
     result: normalizeTestResult(results[test.id]),
   }));
 }
@@ -255,39 +286,141 @@ function normalizeTestResult(result: TestResult | undefined): TestResult {
       ...(result.checks ?? {}),
     },
     observations: textOrFallback(result.observations, ""),
-    legacyImages: Array.isArray(result.legacyImages) ? result.legacyImages : [],
-    newImages: Array.isArray(result.newImages) ? result.newImages : [],
+    legacyImages: normalizeEvidenceImages(result.legacyImages),
+    newImages: normalizeEvidenceImages(result.newImages),
   };
 }
 
-function clearInvalidIdemReferences(
-  blocks: Record<string, PermissionBlock>,
-): Record<string, PermissionBlock> {
-  const validKeys = new Set(
-    Object.entries(blocks).flatMap(([blockKey, block]) =>
-      block.tests.map((test) => createTestReferenceKey(blockKey, test.id)),
-    ),
+function normalizeEvidenceImages(images: unknown): EvidenceImage[] {
+  if (!Array.isArray(images)) {
+    return [];
+  }
+
+  return images.map((image, index) => {
+    const candidate = image as Partial<EvidenceImage>;
+
+    return {
+      id: textOrFallback(candidate.id, `image-${index + 1}`),
+      label: textOrFallback(candidate.label, ""),
+      name: textOrFallback(candidate.name, "imagem"),
+      dataUrl: textOrUndefined(candidate.dataUrl),
+      width: numberOrFallback(candidate.width, 560),
+      height: numberOrFallback(candidate.height, 320),
+      originalBytes: numberOrUndefined(candidate.originalBytes),
+      savedBytes: numberOrUndefined(candidate.savedBytes),
+      optimized: typeof candidate.optimized === "boolean" ? candidate.optimized : undefined,
+    };
+  });
+}
+
+function normalizeTeaDraft(value: unknown, fallback: TeaDocument): TeaDocument {
+  const candidate = value as Partial<TeaDocument>;
+
+  return {
+    metadata: {
+      ...fallback.metadata,
+      ...(candidate.metadata ?? {}),
+    },
+    overview: textOrFallback(candidate.overview, fallback.overview),
+    activityIntro: textOrFallback(candidate.activityIntro, fallback.activityIntro),
+    activityImages: normalizeEvidenceImages(candidate.activityImages),
+    activities: normalizeTeaActivities(candidate.activities, fallback.activities),
+  };
+}
+
+function normalizeTeaActivities(
+  activities: TeaActivity[] | unknown,
+  fallback: TeaActivity[],
+): TeaActivity[] {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return fallback;
+  }
+
+  return activities.map((activity, index) => {
+    const candidate = activity as Partial<TeaActivity>;
+
+    return {
+      id: textOrFallback(candidate.id, `tea-activity-${index + 1}`),
+      title: textOrFallback(candidate.title, ""),
+      description: textOrFallback(candidate.description, ""),
+      items: normalizeTeaTextItems(candidate.items, "tea-item"),
+      images: normalizeEvidenceImages(candidate.images),
+      subActivities: normalizeTeaSubActivities(candidate.subActivities, index),
+    };
+  });
+}
+
+function normalizeTeaSubActivities(
+  subActivities: TeaSubActivity[] | unknown,
+  activityIndex: number,
+): TeaSubActivity[] {
+  if (!Array.isArray(subActivities)) {
+    return [];
+  }
+
+  return subActivities.map((subActivity, index) => {
+    const candidate = subActivity as Partial<TeaSubActivity>;
+
+    return {
+      id: textOrFallback(candidate.id, `tea-sub-${activityIndex + 1}-${index + 1}`),
+      title: textOrFallback(candidate.title, ""),
+      description: textOrFallback(candidate.description, ""),
+      items: normalizeTeaTextItems(candidate.items, "tea-sub-item"),
+      images: normalizeEvidenceImages(candidate.images),
+    };
+  });
+}
+
+function normalizeTeaTextItems(items: TeaTextItem[] | unknown, prefix: string): TeaTextItem[] {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items.map((item, index) => {
+    if (typeof item === "string") {
+      return { id: `${prefix}-${index + 1}`, text: item };
+    }
+
+    const candidate = item as Partial<TeaTextItem>;
+
+    return {
+      id: textOrFallback(candidate.id, `${prefix}-${index + 1}`),
+      text: textOrFallback(candidate.text, ""),
+    };
+  });
+}
+
+async function deleteEvidenceImages(imageIds: string[]): Promise<void> {
+  await Promise.all(
+    Array.from(new Set(imageIds)).map(async (imageId) => {
+      try {
+        await deleteEvidenceImageData(imageId);
+      } catch {
+        // A falta do IndexedDB nao deve impedir a limpeza do rascunho leve.
+      }
+    }),
   );
+}
 
-  return Object.fromEntries(
-    Object.entries(blocks).map(([key, block]) => [
-      key,
-      {
-        ...block,
-        tests: block.tests.map((test) => {
-          if (
-            test.idemReferenceKey &&
-            test.idemReferenceKey !== createTestReferenceKey(key, test.id) &&
-            validKeys.has(test.idemReferenceKey)
-          ) {
-            return test;
-          }
-
-          return { ...test, idemReferenceKey: undefined };
-        }),
-      },
+function getOtImageIds(document: OtDocument): string[] {
+  return Object.values(document.permissionBlocks).flatMap((block) =>
+    block.tests.flatMap((test) => [
+      ...test.result.legacyImages.map((image) => image.id),
+      ...test.result.newImages.map((image) => image.id),
     ]),
   );
+}
+
+function getTeaImageIds(document: TeaDocument): string[] {
+  return [
+    ...document.activityImages.map((image) => image.id),
+    ...document.activities.flatMap((activity) => [
+      ...activity.images.map((image) => image.id),
+      ...activity.subActivities.flatMap((subActivity) =>
+        subActivity.images.map((image) => image.id),
+      ),
+    ]),
+  ];
 }
 
 function textOrFallback(value: unknown, fallback: string): string {
@@ -298,6 +431,10 @@ function textOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function createTestReferenceKey(blockKey: string, testId: string): string {
-  return `${blockKey}::${testId}`;
+function numberOrFallback(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

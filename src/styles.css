@@ -126,26 +126,14 @@ body {
   border-color: var(--app-border);
 }
 
-.mantine-SegmentedControl-root {
-  background: var(--app-control-bg);
-  border: 1px solid var(--app-border-soft);
-}
-
-.mantine-SegmentedControl-indicator {
-  background: var(--app-card-bg);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
-}
-
-[data-mantine-color-scheme="dark"] .mantine-SegmentedControl-indicator {
-  box-shadow: none;
-}
-
 .topBar,
 .sectionCard,
 .permissionGroup,
 .blockGroup,
 .permissionBlock,
 .testCard,
+.teaActivityCard,
+.teaSubActivityCard,
 .evidencePanel,
 .softEmpty {
   border-color: var(--app-border);
@@ -160,6 +148,15 @@ body {
 .topBar {
   background: var(--app-card-bg);
   border-color: var(--app-border);
+}
+
+.topBarTitle {
+  min-width: 16rem;
+}
+
+.documentKindSwitch {
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border-soft);
 }
 
 .sectionCard {
@@ -188,6 +185,21 @@ body {
 .permissionBlock {
   background: var(--app-card-bg);
   border-color: var(--app-border);
+}
+
+.teaActivityCard {
+  background: var(--app-card-bg);
+  border-color: var(--app-border);
+}
+
+.teaSubActivityCard {
+  background: var(--app-surface-muted);
+  border-color: var(--app-border-soft);
+}
+
+.bulkEditor {
+  background: var(--app-surface-muted);
+  border-color: var(--app-border-soft);
 }
 
 .testCard {
@@ -236,6 +248,31 @@ body {
   border-style: dashed;
 }
 
+.workspaceTabs .mantine-Tabs-list {
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+}
+
+.workspaceTabs .mantine-Tabs-tab {
+  min-height: 2.5rem;
+  color: var(--app-muted);
+  border-radius: 6px;
+}
+
+.workspaceTabs .mantine-Tabs-tab[data-active] {
+  color: var(--app-heading);
+  background: var(--app-primary-soft);
+}
+
+.documentFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
 .permissionFields {
   display: grid;
   grid-template-columns: minmax(8rem, 10rem) minmax(0, 1fr);
@@ -255,7 +292,7 @@ body {
 
 .testHeaderGrid {
   display: grid;
-  grid-template-columns: max-content minmax(14rem, 1fr) minmax(10rem, 12rem) auto;
+  grid-template-columns: max-content minmax(14rem, 1fr) auto;
   gap: 0.75rem;
   align-items: end;
 }
@@ -271,10 +308,6 @@ body {
 
 .testToggleIcon--open {
   transform: rotate(180deg);
-}
-
-.testModeControl {
-  min-width: 10rem;
 }
 
 .testActions {
@@ -294,14 +327,262 @@ body {
   border-top: 1px solid var(--app-border-soft);
 }
 
+.testBlockFilterBar {
+  background: var(--app-card-bg);
+  border-color: var(--app-border);
+}
+
+.testBlockFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.25rem;
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 8px;
+}
+
+.testExpansionActions {
+  margin-top: -0.25rem;
+}
+
+.testBlockFilter {
+  display: inline-flex;
+  min-height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 0.75rem;
+  color: var(--app-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.testBlockFilter strong {
+  min-width: 1.5rem;
+  padding: 0.125rem 0.375rem;
+  color: var(--app-heading);
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
+.testBlockFilter:hover:not(:disabled) {
+  color: var(--app-heading);
+  background: var(--app-card-bg);
+  border-color: var(--app-border-soft);
+}
+
+.testBlockFilter--active {
+  color: var(--app-heading);
+  background: var(--app-primary-soft);
+  border-color: rgba(37, 99, 235, 0.28);
+}
+
+.testBlockFilter:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.quickChecks {
+  padding-left: 3rem;
+}
+
+.quickCheck {
+  min-width: 3.25rem;
+  min-height: 2rem;
+  padding: 0 0.625rem;
+  color: var(--app-muted);
+  background: var(--app-control-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.quickCheck:hover {
+  color: var(--app-heading);
+  border-color: var(--app-border);
+}
+
+.quickCheck--active {
+  color: #14532d;
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+[data-mantine-color-scheme="dark"] .quickCheck--active {
+  color: #bbf7d0;
+  background: #12351f;
+  border-color: #237341;
+}
+
 .imagePreview {
-  width: 96px;
-  height: 72px;
-  flex: 0 0 96px;
+  width: 84px;
+  height: 62px;
+  flex: 0 0 84px;
   object-fit: contain;
   background: var(--image-bg);
   border: 1px solid var(--app-input-border);
   border-radius: 8px;
+}
+
+.imagePreview--missing {
+  display: grid;
+  place-items: center;
+  color: var(--app-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.reviewMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.reviewMetric {
+  padding: 0.875rem;
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 8px;
+}
+
+.reviewIssues {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.reviewIssueGroup {
+  padding: 0.875rem;
+  border: 1px solid var(--app-border-soft);
+  border-radius: 8px;
+}
+
+.reviewIssueGroup--warning {
+  background: rgba(217, 119, 6, 0.08);
+  border-color: rgba(217, 119, 6, 0.28);
+}
+
+.reviewIssueButton {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  color: var(--app-text);
+  text-align: left;
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.reviewIssueButton:hover {
+  border-color: var(--app-border);
+  background: var(--app-surface-quiet);
+}
+
+.reviewOk {
+  color: var(--app-heading);
+  padding: 0.875rem;
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 8px;
+}
+
+.importMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.importWarnings {
+  padding: 0.875rem;
+  background: rgba(217, 119, 6, 0.08);
+  border: 1px solid rgba(217, 119, 6, 0.28);
+  border-radius: 8px;
+}
+
+.helpIntro {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.875rem;
+  align-items: center;
+  padding: 1rem;
+  color: var(--app-text);
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+}
+
+.helpIntroIcon {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  color: var(--app-primary);
+  background: var(--app-primary-soft);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 8px;
+}
+
+.faqSectionList {
+  display: grid;
+  gap: 1rem;
+}
+
+.faqSection {
+  display: grid;
+  grid-template-columns: minmax(10rem, 13rem) minmax(0, 1fr);
+  gap: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--app-border-soft);
+}
+
+.faqSection:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.faqSectionTitle {
+  color: var(--app-heading);
+}
+
+.faqItemList {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.faqItem {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.875rem;
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 8px;
+}
+
+.faqExample {
+  min-width: 0;
+  margin: 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  color: var(--app-heading);
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 @media (max-width: 840px) {
@@ -309,22 +590,33 @@ body {
     grid-template-columns: max-content minmax(0, 1fr);
   }
 
-  .testModeControl {
-    grid-column: 2;
-    min-width: 0;
-    width: 100%;
-  }
-
   .testActions {
     grid-column: 1 / -1;
     width: 100%;
   }
+
+  .quickChecks {
+    padding-left: 0;
+  }
 }
 
 @media (max-width: 720px) {
+  .documentFields,
   .permissionFields,
   .microPermissionRow {
     grid-template-columns: 1fr;
+  }
+
+  .faqSection {
+    grid-template-columns: 1fr;
+  }
+
+  .reviewMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .importMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .testHeaderGrid {
@@ -332,7 +624,6 @@ body {
   }
 
   .testIndexCell,
-  .testModeControl,
   .testActions {
     grid-column: auto;
     width: 100%;
@@ -352,6 +643,14 @@ body {
 }
 
 @media (max-width: 520px) {
+  .helpIntro {
+    grid-template-columns: 1fr;
+  }
+
+  .reviewMetrics {
+    grid-template-columns: 1fr;
+  }
+
   .imagePreview {
     width: 72px;
     height: 58px;

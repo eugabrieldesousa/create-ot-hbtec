@@ -3,8 +3,6 @@ export type AccessStep = {
   text: string;
 };
 
-export type PermissionTestMode = "test" | "idem";
-
 export type CheckKey =
   | "sameBehavior"
   | "possibleIssue"
@@ -16,9 +14,12 @@ export type EvidenceImage = {
   id: string;
   label: string;
   name: string;
-  dataUrl: string;
+  dataUrl?: string;
   width: number;
   height: number;
+  originalBytes?: number;
+  savedBytes?: number;
+  optimized?: boolean;
 };
 
 export type PermissionItem = {
@@ -42,8 +43,6 @@ export type TestResult = {
 export type PermissionBlockTest = {
   id: string;
   title: string;
-  mode: PermissionTestMode;
-  idemReferenceKey?: string;
   result: TestResult;
 };
 
@@ -63,4 +62,41 @@ export type OtDocument = {
   accessSteps: AccessStep[];
   permissionGroups: PermissionGroup[];
   permissionBlocks: Record<string, PermissionBlock>;
+};
+
+export type TeaTextItem = {
+  id: string;
+  text: string;
+};
+
+export type TeaSubActivity = {
+  id: string;
+  title: string;
+  description: string;
+  items: TeaTextItem[];
+  images: EvidenceImage[];
+};
+
+export type TeaActivity = {
+  id: string;
+  title: string;
+  description: string;
+  items: TeaTextItem[];
+  images: EvidenceImage[];
+  subActivities: TeaSubActivity[];
+};
+
+export type TeaDocument = {
+  metadata: {
+    serviceOrder: string;
+    phase: string;
+    ticket: string;
+    subject: string;
+    date: string;
+    author: string;
+  };
+  overview: string;
+  activityIntro: string;
+  activityImages: EvidenceImage[];
+  activities: TeaActivity[];
 };
