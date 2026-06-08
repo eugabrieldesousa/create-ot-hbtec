@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { ClipboardEvent, DragEvent, ReactNode } from "react";
 import {
   ActionIcon,
@@ -92,6 +92,11 @@ type PermissionBlockEntry = {
   micro: PermissionItem;
 };
 
+type FilteredPermissionBlockEntry = PermissionBlockEntry & {
+  block: PermissionBlock;
+  sourceBlock: PermissionBlock;
+};
+
 type ActiveTab = "document" | "permissions" | "tests" | "review" | "help";
 type TeaTab = "document" | "activities" | "review";
 type DocumentKind = "ot" | "tea";
@@ -145,6 +150,71 @@ type TestBlockFilter = "all" | "withoutTests" | "withoutImages" | "withPending" 
 
 const standardTestTitles = ["Criação", "Edição", "Consulta", "Exclusão"];
 
+type IdleDeadlineLike = {
+  didTimeout: boolean;
+  timeRemaining: () => number;
+};
+
+type IdleWindow = Window & {
+  requestIdleCallback?: (
+    callback: (deadline: IdleDeadlineLike) => void,
+    options?: { timeout?: number },
+  ) => number;
+  cancelIdleCallback?: (handle: number) => void;
+};
+
+type BufferedTextState = {
+  value: string;
+  setValue: (value: string) => void;
+  commit: () => void;
+};
+
+type PermissionBlockGroupProps = {
+  macro: PermissionGroup;
+  entries: FilteredPermissionBlockEntry[];
+  expandedTests: Record<string, boolean>;
+  onAddTest: (blockKey: string) => void;
+  onAddStandardTests: (blockKey: string) => void;
+  onDuplicateBlockStructure: (blockKey: string) => void;
+  onDuplicateTest: (blockKey: string, testId: string) => void;
+  onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
+  onTestTitleChange: (blockKey: string, testId: string, title: string) => void;
+  onTestRemove: (blockKey: string, testId: string) => void;
+  onTestMove: (blockKey: string, index: number, direction: -1 | 1) => void;
+  onResultChange: (
+    blockKey: string,
+    testId: string,
+    updater: (result: TestResult) => TestResult,
+  ) => void;
+};
+
+type PermissionBlockEditorProps = Omit<PermissionBlockGroupProps, "macro" | "entries"> & {
+  blockKey: string;
+  entry: PermissionBlockEntry;
+  block: PermissionBlock;
+  sourceBlock: PermissionBlock;
+};
+
+type BlockTestEditorProps = {
+  blockKey: string;
+  index: number;
+  test: PermissionBlockTest;
+  selfReferenceKey: string;
+  isExpanded: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
+  onTestTitleChange: (blockKey: string, testId: string, title: string) => void;
+  onTestMove: (blockKey: string, index: number, direction: -1 | 1) => void;
+  onDuplicateTest: (blockKey: string, testId: string) => void;
+  onTestRemove: (blockKey: string, testId: string) => void;
+  onResultChange: (
+    blockKey: string,
+    testId: string,
+    updater: (result: TestResult) => TestResult,
+  ) => void;
+};
+
 const problemCheckKeys: CheckKey[] = ["possibleIssue", "bothIssue", "newIssue", "errorReport"];
 
 const quickCheckLabels: Record<CheckKey, string> = {
@@ -170,6 +240,8 @@ const testBlockFilterOrder: TestBlockFilter[] = [
   "withPending",
   "withProblem",
 ];
+
+const emptyPermissionBlock: PermissionBlock = { tests: [] };
 
 const faqSections: FaqSection[] = [
   {
@@ -303,7 +375,10 @@ export default function App() {
   const teaDataRef = useRef(teaData);
   const documentKindRef = useRef<DocumentKind>(documentKind);
   const saveTimerRef = useRef<number | undefined>();
+  const idleSaveRef = useRef<number | undefined>();
   const isDarkMode = colorScheme === "dark";
+  const deferredDocumentData = useDeferredValue(documentData);
+  const deferredTeaData = useDeferredValue(teaData);
 
   const selectedGroups = useMemo(
     () => selectedPermissionGroups(documentData.permissionGroups),
@@ -331,23 +406,28 @@ export default function App() {
     () =>
       selectedGroups
         .map((macro) => {
-          const entries = macro.microPermissions
-            .map((micro) => ({
-              key: createPermissionKey(macro.id, micro.id),
-              macro,
-              micro,
-            }))
-            .filter((entry) =>
-              testBlockMatchesFilter(
-                documentData.permissionBlocks[entry.key] ?? createEmptyBlock(),
-                testBlockFilter,
-              ),
-            );
+          const entries = permissionBlockEntries
+            .filter((entry) => entry.macro.id === macro.id)
+            .reduce<FilteredPermissionBlockEntry[]>((filteredEntries, entry) => {
+              const sourceBlock = documentData.permissionBlocks[entry.key] ?? emptyPermissionBlock;
+
+              if (!testBlockMatchesFilter(sourceBlock, testBlockFilter)) {
+                return filteredEntries;
+              }
+
+              filteredEntries.push({
+                ...entry,
+                block: filterPermissionBlockTests(sourceBlock, testBlockFilter),
+                sourceBlock,
+              });
+
+              return filteredEntries;
+            }, []);
 
           return { macro, entries };
         })
         .filter((group) => group.entries.length > 0),
-    [documentData.permissionBlocks, selectedGroups, testBlockFilter],
+    [documentData.permissionBlocks, permissionBlockEntries, selectedGroups, testBlockFilter],
   );
 
   const visibleTestCount = useMemo(
@@ -356,14 +436,14 @@ export default function App() {
         (total, group) =>
           total +
           group.entries.reduce(
-            (entryTotal, entry) =>
-              entryTotal + (documentData.permissionBlocks[entry.key]?.tests.length ?? 0),
+            (entryTotal, entry) => entryTotal + entry.block.tests.length,
             0,
           ),
         0,
       ),
-    [documentData.permissionBlocks, filteredPermissionBlockGroups],
+    [filteredPermissionBlockGroups],
   );
+  const totalTestCount = testBlockFilterCounts.all;
 
   useEffect(() => {
     documentDataRef.current = documentData;
@@ -377,11 +457,47 @@ export default function App() {
     documentKindRef.current = documentKind;
   }, [documentKind]);
 
-  const flushDraft = useCallback(() => {
-    if (saveTimerRef.current) {
+  const cancelScheduledDraftSave = useCallback(() => {
+    if (saveTimerRef.current !== undefined) {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = undefined;
     }
+
+    if (idleSaveRef.current !== undefined) {
+      const idleWindow = window as IdleWindow;
+
+      if (idleWindow.cancelIdleCallback) {
+        idleWindow.cancelIdleCallback(idleSaveRef.current);
+      } else {
+        window.clearTimeout(idleSaveRef.current);
+      }
+
+      idleSaveRef.current = undefined;
+    }
+  }, []);
+
+  const scheduleIdleDraftFlush = useCallback((callback: () => void) => {
+    const idleWindow = window as IdleWindow;
+
+    if (idleWindow.requestIdleCallback) {
+      idleSaveRef.current = idleWindow.requestIdleCallback(
+        () => {
+          idleSaveRef.current = undefined;
+          callback();
+        },
+        { timeout: 1200 },
+      );
+      return;
+    }
+
+    idleSaveRef.current = window.setTimeout(() => {
+      idleSaveRef.current = undefined;
+      callback();
+    }, 0);
+  }, []);
+
+  const flushDraft = useCallback(() => {
+    cancelScheduledDraftSave();
 
     try {
       setDraftStatus("Salvando...");
@@ -394,27 +510,29 @@ export default function App() {
     } catch {
       setDraftStatus("Rascunho grande demais");
     }
-  }, []);
+  }, [cancelScheduledDraftSave]);
 
   useEffect(() => {
-    setDraftStatus("Alterações pendentes");
-
-    if (saveTimerRef.current) {
-      window.clearTimeout(saveTimerRef.current);
+    if (!draftStatus.startsWith("Altera")) {
+      setDraftStatus("Alterações pendentes");
     }
+
+    cancelScheduledDraftSave();
 
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = undefined;
-      flushDraft();
+      scheduleIdleDraftFlush(flushDraft);
     }, 700);
 
-    return () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = undefined;
-      }
-    };
-  }, [documentData, teaData, documentKind, flushDraft]);
+    return cancelScheduledDraftSave;
+  }, [
+    cancelScheduledDraftSave,
+    documentData,
+    documentKind,
+    flushDraft,
+    scheduleIdleDraftFlush,
+    teaData,
+  ]);
 
   useEffect(() => {
     let isMounted = true;
@@ -455,19 +573,22 @@ export default function App() {
   }, [flushDraft]);
 
   const reviewSummary = useMemo(
-    () => buildReviewSummary(documentData, permissionBlockEntries),
-    [documentData, permissionBlockEntries],
+    () => buildReviewSummary(deferredDocumentData, permissionBlockEntries),
+    [deferredDocumentData, permissionBlockEntries],
   );
 
-  const teaReviewSummary = useMemo(() => buildTeaReviewSummary(teaData), [teaData]);
+  const teaReviewSummary = useMemo(
+    () => buildTeaReviewSummary(deferredTeaData),
+    [deferredTeaData],
+  );
 
-  function updateDocument(updater: (current: OtDocument) => OtDocument): void {
+  const updateDocument = useCallback((updater: (current: OtDocument) => OtDocument): void => {
     setDocumentData((current) => updater(current));
-  }
+  }, []);
 
-  function updateTeaDocument(updater: (current: TeaDocument) => TeaDocument): void {
+  const updateTeaDocument = useCallback((updater: (current: TeaDocument) => TeaDocument): void => {
     setTeaData((current) => updater(current));
-  }
+  }, []);
 
   function selectDocumentKind(nextKind: DocumentKind): void {
     if (nextKind === documentKindRef.current) {
@@ -769,7 +890,27 @@ export default function App() {
     });
   }
 
-  function addBlockTest(blockKey: string): void {
+  const setTestExpansion = useCallback((referenceKey: string, expanded: boolean): void => {
+    setExpandedTests((current) => ({
+      ...current,
+      [referenceKey]: expanded,
+    }));
+  }, []);
+
+  const updateBlock = useCallback((
+    blockKey: string,
+    updater: (block: PermissionBlock) => PermissionBlock,
+  ): void => {
+    updateDocument((current) => ({
+      ...current,
+      permissionBlocks: {
+        ...current.permissionBlocks,
+        [blockKey]: updater(current.permissionBlocks[blockKey] ?? createEmptyBlock()),
+      },
+    }));
+  }, [updateDocument]);
+
+  const addBlockTest = useCallback((blockKey: string): void => {
     const testId = createId();
 
     setTestExpansion(createTestReferenceKey(blockKey, testId), true);
@@ -778,9 +919,9 @@ export default function App() {
       ...block,
       tests: [...block.tests, createBlockTest(testId)],
     }));
-  }
+  }, [setTestExpansion, updateBlock]);
 
-  function addStandardTests(blockKey: string): void {
+  const addStandardTests = useCallback((blockKey: string): void => {
     const tests = standardTestTitles.map((title) => createBlockTest(createId(), title));
     const firstReferenceKey = createTestReferenceKey(blockKey, tests[0]?.id ?? "");
 
@@ -792,9 +933,9 @@ export default function App() {
       ...block,
       tests: [...block.tests, ...tests],
     }));
-  }
+  }, [setTestExpansion, updateBlock]);
 
-  function addStandardTestsToAll(): void {
+  const addStandardTestsToAll = useCallback((): void => {
     updateDocument((current) => ({
       ...current,
       permissionBlocks: {
@@ -814,9 +955,9 @@ export default function App() {
         ),
       },
     }));
-  }
+  }, [permissionBlockEntries, updateDocument]);
 
-  function duplicateBlockStructureToEmpty(sourceBlockKey: string): void {
+  const duplicateBlockStructureToEmpty = useCallback((sourceBlockKey: string): void => {
     const sourceBlock = documentDataRef.current.permissionBlocks[sourceBlockKey];
 
     if (!sourceBlock || sourceBlock.tests.length === 0) {
@@ -849,9 +990,9 @@ export default function App() {
         ),
       },
     }));
-  }
+  }, [permissionBlockEntries, updateDocument]);
 
-  function duplicateBlockTest(blockKey: string, testId: string): void {
+  const duplicateBlockTest = useCallback((blockKey: string, testId: string): void => {
     const duplicatedId = createId();
 
     setTestExpansion(createTestReferenceKey(blockKey, duplicatedId), true);
@@ -879,18 +1020,22 @@ export default function App() {
 
       return { ...block, tests };
     });
-  }
+  }, [setTestExpansion, updateBlock]);
 
-  function updateBlockTestTitle(blockKey: string, testId: string, title: string): void {
+  const updateBlockTestTitle = useCallback((
+    blockKey: string,
+    testId: string,
+    title: string,
+  ): void => {
     updateBlock(blockKey, (block) => ({
       ...block,
       tests: block.tests.map((test) =>
         test.id === testId ? { ...test, title } : test,
       ),
     }));
-  }
+  }, [updateBlock]);
 
-  function removeBlockTest(blockKey: string, testId: string): void {
+  const removeBlockTest = useCallback((blockKey: string, testId: string): void => {
     const referenceKey = createTestReferenceKey(blockKey, testId);
 
     setExpandedTests((current) => {
@@ -902,9 +1047,13 @@ export default function App() {
       ...block,
       tests: block.tests.filter((test) => test.id !== testId),
     }));
-  }
+  }, [updateBlock]);
 
-  function moveBlockTest(blockKey: string, index: number, direction: -1 | 1): void {
+  const moveBlockTest = useCallback((
+    blockKey: string,
+    index: number,
+    direction: -1 | 1,
+  ): void => {
     updateBlock(blockKey, (block) => {
       const nextIndex = index + direction;
       if (nextIndex < 0 || nextIndex >= block.tests.length) {
@@ -917,33 +1066,20 @@ export default function App() {
 
       return { ...block, tests };
     });
-  }
+  }, [updateBlock]);
 
-  function updateTestResult(
+  const updateTestResult = useCallback((
     blockKey: string,
     testId: string,
     updater: (result: TestResult) => TestResult,
-  ): void {
+  ): void => {
     updateBlock(blockKey, (block) => ({
       ...block,
       tests: block.tests.map((test) =>
         test.id === testId ? { ...test, result: updater(test.result) } : test,
       ),
     }));
-  }
-
-  function updateBlock(
-    blockKey: string,
-    updater: (block: PermissionBlock) => PermissionBlock,
-  ): void {
-    updateDocument((current) => ({
-      ...current,
-      permissionBlocks: {
-        ...current.permissionBlocks,
-        [blockKey]: updater(current.permissionBlocks[blockKey] ?? createEmptyBlock()),
-      },
-    }));
-  }
+  }, [updateBlock]);
 
   function handleStepPaste(stepId: string, event: ClipboardEvent<HTMLInputElement>): void {
     const lines = event.clipboardData
@@ -980,17 +1116,10 @@ export default function App() {
     });
   }
 
-  function setTestExpansion(referenceKey: string, expanded: boolean): void {
-    setExpandedTests((current) => ({
-      ...current,
-      [referenceKey]: expanded,
-    }));
-  }
-
-  function setVisibleTestsExpansion(expanded: boolean): void {
+  const setVisibleTestsExpansion = useCallback((expanded: boolean): void => {
     const visibleReferenceKeys = filteredPermissionBlockGroups.flatMap((group) =>
       group.entries.flatMap((entry) =>
-        (documentDataRef.current.permissionBlocks[entry.key]?.tests ?? []).map((test) =>
+        entry.block.tests.map((test) =>
           createTestReferenceKey(entry.key, test.id),
         ),
       ),
@@ -1009,7 +1138,7 @@ export default function App() {
 
       return next;
     });
-  }
+  }, [filteredPermissionBlockGroups]);
 
   function handleReviewIssueClick(issue: ReviewIssue): void {
     setActiveTab(issue.tab);
@@ -1227,6 +1356,7 @@ export default function App() {
               setActiveTab(value as ActiveTab);
             }
           }}
+          keepMounted={false}
           className="workspaceTabs"
         >
           <Tabs.List>
@@ -1412,15 +1542,11 @@ export default function App() {
 
           <Tabs.Panel value="tests" pt="md">
         <Section
-          title="Blocos de permissão"
+          title="Testes por permissão"
           tone="blocks"
           action={
             <Badge variant="light" color={testBlockFilter === "all" ? "gray" : "blue"}>
-              {filteredPermissionBlockGroups.reduce(
-                (total, group) => total + group.entries.length,
-                0,
-              )}
-              /{permissionBlockEntries.length} blocos
+              {visibleTestCount}/{totalTestCount} testes
             </Badge>
           }
         >
@@ -1455,7 +1581,6 @@ export default function App() {
                 key={macro.id}
                 macro={macro}
                 entries={entries}
-                blocks={documentData.permissionBlocks}
                 expandedTests={expandedTests}
                 onAddTest={addBlockTest}
                 onAddStandardTests={addStandardTests}
@@ -1476,7 +1601,7 @@ export default function App() {
             {permissionBlockEntries.length > 0 && filteredPermissionBlockGroups.length === 0 ? (
               <Paper withBorder p="md" ta="center" className="softEmpty">
                 <Stack gap="xs" align="center">
-                  <Text c="dimmed">Nenhum bloco encontrado para este filtro.</Text>
+                  <Text c="dimmed">Nenhum item encontrado para este filtro.</Text>
                   <Button
                     variant="light"
                     size="xs"
@@ -1595,6 +1720,7 @@ function TeaWorkspace({
           onTabChange(value as TeaTab);
         }
       }}
+      keepMounted={false}
       className="workspaceTabs"
     >
       <Tabs.List>
@@ -1988,24 +2114,29 @@ function TestBlockFilterBar({
   counts: Record<TestBlockFilter, number>;
   onChange: (value: TestBlockFilter) => void;
 }) {
+  const selectedCountLabel =
+    value === "withoutTests"
+      ? `${counts[value]} bloco${counts[value] === 1 ? "" : "s"}`
+      : `${counts[value]} teste${counts[value] === 1 ? "" : "s"}`;
+
   return (
     <Paper withBorder p="sm" className="testBlockFilterBar">
       <Stack gap="xs">
         <Group justify="space-between" align="center" gap="sm">
           <div>
             <Text fw={750} size="sm">
-              Filtrar blocos por situação
+              Filtrar testes por situação
             </Text>
             <Text c="dimmed" size="xs">
-              Reduza a lista para revisar só o que precisa de ação.
+              Reduza a lista para revisar só os testes que precisam de ação.
             </Text>
           </div>
           <Badge variant="outline" color={value === "all" ? "gray" : "blue"}>
-            {counts[value]} bloco{counts[value] === 1 ? "" : "s"}
+            {selectedCountLabel}
           </Badge>
         </Group>
 
-        <div className="testBlockFilters" role="tablist" aria-label="Filtros de blocos">
+        <div className="testBlockFilters" role="tablist" aria-label="Filtros de testes">
           {testBlockFilterOrder.map((option) => {
             const isActive = value === option;
             const isEmpty = option !== "all" && counts[option] === 0;
@@ -2153,10 +2284,9 @@ function PermissionGroupEditor({
   );
 }
 
-function PermissionBlockGroup({
+const PermissionBlockGroup = memo(function PermissionBlockGroup({
   macro,
   entries,
-  blocks,
   expandedTests,
   onAddTest,
   onAddStandardTests,
@@ -2167,25 +2297,7 @@ function PermissionBlockGroup({
   onTestRemove,
   onTestMove,
   onResultChange,
-}: {
-  macro: PermissionGroup;
-  entries: PermissionBlockEntry[];
-  blocks: Record<string, PermissionBlock>;
-  expandedTests: Record<string, boolean>;
-  onAddTest: (blockKey: string) => void;
-  onAddStandardTests: (blockKey: string) => void;
-  onDuplicateBlockStructure: (blockKey: string) => void;
-  onDuplicateTest: (blockKey: string, testId: string) => void;
-  onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
-  onTestTitleChange: (blockKey: string, testId: string, title: string) => void;
-  onTestRemove: (blockKey: string, testId: string) => void;
-  onTestMove: (blockKey: string, index: number, direction: -1 | 1) => void;
-  onResultChange: (
-    blockKey: string,
-    testId: string,
-    updater: (result: TestResult) => TestResult,
-  ) => void;
-}) {
+}: PermissionBlockGroupProps) {
   return (
     <Paper withBorder p="md" className="blockGroup">
       <Stack gap="sm">
@@ -2207,33 +2319,33 @@ function PermissionBlockGroup({
           {entries.map((entry) => (
             <PermissionBlockEditor
               key={entry.key}
+              blockKey={entry.key}
               entry={entry}
-              block={blocks[entry.key] ?? createEmptyBlock()}
+              block={entry.block}
+              sourceBlock={entry.sourceBlock}
               expandedTests={expandedTests}
-              onAddTest={() => onAddTest(entry.key)}
-              onAddStandardTests={() => onAddStandardTests(entry.key)}
-              onDuplicateBlockStructure={() => onDuplicateBlockStructure(entry.key)}
+              onAddTest={onAddTest}
+              onAddStandardTests={onAddStandardTests}
+              onDuplicateBlockStructure={onDuplicateBlockStructure}
               onTestExpansionChange={onTestExpansionChange}
-              onTestTitleChange={(testId, title) =>
-                onTestTitleChange(entry.key, testId, title)
-              }
-              onDuplicateTest={(testId) => onDuplicateTest(entry.key, testId)}
-              onTestRemove={(testId) => onTestRemove(entry.key, testId)}
-              onTestMove={(index, direction) => onTestMove(entry.key, index, direction)}
-              onResultChange={(testId, updater) =>
-                onResultChange(entry.key, testId, updater)
-              }
+              onTestTitleChange={onTestTitleChange}
+              onDuplicateTest={onDuplicateTest}
+              onTestRemove={onTestRemove}
+              onTestMove={onTestMove}
+              onResultChange={onResultChange}
             />
           ))}
         </Stack>
       </Stack>
     </Paper>
   );
-}
+}, arePermissionBlockGroupPropsEqual);
 
-function PermissionBlockEditor({
+const PermissionBlockEditor = memo(function PermissionBlockEditor({
+  blockKey,
   entry,
   block,
+  sourceBlock,
   expandedTests,
   onAddTest,
   onAddStandardTests,
@@ -2244,20 +2356,7 @@ function PermissionBlockEditor({
   onTestRemove,
   onTestMove,
   onResultChange,
-}: {
-  entry: PermissionBlockEntry;
-  block: PermissionBlock;
-  expandedTests: Record<string, boolean>;
-  onAddTest: () => void;
-  onAddStandardTests: () => void;
-  onDuplicateBlockStructure: () => void;
-  onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
-  onTestTitleChange: (testId: string, title: string) => void;
-  onDuplicateTest: (testId: string) => void;
-  onTestRemove: (testId: string) => void;
-  onTestMove: (index: number, direction: -1 | 1) => void;
-  onResultChange: (testId: string, updater: (result: TestResult) => TestResult) => void;
-}) {
+}: PermissionBlockEditorProps) {
   return (
     <Paper withBorder p="md" className="permissionBlock">
       <Stack gap="sm">
@@ -2279,7 +2378,7 @@ function PermissionBlockEditor({
               variant="subtle"
               size="xs"
               leftSection={<ListChecks size={15} />}
-              onClick={onAddStandardTests}
+              onClick={() => onAddStandardTests(blockKey)}
             >
               Adicionar pacote padrão
             </Button>
@@ -2288,7 +2387,7 @@ function PermissionBlockEditor({
               size="xs"
               leftSection={<Copy size={15} />}
               disabled={block.tests.length === 0}
-              onClick={onDuplicateBlockStructure}
+              onClick={() => onDuplicateBlockStructure(blockKey)}
             >
               Copiar para vazios
             </Button>
@@ -2296,7 +2395,7 @@ function PermissionBlockEditor({
               variant="subtle"
               size="xs"
               leftSection={<Plus size={15} />}
-              onClick={onAddTest}
+              onClick={() => onAddTest(blockKey)}
             >
               Adicionar teste
             </Button>
@@ -2304,81 +2403,76 @@ function PermissionBlockEditor({
         </Group>
 
         <Stack gap="sm">
-          {block.tests.map((test, index) => {
+          {block.tests.map((test, visibleIndex) => {
             const selfReferenceKey = createTestReferenceKey(entry.key, test.id);
+            const sourceIndex = sourceBlock.tests.findIndex((sourceTest) => sourceTest.id === test.id);
+            const testIndex = sourceIndex >= 0 ? sourceIndex : visibleIndex;
 
             return (
               <BlockTestEditor
                 key={test.id}
-                index={index}
+                blockKey={blockKey}
+                index={testIndex}
                 test={test}
                 selfReferenceKey={selfReferenceKey}
                 isExpanded={expandedTests[selfReferenceKey] ?? false}
-                canMoveUp={index > 0}
-                canMoveDown={index < block.tests.length - 1}
-                onExpandedChange={(expanded) =>
-                  onTestExpansionChange(selfReferenceKey, expanded)
-                }
-                onTitleChange={(title) => onTestTitleChange(test.id, title)}
-                onMoveUp={() => onTestMove(index, -1)}
-                onMoveDown={() => onTestMove(index, 1)}
-                onDuplicate={() => onDuplicateTest(test.id)}
-                onRemove={() => onTestRemove(test.id)}
-                onResultChange={(updater) => onResultChange(test.id, updater)}
+                canMoveUp={testIndex > 0}
+                canMoveDown={testIndex < sourceBlock.tests.length - 1}
+                onTestExpansionChange={onTestExpansionChange}
+                onTestTitleChange={onTestTitleChange}
+                onTestMove={onTestMove}
+                onDuplicateTest={onDuplicateTest}
+                onTestRemove={onTestRemove}
+                onResultChange={onResultChange}
               />
             );
           })}
 
           {block.tests.length === 0 ? (
-            <EmptyState actionLabel="Adicionar teste" onAction={onAddTest} />
+            <EmptyState actionLabel="Adicionar teste" onAction={() => onAddTest(blockKey)} />
           ) : null}
         </Stack>
       </Stack>
     </Paper>
   );
-}
+}, arePermissionBlockEditorPropsEqual);
 
-function BlockTestEditor({
+const BlockTestEditor = memo(function BlockTestEditor({
+  blockKey,
   index,
   test,
   selfReferenceKey,
   isExpanded,
   canMoveUp,
   canMoveDown,
-  onExpandedChange,
-  onTitleChange,
-  onMoveUp,
-  onMoveDown,
-  onDuplicate,
-  onRemove,
+  onTestExpansionChange,
+  onTestTitleChange,
+  onTestMove,
+  onDuplicateTest,
+  onTestRemove,
   onResultChange,
-}: {
-  index: number;
-  test: PermissionBlockTest;
-  selfReferenceKey: string;
-  isExpanded: boolean;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
-  onExpandedChange: (expanded: boolean) => void;
-  onTitleChange: (title: string) => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  onDuplicate: () => void;
-  onRemove: () => void;
-  onResultChange: (updater: (result: TestResult) => TestResult) => void;
-}) {
+}: BlockTestEditorProps) {
   const selectedCheckCount = checkOrder.filter((key) => test.result.checks[key]).length;
   const evidenceCount = test.result.legacyImages.length + test.result.newImages.length;
   const testPanelId = `test-details-${toDomId(selfReferenceKey)}`;
+  const commitTitle = useCallback(
+    (value: string) => onTestTitleChange(blockKey, test.id, value),
+    [blockKey, onTestTitleChange, test.id],
+  );
+  const title = useBufferedText(test.title, commitTitle);
 
   function toggleCheck(key: CheckKey): void {
-    onResultChange((current) => ({
-      ...current,
-      checks: {
-        ...current.checks,
-        [key]: !current.checks[key],
-      },
-    }));
+    onResultChange(
+      blockKey,
+      test.id,
+      (current) => ({
+        ...current,
+        checks: {
+          ...current.checks,
+          [key]: !current.checks[key],
+        },
+      }),
+    );
   }
 
   return (
@@ -2394,7 +2488,7 @@ function BlockTestEditor({
             <Tooltip label={isExpanded ? "Recolher teste" : "Abrir teste"}>
               <ActionIcon
                 variant="subtle"
-                onClick={() => onExpandedChange(!isExpanded)}
+                onClick={() => onTestExpansionChange(selfReferenceKey, !isExpanded)}
                 aria-label={isExpanded ? "Recolher teste" : "Abrir teste"}
                 aria-expanded={isExpanded}
                 aria-controls={testPanelId}
@@ -2413,9 +2507,13 @@ function BlockTestEditor({
           </Group>
           <TextInput
             label="Nome do teste"
-            value={test.title}
+            value={title.value}
             placeholder="Criação, edição, consulta..."
-            onChange={(event) => onTitleChange(event.currentTarget.value)}
+            onBlur={title.commit}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              title.setValue(value);
+            }}
           />
           <Group gap={4} wrap="wrap" className="testActions">
             <Badge color="gray" variant="outline" className="testMetaBadge">
@@ -2429,7 +2527,7 @@ function BlockTestEditor({
             <Tooltip label="Duplicar teste">
               <ActionIcon
                 variant="subtle"
-                onClick={onDuplicate}
+                onClick={() => onDuplicateTest(blockKey, test.id)}
                 aria-label="Duplicar teste"
               >
                 <Copy size={17} />
@@ -2439,7 +2537,7 @@ function BlockTestEditor({
               <ActionIcon
                 variant="subtle"
                 disabled={!canMoveUp}
-                onClick={onMoveUp}
+                onClick={() => onTestMove(blockKey, index, -1)}
                 aria-label="Mover para cima"
               >
                 <ArrowUp size={17} />
@@ -2449,7 +2547,7 @@ function BlockTestEditor({
               <ActionIcon
                 variant="subtle"
                 disabled={!canMoveDown}
-                onClick={onMoveDown}
+                onClick={() => onTestMove(blockKey, index, 1)}
                 aria-label="Mover para baixo"
               >
                 <ArrowDown size={17} />
@@ -2459,7 +2557,7 @@ function BlockTestEditor({
               <ActionIcon
                 variant="subtle"
                 color="red"
-                onClick={onRemove}
+                onClick={() => onTestRemove(blockKey, test.id)}
                 aria-label="Remover teste"
               >
                 <Trash2 size={17} />
@@ -2485,14 +2583,17 @@ function BlockTestEditor({
         {isExpanded ? (
         <Collapse in transitionDuration={0}>
           <div id={testPanelId} className="testBody">
-            <TestResultEditor result={test.result} onChange={onResultChange} />
+            <TestResultEditor
+              result={test.result}
+              onChange={(updater) => onResultChange(blockKey, test.id, updater)}
+            />
           </div>
         </Collapse>
         ) : null}
       </Stack>
     </Paper>
   );
-}
+});
 
 const TestResultEditor = memo(function TestResultEditor({
   result,
@@ -2501,6 +2602,12 @@ const TestResultEditor = memo(function TestResultEditor({
   result: TestResult;
   onChange: (updater: (result: TestResult) => TestResult) => void;
 }) {
+  const commitObservations = useCallback(
+    (value: string) => onChange((current) => ({ ...current, observations: value })),
+    [onChange],
+  );
+  const observations = useBufferedText(result.observations, commitObservations);
+
   function updateCheck(key: CheckKey): void {
     onChange((current) => ({
       ...current,
@@ -2538,11 +2645,11 @@ const TestResultEditor = memo(function TestResultEditor({
         label="Observações"
         minRows={4}
         styles={{ input: { resize: "vertical" } }}
-        value={result.observations}
+        value={observations.value}
+        onBlur={observations.commit}
         onChange={(event) => {
           const value = event.currentTarget.value;
-
-          onChange((current) => ({ ...current, observations: value }));
+          observations.setValue(value);
         }}
       />
 
@@ -2952,12 +3059,162 @@ function ReviewIssueGroup<TIssue extends { id: string; label: string; detail: st
   );
 }
 
+function useBufferedText(
+  externalValue: string,
+  onCommit: (value: string) => void,
+  delay = 120,
+): BufferedTextState {
+  const [value, setValueState] = useState(externalValue);
+  const valueRef = useRef(externalValue);
+  const lastExternalValueRef = useRef(externalValue);
+  const lastCommittedValueRef = useRef(externalValue);
+  const commitTimerRef = useRef<number | undefined>();
+  const onCommitRef = useRef(onCommit);
+
+  useEffect(() => {
+    onCommitRef.current = onCommit;
+  }, [onCommit]);
+
+  const clearScheduledCommit = useCallback(() => {
+    if (commitTimerRef.current !== undefined) {
+      window.clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = undefined;
+    }
+  }, []);
+
+  const commit = useCallback(() => {
+    clearScheduledCommit();
+
+    const nextValue = valueRef.current;
+    if (nextValue === lastCommittedValueRef.current) {
+      return;
+    }
+
+    lastCommittedValueRef.current = nextValue;
+    onCommitRef.current(nextValue);
+  }, [clearScheduledCommit]);
+
+  const setValue = useCallback(
+    (nextValue: string) => {
+      valueRef.current = nextValue;
+      setValueState(nextValue);
+      clearScheduledCommit();
+
+      if (nextValue === lastCommittedValueRef.current) {
+        return;
+      }
+
+      commitTimerRef.current = window.setTimeout(commit, delay);
+    },
+    [clearScheduledCommit, commit, delay],
+  );
+
+  useEffect(() => {
+    if (externalValue === lastExternalValueRef.current) {
+      return;
+    }
+
+    lastExternalValueRef.current = externalValue;
+
+    if (externalValue === lastCommittedValueRef.current && valueRef.current !== externalValue) {
+      return;
+    }
+
+    lastCommittedValueRef.current = externalValue;
+    valueRef.current = externalValue;
+    setValueState(externalValue);
+    clearScheduledCommit();
+  }, [clearScheduledCommit, externalValue]);
+
+  useEffect(() => commit, [commit]);
+
+  return { value, setValue, commit };
+}
+
+function arePermissionBlockGroupPropsEqual(
+  previous: PermissionBlockGroupProps,
+  next: PermissionBlockGroupProps,
+): boolean {
+  if (
+    previous.macro !== next.macro ||
+    previous.entries !== next.entries ||
+    previous.onAddTest !== next.onAddTest ||
+    previous.onAddStandardTests !== next.onAddStandardTests ||
+    previous.onDuplicateBlockStructure !== next.onDuplicateBlockStructure ||
+    previous.onDuplicateTest !== next.onDuplicateTest ||
+    previous.onTestExpansionChange !== next.onTestExpansionChange ||
+    previous.onTestTitleChange !== next.onTestTitleChange ||
+    previous.onTestRemove !== next.onTestRemove ||
+    previous.onTestMove !== next.onTestMove ||
+    previous.onResultChange !== next.onResultChange
+  ) {
+    return false;
+  }
+
+  for (const entry of next.entries) {
+    const previousEntry = previous.entries.find((candidate) => candidate.key === entry.key);
+
+    if (!previousEntry || previousEntry.block !== entry.block) {
+      return false;
+    }
+
+    if (
+      previous.expandedTests !== next.expandedTests &&
+      !areExpandedStatesEqual(entry.key, entry.block, previous.expandedTests, next.expandedTests)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function arePermissionBlockEditorPropsEqual(
+  previous: PermissionBlockEditorProps,
+  next: PermissionBlockEditorProps,
+): boolean {
+  if (
+    previous.blockKey !== next.blockKey ||
+    previous.entry !== next.entry ||
+    previous.block !== next.block ||
+    previous.sourceBlock !== next.sourceBlock ||
+    previous.onAddTest !== next.onAddTest ||
+    previous.onAddStandardTests !== next.onAddStandardTests ||
+    previous.onDuplicateBlockStructure !== next.onDuplicateBlockStructure ||
+    previous.onDuplicateTest !== next.onDuplicateTest ||
+    previous.onTestExpansionChange !== next.onTestExpansionChange ||
+    previous.onTestTitleChange !== next.onTestTitleChange ||
+    previous.onTestRemove !== next.onTestRemove ||
+    previous.onTestMove !== next.onTestMove ||
+    previous.onResultChange !== next.onResultChange
+  ) {
+    return false;
+  }
+
+  return (
+    previous.expandedTests === next.expandedTests ||
+    areExpandedStatesEqual(next.blockKey, next.block, previous.expandedTests, next.expandedTests)
+  );
+}
+
+function areExpandedStatesEqual(
+  blockKey: string,
+  block: PermissionBlock,
+  previousExpandedTests: Record<string, boolean>,
+  nextExpandedTests: Record<string, boolean>,
+): boolean {
+  return block.tests.every((test) => {
+    const referenceKey = createTestReferenceKey(blockKey, test.id);
+    return (previousExpandedTests[referenceKey] ?? false) === (nextExpandedTests[referenceKey] ?? false);
+  });
+}
+
 function buildTestBlockFilterCounts(
   entries: PermissionBlockEntry[],
   blocks: Record<string, PermissionBlock>,
 ): Record<TestBlockFilter, number> {
   const counts: Record<TestBlockFilter, number> = {
-    all: entries.length,
+    all: 0,
     withoutTests: 0,
     withoutImages: 0,
     withPending: 0,
@@ -2965,60 +3222,72 @@ function buildTestBlockFilterCounts(
   };
 
   entries.forEach((entry) => {
-    const block = blocks[entry.key] ?? createEmptyBlock();
+    const block = blocks[entry.key] ?? emptyPermissionBlock;
+    const testCount = block.tests.length;
 
-    testBlockFilterOrder.forEach((filter) => {
-      if (filter !== "all" && testBlockMatchesFilter(block, filter)) {
-        counts[filter] += 1;
-      }
-    });
+    counts.all += testCount;
+
+    if (testCount === 0) {
+      counts.withoutTests += 1;
+    }
+
+    counts.withoutImages += block.tests.filter((test) =>
+      testMatchesFilter(test, "withoutImages"),
+    ).length;
+    counts.withPending += block.tests.filter((test) =>
+      testMatchesFilter(test, "withPending"),
+    ).length;
+    counts.withProblem += block.tests.filter((test) =>
+      testMatchesFilter(test, "withProblem"),
+    ).length;
   });
 
   return counts;
 }
 
 function testBlockMatchesFilter(block: PermissionBlock, filter: TestBlockFilter): boolean {
-  const stats = getTestBlockStats(block);
-
   if (filter === "all") {
     return true;
   }
 
   if (filter === "withoutTests") {
-    return stats.testCount === 0;
+    return block.tests.length === 0;
   }
 
+  return block.tests.some((test) => testMatchesFilter(test, filter));
+}
+
+function filterPermissionBlockTests(
+  block: PermissionBlock,
+  filter: TestBlockFilter,
+): PermissionBlock {
+  if (filter === "all" || filter === "withoutTests") {
+    return block;
+  }
+
+  return {
+    ...block,
+    tests: block.tests.filter((test) => testMatchesFilter(test, filter)),
+  };
+}
+
+function testMatchesFilter(
+  test: PermissionBlockTest,
+  filter: Exclude<TestBlockFilter, "all" | "withoutTests">,
+): boolean {
   if (filter === "withoutImages") {
-    return stats.testCount > 0 && stats.imageCount === 0;
+    return getTestImageCount(test) === 0;
   }
 
   if (filter === "withPending") {
-    return stats.hasPending;
+    return !test.title.trim();
   }
 
-  return stats.hasProblem;
+  return problemCheckKeys.some((key) => test.result.checks[key]);
 }
 
-function getTestBlockStats(block: PermissionBlock) {
-  return block.tests.reduce(
-    (stats, test) => {
-      const imageCount = test.result.legacyImages.length + test.result.newImages.length;
-      const hasProblem = problemCheckKeys.some((key) => test.result.checks[key]);
-
-      return {
-        testCount: stats.testCount + 1,
-        imageCount: stats.imageCount + imageCount,
-        hasPending: stats.hasPending || !test.title.trim(),
-        hasProblem: stats.hasProblem || hasProblem,
-      };
-    },
-    {
-      testCount: 0,
-      imageCount: 0,
-      hasPending: false,
-      hasProblem: false,
-    },
-  );
+function getTestImageCount(test: PermissionBlockTest): number {
+  return test.result.legacyImages.length + test.result.newImages.length;
 }
 
 function buildReviewSummary(
