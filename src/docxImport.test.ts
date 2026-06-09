@@ -217,6 +217,44 @@ describe("parseTeaHtml", () => {
     expect(result.warnings).toContain("Nenhuma atividade reconhecida.");
   });
 
+  it("preserves bold TEA text as double-asterisk markup without affecting headings or metadata", () => {
+    const result = parseTeaHtml(
+      `
+        <table>
+          <tr><td>Ordem de servico:</td><td><strong>OS2171</strong></td></tr>
+          <tr><td>Assunto:</td><td><strong>Telas - Novo Layout</strong></td></tr>
+          <tr><td>Elaborado por:</td><td><strong>Gabriel Sousa</strong></td></tr>
+        </table>
+        <h1><strong>1. VISAO GERAL</strong></h1>
+        <p>Visao <strong>geral</strong> importada.</p>
+        <h1><strong>2. ATIVIDADES REALIZADAS</strong></h1>
+        <p>Texto inicial das <strong>atividades</strong>.</p>
+        <h2><strong>2.1 - Botao Editar:</strong></h2>
+        <p>Texto da <strong>atividade</strong>.</p>
+        <ul>
+          <li>Item da <strong>atividade</strong></li>
+        </ul>
+      `,
+      { sourceName: "TEA - Documentos Vencidos.docx" },
+    );
+
+    expect(result.document.metadata.serviceOrder).toBe("OS2171");
+    expect(result.document.metadata.subject).toBe("Telas - Novo Layout");
+    expect(result.document.overview).toBe("Visao **geral** importada.");
+    expect(result.document.activityIntro).toBe("Texto inicial das **atividades**.");
+
+    const activity = result.document.activities[0];
+    expect(activity.title).toBe("Botao Editar");
+    expect(activity.blocks[0]).toMatchObject({
+      type: "text",
+      text: "Texto da **atividade**.",
+    });
+    expect(activity.blocks[1]).toMatchObject({
+      type: "list",
+      items: [{ text: "Item da **atividade**" }],
+    });
+  });
+
   it("ignores Mammoth's built-in Title style warning", () => {
     const result = parseTeaHtml(
       `

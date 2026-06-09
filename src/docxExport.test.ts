@@ -25,9 +25,9 @@ vi.mock("docx", () => {
   }
 
   class TextRun {
-    options: { bold?: boolean; text?: string; underline?: unknown };
+    options: { bold?: boolean; size?: number; text?: string; underline?: unknown };
 
-    constructor(options: { bold?: boolean; text?: string; underline?: unknown }) {
+    constructor(options: { bold?: boolean; size?: number; text?: string; underline?: unknown }) {
       this.options = options;
     }
   }
@@ -152,6 +152,25 @@ describe("exportTeaDocument", () => {
     expect(headingRuns.every((run) => run.options.underline)).toBe(true);
   });
 
+  it("exports activity headings with larger underlined text", async () => {
+    await exportTeaDocument(createTeaDocumentForExport());
+
+    const children = docxState.documents[0].options.sections[0].children;
+    const activityHeading = children.find((child) =>
+      readParagraphText(child).startsWith("2.1 - Atividade:"),
+    );
+
+    expect(readParagraphRuns(activityHeading)).toEqual([
+      expect.objectContaining({
+        options: expect.objectContaining({
+          text: "2.1 - Atividade:",
+          size: 28,
+          underline: expect.anything(),
+        }),
+      }),
+    ]);
+  });
+
   it("renders double-asterisk text segments as bold runs", async () => {
     await exportTeaDocument(createTeaDocumentForExport());
 
@@ -201,9 +220,9 @@ function readParagraphText(node: unknown): string {
 
 function readParagraphRuns(
   node: unknown,
-): Array<{ options: { bold?: boolean; text?: string; underline?: unknown } }> {
+): Array<{ options: { bold?: boolean; size?: number; text?: string; underline?: unknown } }> {
   return (
-    (node as { options?: { children?: Array<{ options: { bold?: boolean; text?: string; underline?: unknown } }> } })
+    (node as { options?: { children?: Array<{ options: { bold?: boolean; size?: number; text?: string; underline?: unknown } }> } })
       .options?.children ?? []
   );
 }

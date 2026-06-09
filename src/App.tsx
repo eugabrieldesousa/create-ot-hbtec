@@ -1,4 +1,15 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ClipboardEvent, DragEvent, ReactNode } from "react";
 import {
   ActionIcon,
@@ -48,7 +59,6 @@ import {
   Save,
   Sun,
   Trash2,
-  X,
 } from "lucide-react";
 import { checkLabels, checkOrder, createEmptyTestResult, createPermissionKey } from "./defaultDocument";
 import { exportOtDocument, exportTeaDocument } from "./docxExport";
@@ -136,6 +146,7 @@ type TeaReviewSummary = {
 };
 
 type TeaReviewSeverity = ReviewSeverity;
+type TeaReviewCategory = "document" | "activity" | "image";
 
 type TeaReviewIssue = {
   id: string;
@@ -143,6 +154,7 @@ type TeaReviewIssue = {
   detail: string;
   tab: TeaTab;
   severity: TeaReviewSeverity;
+  category: TeaReviewCategory;
   targetId?: string;
   activityId?: string;
   subActivityId?: string;
@@ -156,6 +168,49 @@ type TeaInlineReviewSummary = {
 };
 
 type InlineReviewSummary = TeaInlineReviewSummary;
+
+type ConfirmationTone = "danger";
+
+type ConfirmationOptions = {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  tone?: ConfirmationTone;
+};
+
+type PendingConfirmation = ConfirmationOptions & {
+  onConfirm: () => void | Promise<void>;
+};
+
+type ConfirmAction = (
+  options: ConfirmationOptions,
+  onConfirm: () => void | Promise<void>,
+) => void;
+
+const ConfirmationContext = createContext<ConfirmAction | null>(null);
+
+type OutlineItemStatus = "pending" | "ok";
+
+type DocumentOutlineItem = {
+  id: string;
+  title: string;
+  meta?: string;
+  tab: string;
+  targetId?: string;
+  status?: OutlineItemStatus;
+  level?: 0 | 1 | 2;
+  blockKey?: string;
+  testId?: string;
+  activityId?: string;
+  subActivityId?: string;
+  blockId?: string;
+};
+
+type DocumentOutlineGroup = {
+  id: string;
+  title: string;
+  items: DocumentOutlineItem[];
+};
 
 type FaqSection = {
   title: string;
@@ -246,6 +301,16 @@ type BlockTestEditorProps = {
 };
 
 const problemCheckKeys: CheckKey[] = ["possibleIssue", "bothIssue", "newIssue", "errorReport"];
+
+function useConfirmAction(): ConfirmAction {
+  const confirmAction = useContext(ConfirmationContext);
+
+  if (!confirmAction) {
+    throw new Error("useConfirmAction must be used inside ConfirmationContext.Provider");
+  }
+
+  return confirmAction;
+}
 
 const quickCheckLabels: Record<CheckKey, string> = {
   sameBehavior: "OK",
@@ -419,6 +484,7 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importPreview, setImportPreview] = useState<DocxImportResult | null>(null);
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [draftStatus, setDraftStatus] = useState<DraftStatus>("Rascunho salvo");
   const [permissionBulkText, setPermissionBulkText] = useState(() =>
     formatPermissionBulk(documentData.permissionGroups),
@@ -634,6 +700,16 @@ export default function App() {
     [deferredTeaData],
   );
 
+  const otOutlineGroups = useMemo(
+    () => buildOtOutlineItems(documentData, permissionBlockEntries, reviewSummary),
+    [documentData, permissionBlockEntries, reviewSummary],
+  );
+
+  const teaOutlineGroups = useMemo(
+    () => buildTeaOutlineItems(teaData, teaReviewSummary),
+    [teaData, teaReviewSummary],
+  );
+
   const updateDocument = useCallback((updater: (current: OtDocument) => OtDocument): void => {
     setDocumentData((current) => updater(current));
   }, []);
@@ -641,6 +717,25 @@ export default function App() {
   const updateTeaDocument = useCallback((updater: (current: TeaDocument) => TeaDocument): void => {
     setTeaData((current) => updater(current));
   }, []);
+
+  const requestConfirmation = useCallback<ConfirmAction>((options, onConfirm): void => {
+    setPendingConfirmation({
+      tone: "danger",
+      ...options,
+      onConfirm,
+    });
+  }, []);
+
+  async function confirmPendingAction(): Promise<void> {
+    const confirmation = pendingConfirmation;
+
+    if (!confirmation) {
+      return;
+    }
+
+    setPendingConfirmation(null);
+    await confirmation.onConfirm();
+  }
 
   const setTeaActivityCollapsed = useCallback((activityId: string, collapsed: boolean): void => {
     setCollapsedTeaActivities((current) => setCollapsedMapValue(current, activityId, collapsed));
@@ -837,10 +932,21 @@ export default function App() {
   }
 
   function removeStep(stepId: string): void {
-    updateDocument((current) => ({
-      ...current,
-      accessSteps: current.accessSteps.filter((step) => step.id !== stepId),
-    }));
+    const step = documentDataRef.current.accessSteps.find((candidate) => candidate.id === stepId);
+
+    requestConfirmation(
+      {
+        title: "Remover passo?",
+        description: `O passo ${formatConfirmationSubject(step?.text ?? "", "selecionado")} será removido do passo a passo.`,
+        confirmLabel: "Remover passo",
+      },
+      () => {
+        updateDocument((current) => ({
+          ...current,
+          accessSteps: current.accessSteps.filter((candidate) => candidate.id !== stepId),
+        }));
+      },
+    );
   }
 
   function replaceAccessStepsFromBulk(value: string): void {
@@ -881,13 +987,26 @@ export default function App() {
   }
 
   function removeMacroGroup(macroId: string): void {
-    updateDocument((current) => ({
-      ...current,
-      permissionGroups: current.permissionGroups.filter((macro) => macro.id !== macroId),
-      permissionBlocks: removePermissionBlocks(current.permissionBlocks, (key) =>
-        key.startsWith(`${macroId}:`),
-      ),
-    }));
+    const macro = documentDataRef.current.permissionGroups.find(
+      (candidate) => candidate.id === macroId,
+    );
+
+    requestConfirmation(
+      {
+        title: "Remover macro?",
+        description: `A macro ${formatConfirmationSubject(macro ? formatPermission(macro) : "", "selecionada")} e seus testes vinculados serão removidos.`,
+        confirmLabel: "Remover macro",
+      },
+      () => {
+        updateDocument((current) => ({
+          ...current,
+          permissionGroups: current.permissionGroups.filter((candidate) => candidate.id !== macroId),
+          permissionBlocks: removePermissionBlocks(current.permissionBlocks, (key) =>
+            key.startsWith(`${macroId}:`),
+          ),
+        }));
+      },
+    );
   }
 
   function addMicroPermission(macroId: string): void {
@@ -934,24 +1053,37 @@ export default function App() {
 
   function removeMicroPermission(macroId: string, microId: string): void {
     const blockKey = createPermissionKey(macroId, microId);
+    const macro = documentDataRef.current.permissionGroups.find(
+      (candidate) => candidate.id === macroId,
+    );
+    const micro = macro?.microPermissions.find((candidate) => candidate.id === microId);
 
-    updateDocument((current) => ({
-      ...current,
-      permissionGroups: current.permissionGroups.map((macro) =>
-        macro.id === macroId
-          ? {
-              ...macro,
-              microPermissions: macro.microPermissions.filter(
-                (micro) => micro.id !== microId,
-              ),
-            }
-          : macro,
-      ),
-      permissionBlocks: removePermissionBlocks(
-        current.permissionBlocks,
-        (key) => key === blockKey,
-      ),
-    }));
+    requestConfirmation(
+      {
+        title: "Remover micro-permissão?",
+        description: `A micro-permissão ${formatConfirmationSubject(micro ? formatPermission(micro) : "", "selecionada")} e seus testes vinculados serão removidos.`,
+        confirmLabel: "Remover micro-permissão",
+      },
+      () => {
+        updateDocument((current) => ({
+          ...current,
+          permissionGroups: current.permissionGroups.map((candidate) =>
+            candidate.id === macroId
+              ? {
+                  ...candidate,
+                  microPermissions: candidate.microPermissions.filter(
+                    (item) => item.id !== microId,
+                  ),
+                }
+              : candidate,
+          ),
+          permissionBlocks: removePermissionBlocks(
+            current.permissionBlocks,
+            (key) => key === blockKey,
+          ),
+        }));
+      },
+    );
   }
 
   function applyPermissionBulk(): void {
@@ -1179,18 +1311,31 @@ export default function App() {
   }, [updateBlock]);
 
   const removeBlockTest = useCallback((blockKey: string, testId: string): void => {
-    const referenceKey = createTestReferenceKey(blockKey, testId);
+    const test = documentDataRef.current.permissionBlocks[blockKey]?.tests.find(
+      (candidate) => candidate.id === testId,
+    );
 
-    setExpandedTests((current) => {
-      const { [referenceKey]: _removed, ...rest } = current;
-      return rest;
-    });
+    requestConfirmation(
+      {
+        title: "Remover teste?",
+        description: `O teste ${formatConfirmationSubject(test?.title ?? "", "selecionado")} será removido deste bloco de permissão.`,
+        confirmLabel: "Remover teste",
+      },
+      () => {
+        const referenceKey = createTestReferenceKey(blockKey, testId);
 
-    updateBlock(blockKey, (block) => ({
-      ...block,
-      tests: block.tests.filter((test) => test.id !== testId),
-    }));
-  }, [updateBlock]);
+        setExpandedTests((current) => {
+          const { [referenceKey]: _removed, ...rest } = current;
+          return rest;
+        });
+
+        updateBlock(blockKey, (block) => ({
+          ...block,
+          tests: block.tests.filter((candidate) => candidate.id !== testId),
+        }));
+      },
+    );
+  }, [requestConfirmation, updateBlock]);
 
   const moveBlockTest = useCallback((
     blockKey: string,
@@ -1336,6 +1481,26 @@ export default function App() {
     }, 40);
   }
 
+  function handleOtOutlineItemClick(item: DocumentOutlineItem): void {
+    setActiveTab(item.tab as ActiveTab);
+
+    if (item.tab === "tests") {
+      setTestBlockFilter("all");
+    }
+
+    if (item.blockKey) {
+      expandPermissionPath(item.blockKey);
+    }
+
+    if (item.blockKey && item.testId) {
+      setTestExpansion(createTestReferenceKey(item.blockKey, item.testId), true);
+    }
+
+    window.setTimeout(() => {
+      scrollAndFocusReviewTarget(item.targetId);
+    }, 60);
+  }
+
   function goToNextIssue(): void {
     const [issue] = reviewSummary.issues;
 
@@ -1362,13 +1527,30 @@ export default function App() {
     }
 
     window.setTimeout(() => {
-      if (issue.targetId) {
-        window.document.getElementById(issue.targetId)?.scrollIntoView({
-          behavior: "smooth",
-          block: "center",
-        });
-      }
+      scrollAndFocusReviewTarget(issue.targetId);
     }, 40);
+  }
+
+  function handleTeaOutlineItemClick(item: DocumentOutlineItem): void {
+    setTeaActiveTab(item.tab as TeaTab);
+
+    if (item.activityId) {
+      setTeaActivityCollapsed(item.activityId, false);
+      setTeaComposerCollapsed(item.activityId, false);
+    }
+
+    if (item.subActivityId) {
+      setTeaSubActivityCollapsed(item.subActivityId, false);
+      setTeaComposerCollapsed(item.subActivityId, false);
+    }
+
+    if (item.blockId) {
+      setTeaContentBlockCollapsed(item.blockId, false);
+    }
+
+    window.setTimeout(() => {
+      scrollAndFocusReviewTarget(item.targetId);
+    }, 60);
   }
 
   async function handleImportFile(file: File | null): Promise<void> {
@@ -1437,11 +1619,7 @@ export default function App() {
     }
   }
 
-  async function handleClearDraft(): Promise<void> {
-    if (!window.confirm("Limpar o rascunho atual?")) {
-      return;
-    }
-
+  async function clearCurrentDraft(): Promise<void> {
     if (documentKindRef.current === "tea") {
       await clearTeaDraft();
       setTeaData(loadTeaDraft());
@@ -1461,8 +1639,31 @@ export default function App() {
     setDraftStatus("Rascunho salvo");
   }
 
+  function handleClearDraft(): void {
+    requestConfirmation(
+      {
+        title: "Limpar rascunho atual?",
+        description:
+          "O rascunho local será substituído pelo modelo inicial deste tipo de documento.",
+        confirmLabel: "Limpar documento",
+      },
+      clearCurrentDraft,
+    );
+  }
+
+  const topBarStatusText = isImporting
+    ? "Importando DOCX..."
+    : isExporting
+      ? "Exportando DOCX..."
+      : draftStatus;
+  const topBarStatusColor = isImporting || isExporting ? "blue" : draftStatusColor(draftStatus);
+
   return (
-    <>
+    <ConfirmationContext.Provider value={requestConfirmation}>
+    <a href="#main-content" className="skipLink">
+      Pular para o conteúdo
+    </a>
+    <main id="main-content" tabIndex={-1}>
     <Container size="xl" py="xl">
       <Stack gap="lg">
         <Paper withBorder p="lg" className="topBar">
@@ -1492,14 +1693,25 @@ export default function App() {
               </Text>
             </div>
 
-            <Group gap="xs" className="topBarActions">
+            <Group gap="xs" className="topBarActions actionToolbar">
               <Badge
                 variant="light"
-                color={draftStatusColor(draftStatus)}
-                leftSection={<Save size={14} />}
+                color={topBarStatusColor}
+                leftSection={
+                  isImporting ? (
+                    <FileUp size={14} />
+                  ) : isExporting ? (
+                    <Download size={14} />
+                  ) : (
+                    <Save size={14} />
+                  )
+                }
                 h={30}
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
               >
-                {draftStatus}
+                {topBarStatusText}
               </Badge>
               <div className="topBarDesktopOnly">
                 <FileButton
@@ -1548,11 +1760,9 @@ export default function App() {
                 color="gray"
                 leftSection={<RotateCcw size={17} />}
                 className="topBarDesktopOnly"
-                onClick={() => {
-                  void handleClearDraft();
-                }}
+                onClick={handleClearDraft}
               >
-                Limpar
+                Limpar documento
               </Button>
               <Button
                 leftSection={<Download size={17} />}
@@ -1568,7 +1778,7 @@ export default function App() {
                     color="gray"
                     size="lg"
                     className="topBarCompactMenu"
-                    aria-label="Mais acoes globais"
+                    aria-label="Mais ações do documento"
                   >
                     <MoreVertical size={18} />
                   </ActionIcon>
@@ -1607,11 +1817,9 @@ export default function App() {
                   <Menu.Item
                     color="red"
                     leftSection={<RotateCcw size={15} />}
-                    onClick={() => {
-                      void handleClearDraft();
-                    }}
+                    onClick={handleClearDraft}
                   >
-                    Limpar
+                    Limpar documento
                   </Menu.Item>
                 </Menu.Dropdown>
               </Menu>
@@ -1619,6 +1827,16 @@ export default function App() {
           </Group>
         </Paper>
 
+        <div className="workspaceLayout">
+          <DocumentOutline
+            title="Índice do documento"
+            groups={documentKind === "tea" ? teaOutlineGroups : otOutlineGroups}
+            activeTab={documentKind === "tea" ? teaActiveTab : activeTab}
+            onItemClick={
+              documentKind === "tea" ? handleTeaOutlineItemClick : handleOtOutlineItemClick
+            }
+          />
+          <div className="workspaceContent">
         {documentKind === "ot" ? (
         <Tabs
           value={activeTab}
@@ -1630,7 +1848,7 @@ export default function App() {
           keepMounted={false}
           className="workspaceTabs"
         >
-          <Tabs.List>
+          <Tabs.List aria-label="Navegação do documento OT">
             <Tabs.Tab value="document" leftSection={<ClipboardList size={16} />}>
               Documento
             </Tabs.Tab>
@@ -1647,7 +1865,7 @@ export default function App() {
 
           <Tabs.Panel value="document" pt="md">
             <Stack gap="md">
-        <Section title="Documento" tone="document">
+        <Section title="Documento" tone="document" sectionId="ot-section-document">
           <Stack gap="sm">
             <div className="documentFields">
             <TextInput
@@ -1695,11 +1913,12 @@ export default function App() {
         </Section>
 
         <Section
+          sectionId="ot-section-steps"
           title="Passo a passo"
           tone="steps"
           action={
             <Button variant="light" leftSection={<Plus size={17} />} onClick={addStep}>
-              Adicionar
+              Adicionar passo
             </Button>
           }
         >
@@ -1717,7 +1936,7 @@ export default function App() {
                   {index + 1}
                 </Badge>
                 <TextInput
-                  label={index === 0 ? "Etapa" : undefined}
+                  label={`Passo ${index + 1}`}
                   value={step.text}
                   onChange={(event) => updateStep(step.id, event.currentTarget.value)}
                   onPaste={(event) => handleStepPaste(step.id, event)}
@@ -1737,7 +1956,11 @@ export default function App() {
               </Group>
             ))}
             {documentData.accessSteps.length === 0 ? (
-              <EmptyState actionLabel="Adicionar passo" onAction={addStep} />
+              <EmptyState
+                message="Nenhum passo adicionado."
+                actionLabel="Adicionar passo"
+                onAction={addStep}
+              />
             ) : null}
           </Stack>
         </Section>
@@ -1748,6 +1971,7 @@ export default function App() {
           <Tabs.Panel value="permissions" pt="md">
         <Section
           title="Permissões"
+          sectionId="ot-section-permissions"
           tone="permissions"
           action={
             <Button variant="light" leftSection={<Plus size={17} />} onClick={addMacroGroup}>
@@ -1778,6 +2002,8 @@ export default function App() {
                   </Group>
                 </Group>
                 <Textarea
+                  label="Permissões em lote"
+                  description="Use uma macro por linha e micros indentadas abaixo dela."
                   minRows={4}
                   autosize
                   value={permissionBulkText}
@@ -1801,7 +2027,11 @@ export default function App() {
               />
             ))}
             {documentData.permissionGroups.length === 0 ? (
-              <EmptyState actionLabel="Adicionar macro" onAction={addMacroGroup} />
+              <EmptyState
+                message="Nenhuma macro adicionada."
+                actionLabel="Adicionar macro"
+                onAction={addMacroGroup}
+              />
             ) : null}
           </Stack>
         </Section>
@@ -1811,6 +2041,7 @@ export default function App() {
           <Tabs.Panel value="tests" pt="md">
         <Section
           title="Testes por permissão"
+          sectionId="ot-section-tests"
           tone="blocks"
           action={
             <Badge variant="light" color={testBlockFilter === "all" ? "gray" : "blue"}>
@@ -1824,7 +2055,7 @@ export default function App() {
               counts={testBlockFilterCounts}
               onChange={setTestBlockFilter}
             />
-            <Group gap="xs" justify="flex-end" className="testExpansionActions">
+            <Group gap="xs" justify="flex-end" className="actionToolbar testExpansionActions">
               <Button
                 variant="light"
                 size="xs"
@@ -1867,7 +2098,7 @@ export default function App() {
               />
             ))}
             {permissionBlockEntries.length === 0 ? (
-              <Paper withBorder p="md" ta="center">
+              <Paper withBorder p="md" ta="center" className="softEmpty">
                 <Text c="dimmed">Nenhuma macro com micro-permissão selecionada.</Text>
               </Paper>
             ) : null}
@@ -1890,7 +2121,7 @@ export default function App() {
 
           </Tabs.Panel>
 
-          <Tabs.Panel value="review" pt="md">
+          <Tabs.Panel value="review" pt="md" id="ot-section-review">
             <ReviewPanel summary={reviewSummary} onIssueClick={handleReviewIssueClick} />
           </Tabs.Panel>
         </Tabs>
@@ -1923,8 +2154,11 @@ export default function App() {
             onReviewIssueClick={handleTeaReviewIssueClick}
           />
         )}
+          </div>
+        </div>
       </Stack>
     </Container>
+    </main>
     <ImportPreviewModal
       result={importPreview}
       onClose={() => setImportPreview(null)}
@@ -1942,7 +2176,14 @@ export default function App() {
         <FaqPanel />
       </Modal>
     ) : null}
-    </>
+    <ConfirmationModal
+      confirmation={pendingConfirmation}
+      onCancel={() => setPendingConfirmation(null)}
+      onConfirm={() => {
+        void confirmPendingAction();
+      }}
+    />
+    </ConfirmationContext.Provider>
   );
 }
 
@@ -2013,6 +2254,11 @@ function TeaWorkspace({
   const overview = useBufferedText(documentData.overview, onOverviewChange, 180);
   const activityIntro = useBufferedText(documentData.activityIntro, onActivityIntroChange, 180);
   const activityCount = documentData.activities.length;
+  const hasActivityReviewIssues = reviewSummary.issues.some(
+    (issue) => issue.tab === "activities" && issue.activityId,
+  );
+  const inlineError = (targetId: string): string | undefined =>
+    getTeaInlineReviewError(reviewSummary.issues, targetId);
 
   function setAllActivityPanelsCollapsed(collapsed: boolean): void {
     documentData.activities.forEach((activity) => {
@@ -2028,6 +2274,31 @@ function TeaWorkspace({
     });
   }
 
+  function expandTeaPendingPanels(): void {
+    setAllActivityPanelsCollapsed(true);
+
+    reviewSummary.issues
+      .filter((issue) => issue.tab === "activities" && issue.activityId)
+      .forEach((issue) => {
+        if (!issue.activityId) {
+          return;
+        }
+
+        onActivityCollapseChange(issue.activityId, false);
+
+        if (issue.subActivityId) {
+          onSubActivityCollapseChange(issue.subActivityId, false);
+          onComposerCollapseChange(issue.subActivityId, false);
+        } else {
+          onComposerCollapseChange(issue.activityId, false);
+        }
+
+        if (issue.blockId) {
+          onContentBlockCollapseChange(issue.blockId, false);
+        }
+      });
+  }
+
   return (
     <Tabs
       value={activeTab}
@@ -2039,7 +2310,7 @@ function TeaWorkspace({
       keepMounted={false}
       className="workspaceTabs"
     >
-      <Tabs.List>
+      <Tabs.List aria-label="Navegação do documento TEA">
         <Tabs.Tab value="document" leftSection={<FileText size={16} />}>
           Documento
         </Tabs.Tab>
@@ -2053,13 +2324,14 @@ function TeaWorkspace({
 
       <Tabs.Panel value="document" pt="md">
         <Stack gap="md">
-          <Section title="Documento TEA" tone="document">
+          <Section title="Documento TEA" tone="document" sectionId="tea-section-document">
             <Stack gap="sm">
               <div className="documentFields">
                 <TextInput
                   label="Ordem de Serviço"
                   id="tea-metadata-service-order"
                   value={documentData.metadata.serviceOrder}
+                  error={inlineError("tea-metadata-service-order")}
                   placeholder="OS2171 - Login/Menu/Prestador/Documentos Vencidos"
                   onChange={(event) =>
                     onMetadataChange("serviceOrder", event.currentTarget.value)
@@ -2069,6 +2341,7 @@ function TeaWorkspace({
                   label="Fase/Etapa"
                   id="tea-metadata-phase"
                   value={documentData.metadata.phase}
+                  error={inlineError("tea-metadata-phase")}
                   placeholder="Etapa 5"
                   onChange={(event) => onMetadataChange("phase", event.currentTarget.value)}
                 />
@@ -2076,6 +2349,7 @@ function TeaWorkspace({
                   label="Chamado"
                   id="tea-metadata-ticket"
                   value={documentData.metadata.ticket}
+                  error={inlineError("tea-metadata-ticket")}
                   placeholder="Chamado 202504000396"
                   onChange={(event) => onMetadataChange("ticket", event.currentTarget.value)}
                 />
@@ -2083,6 +2357,7 @@ function TeaWorkspace({
                   label="Assunto"
                   id="tea-metadata-subject"
                   value={documentData.metadata.subject}
+                  error={inlineError("tea-metadata-subject")}
                   placeholder="Telas - Novo Layout"
                   onChange={(event) => onMetadataChange("subject", event.currentTarget.value)}
                 />
@@ -2091,12 +2366,14 @@ function TeaWorkspace({
                   id="tea-metadata-date"
                   type="date"
                   value={documentData.metadata.date}
+                  error={inlineError("tea-metadata-date")}
                   onChange={(event) => onMetadataChange("date", event.currentTarget.value)}
                 />
                 <TextInput
                   label="Elaborado por"
                   id="tea-metadata-author"
                   value={documentData.metadata.author}
+                  error={inlineError("tea-metadata-author")}
                   onChange={(event) => onMetadataChange("author", event.currentTarget.value)}
                 />
               </div>
@@ -2107,6 +2384,7 @@ function TeaWorkspace({
                 styles={{ input: { resize: "vertical" } }}
                 id="tea-overview"
                 value={overview.value}
+                error={inlineError("tea-overview")}
                 onChange={(event) => overview.setValue(event.currentTarget.value)}
                 onBlur={overview.commit}
               />
@@ -2117,13 +2395,14 @@ function TeaWorkspace({
                 styles={{ input: { resize: "vertical" } }}
                 id="tea-activity-intro"
                 value={activityIntro.value}
+                error={inlineError("tea-activity-intro")}
                 onChange={(event) => activityIntro.setValue(event.currentTarget.value)}
                 onBlur={activityIntro.commit}
               />
             </Stack>
           </Section>
 
-          <Section title="Imagem geral" tone="steps">
+          <Section title="Imagem geral" tone="steps" sectionId="tea-section-images">
             <EvidenceUploader
               title="Atividades realizadas"
               tone="new"
@@ -2136,10 +2415,11 @@ function TeaWorkspace({
 
       <Tabs.Panel value="activities" pt="md">
         <Section
+          sectionId="tea-section-activities"
           title="Atividades"
           tone="blocks"
           action={
-            <Group gap="xs">
+            <Group gap="xs" className="actionToolbar sectionActionToolbar">
               <Button
                 variant="light"
                 size="xs"
@@ -2157,6 +2437,15 @@ function TeaWorkspace({
                 onClick={() => setAllActivityPanelsCollapsed(true)}
               >
                 Recolher todos
+              </Button>
+              <Button
+                variant="light"
+                size="xs"
+                leftSection={<AlertCircle size={15} />}
+                disabled={!hasActivityReviewIssues}
+                onClick={expandTeaPendingPanels}
+              >
+                Expandir pendências
               </Button>
               <Button variant="light" leftSection={<Plus size={17} />} onClick={onAddActivity}>
                 Adicionar atividade
@@ -2201,13 +2490,17 @@ function TeaWorkspace({
             ))}
 
             {documentData.activities.length === 0 ? (
-              <EmptyState actionLabel="Adicionar atividade" onAction={onAddActivity} />
+              <EmptyState
+                message="Nenhuma atividade adicionada."
+                actionLabel="Adicionar atividade"
+                onAction={onAddActivity}
+              />
             ) : null}
           </Stack>
         </Section>
       </Tabs.Panel>
 
-      <Tabs.Panel value="review" pt="md">
+      <Tabs.Panel value="review" pt="md" id="tea-section-review">
         <TeaReviewPanel summary={reviewSummary} onIssueClick={onReviewIssueClick} />
       </Tabs.Panel>
     </Tabs>
@@ -2259,10 +2552,21 @@ function TeaActivityEditor({
   onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
 }) {
   const activityId = `tea-activity-${toDomId(activity.id)}`;
+  const titleInputId = `tea-activity-title-${toDomId(activity.id)}`;
   const panelId = `${activityId}-panel`;
   const isExpanded = !isCollapsed;
   const review = summarizeTeaReviewIssues(reviewIssues);
   const summaryItems = buildTeaActivitySummaryItems(activity);
+  const titleError = getTeaInlineReviewError(reviewIssues, titleInputId);
+  const activityNumber = `2.${index + 1}`;
+  const hasTitle = Boolean(activity.title.trim());
+  const headerTitle = formatTeaEditorTitle(
+    activityNumber,
+    activity.title,
+    "Atividade sem título",
+  );
+  const composerTitle = formatTeaComposerTitle("activity", activityNumber, activity.title);
+  const confirmAction = useConfirmAction();
   const commitTitle = useCallback(
     (title: string) => onChange((current) => ({ ...current, title })),
     [onChange],
@@ -2274,19 +2578,25 @@ function TeaActivityEditor({
   }, [onChange]);
 
   function confirmAndRemove(): void {
-    if (
-      hasTeaActivityRemovalContent(activity) &&
-      !window.confirm("Remover esta atividade e todo o seu conteudo?")
-    ) {
+    if (!hasTeaActivityRemovalContent(activity)) {
+      onRemove();
       return;
     }
 
-    onRemove();
+    confirmAction(
+      {
+        title: "Remover atividade?",
+        description: `A atividade ${formatConfirmationSubject(activity.title, "selecionada")} e todo o seu conteúdo serão removidos do documento.`,
+        confirmLabel: "Remover atividade",
+      },
+      onRemove,
+    );
   }
 
   return (
     <Paper
       id={activityId}
+      tabIndex={-1}
       withBorder
       p="md"
       className={`teaActivityCard ${isExpanded ? "teaActivityCard--expanded" : "teaActivityCard--collapsed"}`}
@@ -2308,15 +2618,15 @@ function TeaActivityEditor({
                 />
               </ActionIcon>
             </Tooltip>
-            <Badge variant="outline" color="gray">
-              2.{index + 1}
-            </Badge>
             <div className="teaHeaderCopy">
-              <Text fw={800}>Atividade</Text>
-              <Text c="dimmed" size="xs">
-                {activity.title.trim() || "Sem titulo"}
+              <Text
+                fw={800}
+                className={`teaPrimaryTitle ${hasTitle ? "" : "teaPrimaryTitle--missing"}`}
+              >
+                {headerTitle}
               </Text>
-              <TeaSummaryChips items={summaryItems} review={review} />
+              <TeaHeaderMeta items={["Atividade", ...summaryItems]} />
+              <TeaSummaryChips items={[]} review={review} />
             </div>
           </Group>
           <TeaActivityActionsMenu
@@ -2332,8 +2642,9 @@ function TeaActivityEditor({
             <Stack gap="sm">
         <TextInput
           label="Título"
-          id={`tea-activity-title-${toDomId(activity.id)}`}
+          id={titleInputId}
           value={title.value}
+          error={titleError}
           placeholder="Seletor Situação do Prestador"
           onChange={(event) => {
             title.setValue(event.currentTarget.value);
@@ -2342,7 +2653,10 @@ function TeaActivityEditor({
         />
         <TeaContentComposer
           composerId={activity.id}
-          label={`Atividade 2.${index + 1}`}
+          title={composerTitle}
+          description={`${formatTeaCount(activity.blocks.length, "bloco", "blocos")} nesta atividade`}
+          emptyMessage="Nenhum bloco adicionado nesta atividade."
+          emptyActionLabel="Adicionar primeiro bloco"
           blocks={activity.blocks}
           tone="new"
           isCollapsed={collapsedComposers[activity.id] ?? false}
@@ -2436,10 +2750,21 @@ function TeaSubActivityEditor({
   onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
 }) {
   const subActivityId = `tea-subactivity-${toDomId(subActivity.id)}`;
+  const titleInputId = `tea-subactivity-title-${toDomId(subActivity.id)}`;
   const panelId = `${subActivityId}-panel`;
   const isExpanded = !isCollapsed;
   const review = summarizeTeaReviewIssues(reviewIssues);
   const summaryItems = buildTeaSubActivitySummaryItems(subActivity);
+  const titleError = getTeaInlineReviewError(reviewIssues, titleInputId);
+  const subActivityNumber = `2.${activityIndex + 1}.${index + 1}`;
+  const hasTitle = Boolean(subActivity.title.trim());
+  const headerTitle = formatTeaEditorTitle(
+    subActivityNumber,
+    subActivity.title,
+    "Subtópico sem título",
+  );
+  const composerTitle = formatTeaComposerTitle("subActivity", subActivityNumber, subActivity.title);
+  const confirmAction = useConfirmAction();
   const commitTitle = useCallback(
     (title: string) => onChange((current) => ({ ...current, title })),
     [onChange],
@@ -2451,18 +2776,23 @@ function TeaSubActivityEditor({
   }, [onChange]);
 
   function confirmAndRemove(): void {
-    if (
-      hasTeaSubActivityRemovalContent(subActivity) &&
-      !window.confirm("Remover este subtopico e todo o seu conteudo?")
-    ) {
+    if (!hasTeaSubActivityRemovalContent(subActivity)) {
+      onRemove();
       return;
     }
 
-    onRemove();
+    confirmAction(
+      {
+        title: "Remover subtópico?",
+        description: `O subtópico ${formatConfirmationSubject(subActivity.title, "selecionado")} e todo o seu conteúdo serão removidos da atividade.`,
+        confirmLabel: "Remover subtópico",
+      },
+      onRemove,
+    );
   }
 
   return (
-    <Paper id={subActivityId} p="sm" className="teaSubActivityCard">
+    <Paper id={subActivityId} p="sm" className="teaSubActivityCard" tabIndex={-1}>
       <Stack gap="sm">
         <Group justify="space-between" align="center" className="teaSubActivityHeader">
           <Group gap="xs" wrap="nowrap" className="teaSubActivityTitle">
@@ -2480,17 +2810,16 @@ function TeaSubActivityEditor({
                 />
               </ActionIcon>
             </Tooltip>
-            <Badge variant="outline" color="gray">
-              2.{activityIndex + 1}.{index + 1}
-            </Badge>
             <div className="teaHeaderCopy">
-              <Text fw={700} size="sm">
-                Subtopico
+              <Text
+                fw={800}
+                size="sm"
+                className={`teaPrimaryTitle ${hasTitle ? "" : "teaPrimaryTitle--missing"}`}
+              >
+                {headerTitle}
               </Text>
-              <Text c="dimmed" size="xs">
-                {subActivity.title.trim() || "Sem titulo"}
-              </Text>
-              <TeaSummaryChips items={summaryItems} review={review} />
+              <TeaHeaderMeta items={["Subtópico", ...summaryItems]} />
+              <TeaSummaryChips items={[]} review={review} />
             </div>
           </Group>
           <TeaSubActivityActionsMenu
@@ -2524,7 +2853,7 @@ function TeaSubActivityEditor({
               <ActionIcon
                 variant="subtle"
                 color="red"
-                onClick={onRemove}
+                onClick={confirmAndRemove}
                 aria-label="Remover subtópico"
               >
                 <Trash2 size={17} />
@@ -2538,8 +2867,9 @@ function TeaSubActivityEditor({
             <Stack gap="sm">
         <TextInput
           label="Título"
-          id={`tea-subactivity-title-${toDomId(subActivity.id)}`}
+          id={titleInputId}
           value={title.value}
+          error={titleError}
           placeholder="Botão de Anexo"
           onChange={(event) => {
             title.setValue(event.currentTarget.value);
@@ -2547,7 +2877,10 @@ function TeaSubActivityEditor({
           onBlur={title.commit}
         />
         <TeaContentComposer
-          label={`Subtópico 2.${activityIndex + 1}.${index + 1}`}
+          title={composerTitle}
+          description={`${formatTeaCount(subActivity.blocks.length, "bloco", "blocos")} neste subtópico`}
+          emptyMessage="Nenhum bloco adicionado neste subtópico."
+          emptyActionLabel="Adicionar primeiro bloco"
           composerId={subActivity.id}
           blocks={subActivity.blocks}
           tone="legacy"
@@ -2568,7 +2901,10 @@ function TeaSubActivityEditor({
 
 function TeaContentComposer({
   composerId,
-  label,
+  title,
+  description,
+  emptyMessage,
+  emptyActionLabel,
   blocks,
   tone,
   isCollapsed,
@@ -2579,7 +2915,10 @@ function TeaContentComposer({
   onBlocksChange,
 }: {
   composerId: string;
-  label: string;
+  title: string;
+  description: string;
+  emptyMessage: string;
+  emptyActionLabel: string;
   blocks: TeaContentBlock[];
   tone: "legacy" | "new";
   isCollapsed: boolean;
@@ -2591,6 +2930,7 @@ function TeaContentComposer({
 }) {
   const panelId = `tea-composer-${toDomId(composerId)}-panel`;
   const isExpanded = !isCollapsed;
+  const confirmAction = useConfirmAction();
 
   function addBlock(type: TeaContentBlockType): void {
     onCollapseChange(false);
@@ -2611,20 +2951,29 @@ function TeaContentComposer({
   }
 
   function removeBlock(block: TeaContentBlock): void {
-    if (
-      hasMeaningfulTeaBlockContent(block) &&
-      !window.confirm("Remover este bloco de conteudo?")
-    ) {
+    function removeCurrentBlock(): void {
+      if (block.type === "images") {
+        block.images.forEach((image) => {
+          void deleteEvidenceImageData(image.id);
+        });
+      }
+
+      onBlocksChange((current) => current.filter((candidate) => candidate.id !== block.id));
+    }
+
+    if (!hasMeaningfulTeaBlockContent(block)) {
+      removeCurrentBlock();
       return;
     }
 
-    if (block.type === "images") {
-      block.images.forEach((image) => {
-        void deleteEvidenceImageData(image.id);
-      });
-    }
-
-    onBlocksChange((current) => current.filter((candidate) => candidate.id !== block.id));
+    confirmAction(
+      {
+        title: "Remover bloco?",
+        description: `${getTeaBlockDisplayLabel(block)} será removido do documento.`,
+        confirmLabel: "Remover bloco",
+      },
+      removeCurrentBlock,
+    );
   }
 
   async function duplicateBlock(block: TeaContentBlock): Promise<void> {
@@ -2663,10 +3012,10 @@ function TeaContentComposer({
             </Tooltip>
           <div>
             <Text fw={800} size="sm">
-              Conteúdo
+              {title}
             </Text>
             <Text c="dimmed" size="xs">
-              {label} - {blocks.length} bloco{blocks.length === 1 ? "" : "s"}
+              {description}
             </Text>
           </div>
           </Group>
@@ -2699,7 +3048,8 @@ function TeaContentComposer({
         ) : (
           <Paper p="md" ta="center" className="teaComposerEmpty">
             <Stack gap="xs" align="center">
-              <Text c="dimmed">Nenhum bloco de conteúdo.</Text>
+              <Text c="dimmed">{emptyMessage}</Text>
+              <TeaAddBlockMenu onAddBlock={addBlock} label={emptyActionLabel} />
             </Stack>
           </Paper>
         )}
@@ -2736,10 +3086,14 @@ function TeaContentBlockEditor({
   onCollapseChange: (collapsed: boolean) => void;
 }) {
   const blockId = `tea-content-block-${toDomId(block.id)}`;
+  const blockInputId = getTeaContentBlockInputId(block);
   const panelId = `${blockId}-panel`;
   const label = teaContentBlockLabels[block.type];
   const review = summarizeTeaReviewIssues(reviewIssues);
   const summaryItems = [buildTeaContentBlockSummaryItem(block)];
+  const blockInputError = blockInputId
+    ? getTeaInlineReviewError(reviewIssues, blockInputId)
+    : undefined;
   const commitText = useCallback(
     (text: string) =>
       onChange((current) => (current.type === "text" ? { ...current, text } : current)),
@@ -2759,7 +3113,7 @@ function TeaContentBlockEditor({
   const list = useBufferedText(listValue, commitList);
 
   return (
-    <Paper id={blockId} p="sm" className="teaContentBlock">
+    <Paper id={blockId} p="sm" className="teaContentBlock" tabIndex={-1}>
       <Stack gap="sm">
         <Group justify="space-between" align="center" className="teaContentBlockHeader">
           <Group gap="xs" wrap="nowrap" className="teaContentBlockTitle">
@@ -2784,12 +3138,10 @@ function TeaContentBlockEditor({
             </span>
             <div className="teaHeaderCopy">
               <Text fw={800} size="sm">
-                {label}
+                Bloco {index + 1} - {label}
               </Text>
-              <Text c="dimmed" size="xs">
-                Bloco {index + 1}
-              </Text>
-              <TeaSummaryChips items={summaryItems} review={review} />
+              <TeaHeaderMeta items={summaryItems} />
+              <TeaSummaryChips items={[]} review={review} />
             </div>
           </Group>
 
@@ -2807,8 +3159,10 @@ function TeaContentBlockEditor({
             {block.type === "text" ? (
               <Textarea
                 label="Texto"
+                id={blockInputId}
                 minRows={4}
                 autosize
+                error={blockInputError}
                 styles={{ input: { resize: "vertical" } }}
                 value={text.value}
                 onChange={(event) => {
@@ -2821,8 +3175,10 @@ function TeaContentBlockEditor({
             {block.type === "list" ? (
               <Textarea
                 label="Itens em lista"
+                id={blockInputId}
                 minRows={3}
                 autosize
+                error={blockInputError}
                 placeholder="Um item por linha"
                 styles={{ input: { resize: "vertical" } }}
                 value={list.value}
@@ -2915,6 +3271,14 @@ function CheckStatusChips({ result }: { result: TestResult }) {
   );
 }
 
+function TeaHeaderMeta({ items }: { items: string[] }) {
+  return (
+    <Text c="dimmed" size="xs" className="teaHeaderMeta">
+      {items.join(" • ")}
+    </Text>
+  );
+}
+
 function TeaSummaryChips({
   items,
   review,
@@ -2923,6 +3287,11 @@ function TeaSummaryChips({
   review: TeaInlineReviewSummary;
 }) {
   const issueTone = getTeaReviewTone(review);
+  const showReviewChip = review.total > 0;
+
+  if (items.length === 0 && !showReviewChip) {
+    return null;
+  }
 
   return (
     <div className="teaSummaryChips">
@@ -2931,22 +3300,26 @@ function TeaSummaryChips({
           {item}
         </Badge>
       ))}
-      <Badge
-        size="xs"
-        variant={review.total > 0 ? "light" : "outline"}
-        color={issueTone}
-        className={`teaSummaryChip teaSummaryChip--${issueTone}`}
-      >
-        {formatTeaCount(review.total, "pendencia", "pendencias")}
-      </Badge>
+      {showReviewChip ? (
+        <Badge
+          size="xs"
+          variant="light"
+          color={issueTone}
+          className={`teaSummaryChip teaSummaryChip--${issueTone}`}
+        >
+          {formatTeaCount(review.total, "pendência", "pendências")}
+        </Badge>
+      ) : null}
     </div>
   );
 }
 
 function TeaAddBlockMenu({
   onAddBlock,
+  label = "Adicionar bloco",
 }: {
   onAddBlock: (type: TeaContentBlockType) => void;
+  label?: string;
 }) {
   const [opened, setOpened] = useState(false);
 
@@ -2969,7 +3342,7 @@ function TeaAddBlockMenu({
               setOpened(true);
             }}
           >
-            Adicionar bloco
+            {label}
           </Button>
         </span>
       </Menu.Target>
@@ -3001,7 +3374,7 @@ function TeaActivityActionsMenu({
 }) {
   return (
     <TeaMoveRemoveMenu
-      ariaLabel="Mais acoes da atividade"
+      ariaLabel="Mais ações da atividade"
       upLabel="Mover atividade para cima"
       downLabel="Mover atividade para baixo"
       removeLabel="Remover atividade"
@@ -3026,10 +3399,10 @@ function TeaSubActivityActionsMenu({
 }) {
   return (
     <TeaMoveRemoveMenu
-      ariaLabel="Mais acoes do subtopico"
-      upLabel="Mover subtopico para cima"
-      downLabel="Mover subtopico para baixo"
-      removeLabel="Remover subtopico"
+      ariaLabel="Mais ações do subtópico"
+      upLabel="Mover subtópico para cima"
+      downLabel="Mover subtópico para baixo"
+      removeLabel="Remover subtópico"
       canMoveUp={canMoveUp}
       canMoveDown={canMoveDown}
       onMove={onMove}
@@ -3146,7 +3519,7 @@ function TeaBlockActionsMenu({
         <span className="teaMenuTarget">
           <ActionIcon
             variant="subtle"
-            aria-label="Mais acoes do bloco"
+            aria-label="Mais ações do bloco"
             className="teaActionsMenu"
             onClick={(event) => {
               event.stopPropagation();
@@ -3184,6 +3557,60 @@ function TeaBlockActionsMenu({
   );
 }
 
+function getTeaInlineReviewError(issues: TeaReviewIssue[], targetId: string): string | undefined {
+  const issue =
+    issues.find((candidate) => candidate.targetId === targetId && candidate.severity === "danger") ??
+    issues.find((candidate) => candidate.targetId === targetId);
+
+  return issue ? `${issue.label}: ${issue.detail}` : undefined;
+}
+
+function buildTeaReviewCategoryGroups(issues: TeaReviewIssue[]): Array<{
+  category: TeaReviewCategory;
+  title: string;
+  emptyMessage: string;
+  issues: TeaReviewIssue[];
+}> {
+  const groups: Array<{
+    category: TeaReviewCategory;
+    title: string;
+    emptyMessage: string;
+  }> = [
+    {
+      category: "document",
+      title: "Documento",
+      emptyMessage: "Os dados principais do documento estão completos.",
+    },
+    {
+      category: "activity",
+      title: "Atividades",
+      emptyMessage: "As atividades e subtópicos não têm pendências.",
+    },
+    {
+      category: "image",
+      title: "Imagens",
+      emptyMessage: "As imagens necessárias estão disponíveis.",
+    },
+  ];
+
+  return groups.map((group) => ({
+    ...group,
+    issues: issues.filter((issue) => issue.category === group.category),
+  }));
+}
+
+function getTeaContentBlockInputId(block: TeaContentBlock): string | undefined {
+  if (block.type !== "text" && block.type !== "list") {
+    return undefined;
+  }
+
+  return `tea-content-block-input-${toDomId(block.id)}`;
+}
+
+function getTeaContentBlockReviewTargetId(block: TeaContentBlock): string {
+  return getTeaContentBlockInputId(block) ?? `tea-content-block-${toDomId(block.id)}`;
+}
+
 function ReviewTabLabel({ count }: { count: number }) {
   return (
     <span className="reviewTabLabel">
@@ -3206,6 +3633,7 @@ function TeaReviewPanel({
 }) {
   const totalIssues = summary.issues.length;
   const dangerIssues = summary.issues.filter((issue) => issue.severity === "danger");
+  const categoryGroups = buildTeaReviewCategoryGroups(summary.issues);
 
   return (
     <Section
@@ -3227,13 +3655,18 @@ function TeaReviewPanel({
           <ReviewMetric label="Pendências" value={totalIssues} />
         </div>
 
-        {summary.issues.length > 0 ? (
-          <ReviewIssueGroup
-            title="Pendências para revisar"
-            tone={dangerIssues.length > 0 ? "danger" : "warning"}
-            issues={summary.issues}
-            onIssueClick={onIssueClick}
-          />
+        {totalIssues > 0 ? (
+          <div className="reviewIssues">
+            {categoryGroups.map((group) => (
+              <TeaReviewCategorySection
+                key={group.category}
+                title={group.title}
+                emptyMessage={group.emptyMessage}
+                issues={group.issues}
+                onIssueClick={onIssueClick}
+              />
+            ))}
+          </div>
         ) : (
           <Group gap="xs" className="reviewOk">
             <CheckCircle2 size={18} />
@@ -3245,29 +3678,132 @@ function TeaReviewPanel({
   );
 }
 
+function DocumentOutline({
+  title,
+  groups,
+  activeTab,
+  onItemClick,
+}: {
+  title: string;
+  groups: DocumentOutlineGroup[];
+  activeTab: string;
+  onItemClick: (item: DocumentOutlineItem) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(true);
+  const pendingCount = groups.reduce(
+    (total, group) =>
+      total + group.items.filter((item) => item.status === "pending").length,
+    0,
+  );
+
+  return (
+    <aside className="documentOutline" aria-label={title}>
+      <Paper withBorder p="sm" className="documentOutlinePanel">
+        <Group justify="space-between" align="center" gap="xs" className="documentOutlineHeader">
+          <div>
+            <Text fw={800} size="sm">
+              Índice
+            </Text>
+            <Text c="dimmed" size="xs">
+              Documento inteiro
+            </Text>
+          </div>
+          <Group gap="xs" wrap="nowrap">
+            {pendingCount > 0 ? (
+              <Badge size="xs" color="red" variant="light">
+                {pendingCount}
+              </Badge>
+            ) : null}
+            <Button
+              variant="subtle"
+              size="xs"
+              className="documentOutlineToggle"
+              onClick={() => setIsOpen((current) => !current)}
+              aria-expanded={isOpen}
+            >
+              {isOpen ? "Ocultar" : "Mostrar"}
+            </Button>
+          </Group>
+        </Group>
+
+        <Collapse in={isOpen}>
+          <nav className="documentOutlineNav" aria-label={title}>
+            {groups.map((group) => (
+              <div key={group.id} className="documentOutlineGroup">
+                <Text
+                  size="xs"
+                  fw={800}
+                  c="dimmed"
+                  tt="uppercase"
+                  className="documentOutlineGroupTitle"
+                >
+                  {group.title}
+                </Text>
+                <div className="documentOutlineItems">
+                  {group.items.map((item) => {
+                    const isActive = item.tab === activeTab;
+
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`documentOutlineItem documentOutlineItem--level${item.level ?? 0}`}
+                        data-active={isActive ? "true" : undefined}
+                        aria-current={isActive ? "location" : undefined}
+                        onClick={() => onItemClick(item)}
+                      >
+                        <span className="documentOutlineItemCopy">
+                          <span className="documentOutlineItemTitle">{item.title}</span>
+                          {item.meta ? (
+                            <span className="documentOutlineItemMeta">{item.meta}</span>
+                          ) : null}
+                        </span>
+                        {item.status === "pending" ? (
+                          <span className="documentOutlinePending">Pendente</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </nav>
+        </Collapse>
+      </Paper>
+    </aside>
+  );
+}
+
 function Section({
   title,
   tone,
   action,
+  sectionId,
   children,
 }: {
   title: string;
   tone: "document" | "steps" | "permissions" | "blocks";
   action?: ReactNode;
+  sectionId?: string;
   children: ReactNode;
 }) {
+  const titleId = useId();
+
   return (
     <Card
       withBorder
+      component="section"
+      id={sectionId}
+      aria-labelledby={titleId}
       padding="lg"
       radius="md"
       className={`sectionCard sectionCard--${tone}`}
     >
-      <Group justify="space-between" mb="md" align="center">
-        <Title order={2} size="h4">
+      <Group justify="space-between" mb="md" align="center" className="sectionHeader">
+        <Title id={titleId} order={2} size="h4">
           {title}
         </Title>
-        {action}
+        {action ? <div className="sectionActions">{action}</div> : null}
       </Group>
       {children}
     </Card>
@@ -3349,9 +3885,9 @@ function PermissionGroupEditor({
   onRemoveMicro: (microId: string) => void;
 }) {
   return (
-    <Paper withBorder p="md" className="permissionGroup">
+    <Paper id={`permission-macro-${toDomId(macro.id)}`} withBorder p="md" className="permissionGroup">
       <Stack gap="sm">
-        <Group justify="space-between" align="center">
+        <Group justify="space-between" align="center" className="permissionGroupHeader">
           <Group gap="xs">
             <Badge variant="outline" color="gray">
               Macro {index + 1}
@@ -3391,12 +3927,12 @@ function PermissionGroupEditor({
 
         <Divider />
 
-        <Group justify="space-between" align="center">
+        <Group justify="space-between" align="center" className="permissionMicroHeader">
           <Text fw={700} size="sm">
             Micro-permissões
           </Text>
           <Button variant="subtle" size="xs" leftSection={<Plus size={15} />} onClick={onAddMicro}>
-            Adicionar micro
+            Adicionar micro-permissão
           </Button>
         </Group>
 
@@ -3479,7 +4015,7 @@ const PermissionBlockGroup = memo(function PermissionBlockGroup({
     <Paper withBorder p="md" className="blockGroup">
       <Stack gap="sm">
         <Group justify="space-between" align="center" className="blockGroupHeader">
-          <Group gap="xs" align="center" wrap="nowrap">
+          <Group gap="xs" align="center" wrap="nowrap" className="blockGroupTitle">
             <Tooltip label={isExpanded ? "Recolher macro" : "Abrir macro"}>
               <ActionIcon
                 variant="subtle"
@@ -3645,7 +4181,11 @@ const PermissionBlockEditor = memo(function PermissionBlockEditor({
             })}
 
             {block.tests.length === 0 ? (
-              <EmptyState actionLabel="Adicionar teste" onAction={() => onAddTest(blockKey)} />
+              <EmptyState
+                message="Nenhum teste adicionado nesta micro."
+                actionLabel="Adicionar teste"
+                onAction={() => onAddTest(blockKey)}
+              />
             ) : null}
           </Stack>
         </Collapse>
@@ -3669,7 +4209,7 @@ function PermissionBlockActionsMenu({
     <Menu position="bottom-end" withArrow>
       <Menu.Target>
         <span className="actionsMenuTarget">
-          <ActionIcon variant="subtle" aria-label="Mais acoes da micro" className="actionsMenu">
+          <ActionIcon variant="subtle" aria-label="Mais ações da micro" className="actionsMenu">
             <MoreVertical size={17} />
           </ActionIcon>
         </span>
@@ -3693,6 +4233,53 @@ function PermissionBlockActionsMenu({
   );
 }
 
+function TeaReviewCategorySection({
+  title,
+  emptyMessage,
+  issues,
+  onIssueClick,
+}: {
+  title: string;
+  emptyMessage: string;
+  issues: TeaReviewIssue[];
+  onIssueClick: (issue: TeaReviewIssue) => void;
+}) {
+  const dangerCount = issues.filter((issue) => issue.severity === "danger").length;
+  const tone = dangerCount > 0 ? "danger" : "warning";
+  const countLabel = formatTeaCount(issues.length, "pendência", "pendências");
+
+  if (issues.length === 0) {
+    return (
+      <div className="reviewIssueGroup reviewIssueGroup--ok">
+        <Group justify="space-between" align="center" gap="sm" mb={6}>
+          <Group gap="xs">
+            <CheckCircle2 size={17} />
+            <Text fw={700}>{title}</Text>
+          </Group>
+          <Badge variant="outline" color="green">
+            0 pendências
+          </Badge>
+        </Group>
+        <Text c="dimmed" size="sm">
+          {emptyMessage}
+        </Text>
+      </div>
+    );
+  }
+
+  return (
+    <ReviewIssueGroup
+      title={title}
+      tone={tone}
+      issues={issues}
+      countLabel={countLabel}
+      actionLabel="Corrigir agora"
+      showSeverity
+      onIssueClick={onIssueClick}
+    />
+  );
+}
+
 function BlockTestActionsMenu({
   canMoveUp,
   canMoveDown,
@@ -3710,7 +4297,7 @@ function BlockTestActionsMenu({
     <Menu position="bottom-end" withArrow>
       <Menu.Target>
         <span className="actionsMenuTarget">
-          <ActionIcon variant="subtle" aria-label="Mais acoes do teste" className="actionsMenu">
+          <ActionIcon variant="subtle" aria-label="Mais ações do teste" className="actionsMenu">
             <MoreVertical size={17} />
           </ActionIcon>
         </span>
@@ -3855,6 +4442,8 @@ const BlockTestEditor = memo(function BlockTestEditor({
                       <Tooltip key={key} label={checkLabels[key]}>
                         <button
                           type="button"
+                          aria-pressed={test.result.checks[key]}
+                          aria-label={`Alternar ${checkLabels[key]}`}
                           className={[
                             "quickCheck",
                             quickCheckToneClassNames[key],
@@ -3983,6 +4572,9 @@ const EvidenceUploader = memo(function EvidenceUploader({
   images: EvidenceImage[];
   onChange: (updater: (images: EvidenceImage[]) => EvidenceImage[]) => void;
 }) {
+  const confirmAction = useConfirmAction();
+  const descriptionId = useId();
+
   async function handlePaste(event: ClipboardEvent<HTMLDivElement>): Promise<void> {
     const files = getPastedImageFiles(event.clipboardData);
 
@@ -4041,9 +4633,25 @@ const EvidenceUploader = memo(function EvidenceUploader({
     );
   }
 
-  function removeImage(imageId: string): void {
-    void deleteEvidenceImageData(imageId);
-    onChange((current) => current.filter((image) => image.id !== imageId));
+  function removeImage(image: EvidenceImage): void {
+    function removeCurrentImage(): void {
+      void deleteEvidenceImageData(image.id);
+      onChange((current) => current.filter((candidate) => candidate.id !== image.id));
+    }
+
+    if (!hasMeaningfulEvidenceImageContent(image)) {
+      removeCurrentImage();
+      return;
+    }
+
+    confirmAction(
+      {
+        title: "Remover imagem?",
+        description: `A imagem ${formatConfirmationSubject(image.label || image.name, "selecionada")} será removida deste rascunho.`,
+        confirmLabel: "Remover imagem",
+      },
+      removeCurrentImage,
+    );
   }
 
   return (
@@ -4059,16 +4667,23 @@ const EvidenceUploader = memo(function EvidenceUploader({
         void handleDrop(event);
       }}
       tabIndex={0}
+      role="group"
       aria-label={`${title}: cole ou arraste uma imagem`}
+      aria-describedby={descriptionId}
     >
       <Stack gap="sm">
-        <Group justify="space-between">
-          <Group gap="xs">
-            <Text fw={700}>{title}</Text>
-            <Tooltip label="Aceita imagem colada ou arrastada">
-              <ClipboardPaste size={16} className="pasteIndicator" aria-hidden="true" />
-            </Tooltip>
-          </Group>
+        <Group justify="space-between" className="evidenceHeader">
+          <div className="evidenceTitle">
+            <Group gap="xs" wrap="nowrap">
+              <Text fw={700}>{title}</Text>
+              <Tooltip label="Aceita imagem colada ou arrastada">
+                <ClipboardPaste size={16} className="pasteIndicator" aria-hidden="true" />
+              </Tooltip>
+            </Group>
+            <Text id={descriptionId} c="dimmed" size="xs">
+              Cole, arraste ou selecione arquivos.
+            </Text>
+          </div>
           <FileButton
             onChange={(files) => {
               void addFiles(files);
@@ -4078,7 +4693,7 @@ const EvidenceUploader = memo(function EvidenceUploader({
           >
             {(props) => (
               <Button {...props} variant="light" leftSection={<ImagePlus size={17} />}>
-                Imagem
+                Adicionar imagem
               </Button>
             )}
           </FileButton>
@@ -4087,17 +4702,21 @@ const EvidenceUploader = memo(function EvidenceUploader({
         {images.length > 0 ? (
           <Stack gap="xs">
             {images.map((image) => (
-              <Paper withBorder p="xs" key={image.id}>
-                <Group align="center" wrap="nowrap">
+              <Paper withBorder p="xs" key={image.id} className="evidenceItem">
+                <Group align="center" wrap="nowrap" className="evidenceImageRow">
                   {image.dataUrl ? (
-                    <img className="imagePreview" src={image.dataUrl} alt={image.name} />
+                    <img
+                      className="imagePreview"
+                      src={image.dataUrl}
+                      alt={image.label || image.name || "Imagem anexada"}
+                    />
                   ) : (
                     <div className="imagePreview imagePreview--missing">Sem preview</div>
                   )}
-                  <Stack gap={4} style={{ flex: 1, minWidth: 0 }}>
+                  <Stack gap={4} className="evidenceImageFields">
                     <TextInput
+                      label="Legenda da imagem"
                       value={image.label}
-                      placeholder="Legenda"
                       onChange={(event) =>
                         updateImageLabel(image.id, event.currentTarget.value)
                       }
@@ -4112,10 +4731,10 @@ const EvidenceUploader = memo(function EvidenceUploader({
                     <ActionIcon
                       variant="subtle"
                       color="red"
-                      onClick={() => removeImage(image.id)}
+                      onClick={() => removeImage(image)}
                       aria-label="Remover imagem"
                     >
-                      <X size={17} />
+                      <Trash2 size={17} />
                     </ActionIcon>
                   </Tooltip>
                 </Group>
@@ -4123,7 +4742,7 @@ const EvidenceUploader = memo(function EvidenceUploader({
             ))}
           </Stack>
         ) : (
-          <Text c="dimmed" ta="center" py="md">
+          <Text c="dimmed" ta="center" py="md" className="evidenceEmpty">
             Sem imagens
           </Text>
         )}
@@ -4135,19 +4754,61 @@ const EvidenceUploader = memo(function EvidenceUploader({
 function EmptyState({
   actionLabel,
   onAction,
+  message = "Nenhum item adicionado.",
 }: {
   actionLabel: string;
   onAction: () => void;
+  message?: string;
 }) {
   return (
     <Paper withBorder p="md" ta="center" className="softEmpty">
       <Stack gap="xs" align="center">
-        <Text c="dimmed">Nenhum item adicionado.</Text>
+        <Text c="dimmed">{message}</Text>
         <Button variant="light" size="xs" leftSection={<Plus size={15} />} onClick={onAction}>
           {actionLabel}
         </Button>
       </Stack>
     </Paper>
+  );
+}
+
+function ConfirmationModal({
+  confirmation,
+  onCancel,
+  onConfirm,
+}: {
+  confirmation: PendingConfirmation | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      opened={confirmation !== null}
+      onClose={onCancel}
+      title={confirmation?.title ?? "Confirmar ação"}
+      centered
+    >
+      {confirmation ? (
+        <Stack gap="md">
+          <Group gap="xs" align="flex-start" className="confirmationMessage">
+            <AlertCircle size={18} aria-hidden="true" />
+            <Text size="sm">{confirmation.description}</Text>
+          </Group>
+          <Group justify="flex-end" gap="xs">
+            <Button variant="light" color="gray" onClick={onCancel}>
+              Cancelar
+            </Button>
+            <Button
+              color={confirmation.tone === "danger" ? "red" : undefined}
+              leftSection={<Trash2 size={17} />}
+              onClick={onConfirm}
+            >
+              {confirmation.confirmLabel}
+            </Button>
+          </Group>
+        </Stack>
+      ) : null}
+    </Modal>
   );
 }
 
@@ -4199,7 +4860,7 @@ function ImportPreviewModal({
           </div>
 
           {result.warnings.length > 0 ? (
-            <div className="importWarnings">
+            <div className="importWarnings" role="alert" aria-live="polite">
               <Group gap="xs" mb={6}>
                 <AlertCircle size={17} />
                 <Text fw={700}>Avisos</Text>
@@ -4219,7 +4880,7 @@ function ImportPreviewModal({
               Cancelar
             </Button>
             <Button leftSection={<FileUp size={17} />} onClick={onConfirm}>
-              Substituir rascunho
+              Substituir rascunho por importação
             </Button>
           </Group>
         </Stack>
@@ -4348,22 +5009,40 @@ function ReviewMetric({ label, value }: { label: string; value: number }) {
   );
 }
 
-function ReviewIssueGroup<TIssue extends { id: string; label: string; detail: string }>({
+function ReviewIssueGroup<TIssue extends {
+  id: string;
+  label: string;
+  detail: string;
+  severity?: ReviewSeverity;
+}>({
   title,
   tone,
   issues,
+  countLabel,
+  actionLabel,
+  showSeverity = false,
   onIssueClick,
 }: {
   title: string;
   tone: "warning" | "danger";
   issues: TIssue[];
+  countLabel?: string;
+  actionLabel?: string;
+  showSeverity?: boolean;
   onIssueClick: (issue: TIssue) => void;
 }) {
   return (
     <div className={`reviewIssueGroup reviewIssueGroup--${tone}`}>
-      <Group gap="xs" mb={6}>
-        <AlertCircle size={17} />
-        <Text fw={700}>{title}</Text>
+      <Group justify="space-between" align="center" gap="sm" mb={6}>
+        <Group gap="xs">
+          <AlertCircle size={17} />
+          <Text fw={700}>{title}</Text>
+        </Group>
+        {countLabel ? (
+          <Badge variant="light" color={tone === "danger" ? "red" : "yellow"}>
+            {countLabel}
+          </Badge>
+        ) : null}
       </Group>
       <Stack gap={4}>
         {issues.map((issue) => (
@@ -4371,19 +5050,65 @@ function ReviewIssueGroup<TIssue extends { id: string; label: string; detail: st
             key={issue.id}
             type="button"
             className="reviewIssueButton"
+            aria-label={
+              actionLabel
+                ? `${actionLabel}: ${issue.label}. ${issue.detail}`
+                : `${issue.label}. ${issue.detail}`
+            }
             onClick={() => onIssueClick(issue)}
           >
-            <Text size="sm" fw={700}>
-              {issue.label}
-            </Text>
+            <div className="reviewIssueButtonHeader">
+              <Text size="sm" fw={700}>
+                {issue.label}
+              </Text>
+              {showSeverity && issue.severity ? (
+                <Badge
+                  size="xs"
+                  variant="light"
+                  color={issue.severity === "danger" ? "red" : "yellow"}
+                >
+                  {getReviewSeverityLabel(issue.severity)}
+                </Badge>
+              ) : null}
+            </div>
             <Text size="xs" c="dimmed">
               {issue.detail}
             </Text>
+            {actionLabel ? (
+              <span className="reviewIssueCta">{actionLabel}</span>
+            ) : null}
           </button>
         ))}
       </Stack>
     </div>
   );
+}
+
+function getReviewSeverityLabel(severity: ReviewSeverity): string {
+  return severity === "danger" ? "Crítica" : "Aviso";
+}
+
+function scrollAndFocusReviewTarget(targetId: string | undefined): void {
+  if (!targetId) {
+    return;
+  }
+
+  const target = window.document.getElementById(targetId);
+
+  if (!target) {
+    return;
+  }
+
+  target.scrollIntoView?.({
+    behavior: "smooth",
+    block: "center",
+  });
+
+  if (!target.matches("input, textarea, button, select, a[href], [tabindex]")) {
+    target.setAttribute("tabindex", "-1");
+  }
+
+  target.focus({ preventScroll: true });
 }
 
 function useBufferedText(
@@ -4693,6 +5418,317 @@ function buildTestSummaryItems(test: PermissionBlockTest): string[] {
   ];
 }
 
+function buildOtOutlineItems(
+  documentData: OtDocument,
+  entries: PermissionBlockEntry[],
+  reviewSummary: ReviewSummary,
+): DocumentOutlineGroup[] {
+  const issues = reviewSummary.issues;
+  const documentIssues = countIssues(issues, (issue) => issue.tab === "document");
+  const permissionIssues = countIssues(issues, (issue) => issue.tab === "permissions");
+  const testIssues = countIssues(issues, (issue) => issue.tab === "tests");
+  const nonEmptyStepCount = documentData.accessSteps.filter((step) => step.text.trim()).length;
+  const selectedMacroIds = new Set(entries.map((entry) => entry.macro.id));
+
+  return [
+    {
+      id: "ot-document",
+      title: "Documento",
+      items: [
+        {
+          id: "ot-document-main",
+          title: documentData.metadata.screen.trim() || "Documento sem tela definida",
+          meta: documentData.metadata.responsible.trim() || "Responsável não informado",
+          tab: "document",
+          targetId: "ot-section-document",
+          status: outlineStatus(documentIssues),
+        },
+        {
+          id: "ot-document-steps",
+          title: "Passo a passo",
+          meta: formatOtCount(nonEmptyStepCount, "passo", "passos"),
+          tab: "document",
+          targetId: "ot-section-steps",
+          status: outlineStatus(
+            countIssues(issues, (issue) => issue.id === "missing-steps"),
+          ),
+        },
+      ],
+    },
+    {
+      id: "ot-permissions",
+      title: "Permissões",
+      items: [
+        {
+          id: "ot-permissions-main",
+          title: "Permissões",
+          meta: formatOtCount(entries.length, "micro selecionada", "micros selecionadas"),
+          tab: "permissions",
+          targetId: "ot-section-permissions",
+          status: outlineStatus(permissionIssues),
+        },
+        ...documentData.permissionGroups.map((macro, index) => ({
+          id: `ot-macro-${macro.id}`,
+          title: formatPermission(macro) || `Macro ${index + 1} sem nome`,
+          meta: `${formatOtCount(macro.microPermissions.length, "micro", "micros")}${
+            selectedMacroIds.has(macro.id) ? " • em uso" : ""
+          }`,
+          tab: "permissions",
+          targetId: `permission-macro-${toDomId(macro.id)}`,
+          level: 1 as const,
+          status: undefined,
+        })),
+      ],
+    },
+    {
+      id: "ot-tests",
+      title: "Testes",
+      items: [
+        {
+          id: "ot-tests-main",
+          title: "Testes por permissão",
+          meta: formatOtCount(reviewSummary.testCount, "teste", "testes"),
+          tab: "tests",
+          targetId: "ot-section-tests",
+          status: outlineStatus(testIssues),
+        },
+        ...entries.flatMap((entry) => {
+          const block = documentData.permissionBlocks[entry.key] ?? emptyPermissionBlock;
+          const blockIssues = countIssues(issues, (issue) => issue.blockKey === entry.key);
+          const blockItem: DocumentOutlineItem = {
+            id: `ot-block-${entry.key}`,
+            title: formatPermission(entry.micro) || "Micro sem nome",
+            meta: `${formatPermission(entry.macro) || "Macro sem nome"} • ${formatOtCount(
+              block.tests.length,
+              "teste",
+              "testes",
+            )}`,
+            tab: "tests",
+            targetId: `permission-block-${toDomId(entry.key)}`,
+            blockKey: entry.key,
+            level: 1,
+            status: outlineStatus(blockIssues),
+          };
+          const testItems = block.tests.map<DocumentOutlineItem>((test, index) => {
+            const referenceKey = createTestReferenceKey(entry.key, test.id);
+            const testIssueCount = countIssues(
+              issues,
+              (issue) => issue.blockKey === entry.key && issue.testId === test.id,
+            );
+
+            return {
+              id: `ot-test-${referenceKey}`,
+              title: test.title.trim() || `Teste ${index + 1} sem nome`,
+              meta: `${getSelectedCheckKeys(test.result).length}/${checkOrder.length} checks • ${formatOtCount(
+                getTestImageCount(test),
+                "imagem",
+                "imagens",
+              )}`,
+              tab: "tests",
+              targetId: `test-card-${toDomId(referenceKey)}`,
+              blockKey: entry.key,
+              testId: test.id,
+              level: 2,
+              status: outlineStatus(testIssueCount),
+            };
+          });
+
+          return [blockItem, ...testItems];
+        }),
+      ],
+    },
+    {
+      id: "ot-review",
+      title: "Revisão",
+      items: [
+        {
+          id: "ot-review-main",
+          title: "Revisão",
+          meta: formatOtCount(reviewSummary.issues.length, "pendência", "pendências"),
+          tab: "review",
+          targetId: "ot-section-review",
+          status: outlineStatus(reviewSummary.issues.length),
+        },
+      ],
+    },
+  ];
+}
+
+function buildTeaOutlineItems(
+  documentData: TeaDocument,
+  reviewSummary: TeaReviewSummary,
+): DocumentOutlineGroup[] {
+  const issues = reviewSummary.issues;
+  const documentIssues = countTeaIssues(issues, (issue) => issue.category === "document");
+  const imageIssues = countTeaIssues(
+    issues,
+    (issue) => issue.category === "image" && issue.tab === "document",
+  );
+  const activityIssues = countTeaIssues(issues, (issue) => issue.tab === "activities");
+
+  return [
+    {
+      id: "tea-document",
+      title: "Documento TEA",
+      items: [
+        {
+          id: "tea-document-main",
+          title:
+            documentData.metadata.subject.trim() ||
+            documentData.metadata.serviceOrder.trim() ||
+            "TEA sem assunto definido",
+          meta: documentData.metadata.phase.trim() || "Fase não informada",
+          tab: "document",
+          targetId: "tea-section-document",
+          status: outlineStatus(documentIssues),
+        },
+        {
+          id: "tea-document-images",
+          title: "Imagem geral",
+          meta: formatTeaCount(documentData.activityImages.length, "imagem", "imagens"),
+          tab: "document",
+          targetId: "tea-section-images",
+          status: outlineStatus(imageIssues),
+        },
+      ],
+    },
+    {
+      id: "tea-activities",
+      title: "Atividades",
+      items: [
+        {
+          id: "tea-activities-main",
+          title: "Atividades",
+          meta: formatTeaCount(documentData.activities.length, "atividade", "atividades"),
+          tab: "activities",
+          targetId: "tea-section-activities",
+          status: outlineStatus(activityIssues),
+        },
+        ...documentData.activities.flatMap((activity, activityIndex) => {
+          const activityNumber = `2.${activityIndex + 1}`;
+          const activityIssueCount = countTeaIssues(
+            issues,
+            (issue) => issue.activityId === activity.id,
+          );
+          const activityItem: DocumentOutlineItem = {
+            id: `tea-activity-outline-${activity.id}`,
+            title: formatTeaEditorTitle(
+              activityNumber,
+              activity.title,
+              "Atividade sem título",
+            ),
+            meta: buildTeaActivitySummaryItems(activity).join(" • "),
+            tab: "activities",
+            targetId: `tea-activity-${toDomId(activity.id)}`,
+            activityId: activity.id,
+            level: 1,
+            status: outlineStatus(activityIssueCount),
+          };
+          const activityBlocks = activity.blocks.map<DocumentOutlineItem>((block, blockIndex) => {
+            const blockIssueCount = countTeaIssues(
+              issues,
+              (issue) => issue.blockId === block.id,
+            );
+
+            return {
+              id: `tea-block-outline-${block.id}`,
+              title: `Bloco ${blockIndex + 1} - ${teaContentBlockLabels[block.type]}`,
+              meta: buildTeaContentBlockSummaryItem(block),
+              tab: "activities",
+              targetId: `tea-content-block-${toDomId(block.id)}`,
+              activityId: activity.id,
+              blockId: block.id,
+              level: 2,
+              status: outlineStatus(blockIssueCount),
+            };
+          });
+          const subActivityItems = activity.subActivities.flatMap<DocumentOutlineItem>(
+            (subActivity, subIndex) => {
+              const subActivityNumber = `${activityNumber}.${subIndex + 1}`;
+              const subActivityIssueCount = countTeaIssues(
+                issues,
+                (issue) => issue.subActivityId === subActivity.id,
+              );
+              const subActivityItem: DocumentOutlineItem = {
+                id: `tea-subactivity-outline-${subActivity.id}`,
+                title: formatTeaEditorTitle(
+                  subActivityNumber,
+                  subActivity.title,
+                  "Subtópico sem título",
+                ),
+                meta: buildTeaSubActivitySummaryItems(subActivity).join(" • "),
+                tab: "activities",
+                targetId: `tea-subactivity-${toDomId(subActivity.id)}`,
+                activityId: activity.id,
+                subActivityId: subActivity.id,
+                level: 2,
+                status: outlineStatus(subActivityIssueCount),
+              };
+              const subActivityBlocks = subActivity.blocks.map<DocumentOutlineItem>(
+                (block, blockIndex) => {
+                  const blockIssueCount = countTeaIssues(
+                    issues,
+                    (issue) => issue.blockId === block.id,
+                  );
+
+                  return {
+                    id: `tea-sub-block-outline-${block.id}`,
+                    title: `Bloco ${blockIndex + 1} - ${teaContentBlockLabels[block.type]}`,
+                    meta: buildTeaContentBlockSummaryItem(block),
+                    tab: "activities",
+                    targetId: `tea-content-block-${toDomId(block.id)}`,
+                    activityId: activity.id,
+                    subActivityId: subActivity.id,
+                    blockId: block.id,
+                    level: 2,
+                    status: outlineStatus(blockIssueCount),
+                  };
+                },
+              );
+
+              return [subActivityItem, ...subActivityBlocks];
+            },
+          );
+
+          return [activityItem, ...activityBlocks, ...subActivityItems];
+        }),
+      ],
+    },
+    {
+      id: "tea-review",
+      title: "Revisão",
+      items: [
+        {
+          id: "tea-review-main",
+          title: "Revisão",
+          meta: formatTeaCount(reviewSummary.issues.length, "pendência", "pendências"),
+          tab: "review",
+          targetId: "tea-section-review",
+          status: outlineStatus(reviewSummary.issues.length),
+        },
+      ],
+    },
+  ];
+}
+
+function countIssues(
+  issues: ReviewIssue[],
+  predicate: (issue: ReviewIssue) => boolean,
+): number {
+  return issues.filter(predicate).length;
+}
+
+function countTeaIssues(
+  issues: TeaReviewIssue[],
+  predicate: (issue: TeaReviewIssue) => boolean,
+): number {
+  return issues.filter(predicate).length;
+}
+
+function outlineStatus(issueCount: number): OutlineItemStatus | undefined {
+  return issueCount > 0 ? "pending" : undefined;
+}
+
 function formatOtCount(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -4901,6 +5937,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-service-order",
       severity: "danger",
+      category: "document",
       label: "Ordem de serviço vazia",
       detail: "Preencha a ordem de serviço do TEA.",
       tab: "document",
@@ -4912,6 +5949,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-phase",
       severity: "warning",
+      category: "document",
       label: "Fase/Etapa vazia",
       detail: "Preencha a fase ou etapa do TEA.",
       tab: "document",
@@ -4923,6 +5961,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-ticket",
       severity: "warning",
+      category: "document",
       label: "Chamado vazio",
       detail: "Preencha o chamado relacionado ao TEA.",
       tab: "document",
@@ -4934,6 +5973,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-subject",
       severity: "danger",
+      category: "document",
       label: "Assunto vazio",
       detail: "Preencha o assunto usado no cabeçalho e nome do arquivo.",
       tab: "document",
@@ -4945,6 +5985,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-date",
       severity: "warning",
+      category: "document",
       label: "Data vazia",
       detail: "Preencha a data do TEA.",
       tab: "document",
@@ -4956,6 +5997,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-author",
       severity: "warning",
+      category: "document",
       label: "Elaborado por vazio",
       detail: "Preencha o responsavel pela elaboracao do TEA.",
       tab: "document",
@@ -4967,6 +6009,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-overview",
       severity: "danger",
+      category: "document",
       label: "Visão geral vazia",
       detail: "Preencha a seção 1 do documento.",
       tab: "document",
@@ -4978,6 +6021,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "overview-incomplete-bold",
       severity: "warning",
+      category: "document",
       label: "Negrito incompleto na visao geral",
       detail: "Revise os pares **texto** na secao 1.",
       tab: "document",
@@ -4989,6 +6033,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-activity-intro",
       severity: "warning",
+      category: "document",
       label: "Texto inicial vazio",
       detail: "Preencha o texto introdutor das atividades realizadas.",
       tab: "document",
@@ -5000,6 +6045,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "activity-intro-incomplete-bold",
       severity: "warning",
+      category: "document",
       label: "Negrito incompleto no texto inicial",
       detail: "Revise os pares **texto** no texto inicial das atividades.",
       tab: "document",
@@ -5021,6 +6067,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     summary.issues.push({
       id: "missing-activities",
       severity: "danger",
+      category: "activity",
       label: "Sem atividades",
       detail: "Adicione ao menos uma atividade realizada.",
       tab: "activities",
@@ -5032,6 +6079,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
       summary.issues.push({
         id: `activity-title-${activity.id}`,
         severity: "danger",
+        category: "activity",
         label: "Atividade sem título",
         detail: `Atividade 2.${index + 1}`,
         tab: "activities",
@@ -5044,6 +6092,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
       summary.issues.push({
         id: `activity-content-${activity.id}`,
         severity: "danger",
+        category: "activity",
         label: "Atividade sem conteúdo",
         detail: `Atividade 2.${index + 1}: adicione texto, lista ou imagem.`,
         tab: "activities",
@@ -5066,6 +6115,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
         summary.issues.push({
           id: `subactivity-title-${subActivity.id}`,
           severity: "warning",
+          category: "activity",
           label: "Subtópico sem título",
           detail: `Subtópico 2.${index + 1}.${subIndex + 1}`,
           tab: "activities",
@@ -5079,6 +6129,7 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
         summary.issues.push({
           id: `subactivity-content-${subActivity.id}`,
           severity: "warning",
+          category: "activity",
           label: "Subtópico sem conteúdo",
           detail: `Subtópico 2.${index + 1}.${subIndex + 1}: adicione texto, lista ou imagem.`,
           tab: "activities",
@@ -5114,9 +6165,10 @@ function addTeaContentBlockIssues(
     subActivityId?: string;
   },
 ): void {
-  const targetId = `tea-content-block-${toDomId(block.id)}`;
+  const targetId = getTeaContentBlockReviewTargetId(block);
   const commonIssueFields = {
     tab: "activities" as const,
+    category: "activity" as const,
     targetId,
     activityId: context.activityId,
     subActivityId: context.subActivityId,
@@ -5177,9 +6229,10 @@ function addTeaContentBlockIssues(
     summary.issues.push({
       id: `${context.issuePrefix}-empty-images`,
       severity: context.severity,
+      ...commonIssueFields,
+      category: "image",
       label: "Bloco de imagens vazio",
       detail: `${context.detailPrefix}: adicione uma imagem ou remova o bloco.`,
-      ...commonIssueFields,
     });
   }
 
@@ -5212,6 +6265,7 @@ function addTeaImageIssues(
 ): void {
   const commonIssueFields = {
     tab: context.tab ?? ("activities" as const),
+    category: "image" as const,
     targetId: context.targetId,
     activityId: context.activityId,
     subActivityId: context.subActivityId,
@@ -5385,6 +6439,40 @@ function getTeaReviewTone(review: TeaInlineReviewSummary): "gray" | "red" | "yel
   return "gray";
 }
 
+function formatTeaEditorTitle(
+  number: string,
+  title: string,
+  fallback: string,
+): string {
+  return `${number} ${title.trim() || fallback}`;
+}
+
+function formatTeaComposerTitle(
+  kind: "activity" | "subActivity",
+  number: string,
+  title: string,
+): string {
+  const trimmedTitle = title.trim();
+
+  if (trimmedTitle) {
+    return `Blocos de ${trimmedTitle}`;
+  }
+
+  return kind === "activity"
+    ? `Blocos da atividade ${number}`
+    : `Blocos do subtópico ${number}`;
+}
+
+function formatConfirmationSubject(value: string, fallback: string): string {
+  const trimmedValue = value.trim();
+
+  return trimmedValue ? `"${trimmedValue}"` : fallback;
+}
+
+function getTeaBlockDisplayLabel(block: TeaContentBlock): string {
+  return `O bloco de ${teaContentBlockLabels[block.type].toLowerCase()}`;
+}
+
 function buildTeaActivitySummaryItems(activity: TeaActivity): string[] {
   const blockCount =
     activity.blocks.length +
@@ -5398,7 +6486,7 @@ function buildTeaActivitySummaryItems(activity: TeaActivity): string[] {
 
   return [
     formatTeaCount(blockCount, "bloco", "blocos"),
-    formatTeaCount(activity.subActivities.length, "subtopico", "subtopicos"),
+    formatTeaCount(activity.subActivities.length, "subtópico", "subtópicos"),
     formatTeaCount(imageCount, "imagem", "imagens"),
   ];
 }
@@ -5455,6 +6543,10 @@ function hasMeaningfulTeaBlockContent(block: TeaContentBlock): boolean {
   }
 
   return block.images.length > 0;
+}
+
+function hasMeaningfulEvidenceImageContent(image: EvidenceImage): boolean {
+  return Boolean(image.label.trim() || image.name.trim() || image.dataUrl);
 }
 
 async function duplicateTeaContentBlock(block: TeaContentBlock): Promise<TeaContentBlock> {

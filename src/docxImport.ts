@@ -65,6 +65,7 @@ type ParseOptions = {
 
 type Token = {
   text: string;
+  markdownText?: string;
   cells?: string[];
   images: EvidenceImage[];
   section: SectionName;
@@ -234,9 +235,11 @@ function collectTokens(root: HTMLElement): Token[] {
     if (child instanceof HTMLOListElement || child instanceof HTMLUListElement) {
       Array.from(child.querySelectorAll("li")).forEach((item) => {
         const text = cleanText(item.textContent ?? "");
+        const markdownText = markdownTextFromElement(item);
         section = sectionFromText(text, section);
         tokens.push({
           text,
+          markdownText,
           images: collectImages(item),
           section,
           tagName: "li",
@@ -246,10 +249,12 @@ function collectTokens(root: HTMLElement): Token[] {
     }
 
     const text = cleanText(child.textContent ?? "");
+    const markdownText = markdownTextFromElement(child);
     section = sectionFromText(text, section);
 
     tokens.push({
       text,
+      markdownText,
       images: collectImages(child),
       section,
       tagName: child.tagName.toLowerCase(),
@@ -271,6 +276,43 @@ function collectImages(element: Element): EvidenceImage[] {
       width: 560,
       height: 320,
     }));
+}
+
+function markdownTextFromElement(element: Element): string {
+  return cleanText(
+    Array.from(element.childNodes)
+      .map((node) => markdownTextFromNode(node))
+      .join(""),
+  );
+}
+
+function markdownTextFromNode(node: ChildNode, inheritedBold = false): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? "";
+  }
+
+  if (!(node instanceof Element)) {
+    return "";
+  }
+
+  const isBold = node.tagName.toLowerCase() === "strong" || node.tagName.toLowerCase() === "b";
+  const childText = Array.from(node.childNodes)
+    .map((child) => markdownTextFromNode(child, inheritedBold || isBold))
+    .join("");
+
+  if (!isBold || inheritedBold) {
+    return childText;
+  }
+
+  return wrapMarkdownBold(childText);
+}
+
+function wrapMarkdownBold(value: string): string {
+  const leadingSpace = value.match(/^\s*/)?.[0] ?? "";
+  const trailingSpace = value.match(/\s*$/)?.[0] ?? "";
+  const text = value.trim();
+
+  return text ? `${leadingSpace}**${text}**${trailingSpace}` : value;
 }
 
 function sectionFromText(text: string, current: SectionName): SectionName {
@@ -548,7 +590,7 @@ function cleanTeaHeadingTitle(value: string): string {
 }
 
 function appendTeaContentToken(state: TeaParserState, token: Token): void {
-  const text = cleanText(token.text);
+  const text = cleanText(token.markdownText ?? token.text);
 
   if (state.currentSection === "overview") {
     appendTeaDocumentText(state.document, "overview", text);

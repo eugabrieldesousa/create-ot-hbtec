@@ -178,8 +178,9 @@ export async function exportTeaDocument(documentData: TeaDocument): Promise<void
           quickFormat: true,
           run: {
             bold: true,
-            size: 26,
+            size: 28,
             font: "Calibri",
+            underline: { type: UnderlineType.SINGLE },
           },
           paragraph: {
             spacing: { before: 220, after: 100 },
@@ -414,7 +415,7 @@ function teaHeading2(text: string): Paragraph {
   return new Paragraph({
     heading: HeadingLevel.HEADING_2,
     spacing: { before: 220, after: 100 },
-    children: [teaRun(text, { bold: true, font: "Calibri", size: 26 })],
+    children: [teaRun(text, { bold: true, font: "Calibri", size: 28, underline: true })],
   });
 }
 

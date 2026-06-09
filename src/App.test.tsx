@@ -84,8 +84,12 @@ describe("App test block filters", () => {
 
     await clickFilterButton("Com problema");
 
-    expect(container.textContent ?? "").not.toContain("teste sem erro");
-    expect(container.textContent ?? "").toContain("teste com problema");
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").not.toContain(
+      "teste sem erro",
+    );
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").toContain(
+      "teste com problema",
+    );
   });
 });
 
@@ -217,13 +221,72 @@ describe("App OT card UX", () => {
     expect(container.textContent ?? "").not.toContain("Adicionar pacote");
     expect(container.textContent ?? "").not.toContain("Duplicar teste");
 
-    await clickAriaButtonAt("Mais acoes da micro");
+    await clickAriaButtonAt("Mais ações da micro");
     await clickMenuItem("Adicionar teste");
     expect(container.querySelectorAll(".testCard")).toHaveLength(2);
 
-    await clickAriaButtonAt("Mais acoes do teste");
+    await clickAriaButtonAt("Mais ações do teste");
     await clickMenuItem("Duplicar teste");
     expect(container.querySelectorAll(".testCard")).toHaveLength(3);
+
+    await clickAriaButtonAt("Mais ações do teste");
+    await clickMenuItem("Remover teste");
+    await waitForBodyText("Remover teste?");
+    await cancelDialog();
+    expect(container.querySelectorAll(".testCard")).toHaveLength(3);
+
+    await clickAriaButtonAt("Mais ações do teste");
+    await clickMenuItem("Remover teste");
+    await confirmDialog("Remover teste");
+    expect(container.querySelectorAll(".testCard")).toHaveLength(2);
+  });
+
+  it("uses clearer global and document action labels", async () => {
+    await renderApp();
+
+    expect(container.textContent ?? "").toContain("Adicionar passo");
+
+    await clickButton("Limpar documento");
+    await waitForBodyText("Limpar rascunho atual?");
+    await waitForBodyText("Limpar documento");
+
+    await cancelDialog();
+  });
+
+  it("exposes core navigation and bulk permission form accessibly", async () => {
+    await renderApp();
+
+    expect(container.querySelector<HTMLAnchorElement>(".skipLink")?.getAttribute("href")).toBe(
+      "#main-content",
+    );
+    expect(container.querySelector("main#main-content")).toBeTruthy();
+    expect(
+      container.querySelector('[role="tablist"][aria-label="Navegação do documento OT"]'),
+    ).toBeTruthy();
+
+    await clickButton("Permiss");
+
+    const bulkPermissions = Array.from(
+      container.querySelectorAll<HTMLTextAreaElement>("textarea"),
+    ).find((textarea) => textarea.labels?.[0]?.textContent?.includes("Permissões em lote"));
+
+    expect(bulkPermissions).toBeTruthy();
+  });
+
+  it("announces quick status buttons as pressed state controls", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await clickButton("Testes");
+    await clickElement(getToggleByControlPrefix("test-details"));
+
+    const sameBehaviorButton = getQuickCheckButton("OK");
+
+    expect(sameBehaviorButton?.getAttribute("aria-pressed")).toBe("false");
+
+    await clickElement(sameBehaviorButton);
+
+    expect(getQuickCheckButton("OK")?.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("keeps OT FAQ out of the tab flow and opens it from the top help action", async () => {
@@ -236,6 +299,81 @@ describe("App OT card UX", () => {
     await clickButton("Ajuda");
 
     expect(document.body.textContent ?? "").toContain("FAQ do Gerador de OT");
+  });
+});
+
+describe("App document outline", () => {
+  it("shows an app-wide OT outline with groups and pending indicators", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createReviewDraft()));
+
+    await renderApp();
+
+    const outline = container.querySelector<HTMLElement>(".documentOutline");
+
+    expect(outline).toBeTruthy();
+    expect(outline?.textContent ?? "").toContain("Índice");
+    expect(outline?.textContent ?? "").toContain("Documento");
+    expect(outline?.textContent ?? "").toContain("Passo a passo");
+    expect(outline?.textContent ?? "").toContain("Permissões");
+    expect(outline?.textContent ?? "").toContain("Testes");
+    expect(outline?.textContent ?? "").toContain("Revisão");
+    expect(outline?.textContent ?? "").toContain("MA (Macro A)");
+    expect(outline?.textContent ?? "").toContain("teste sem status");
+    expect(outline?.textContent ?? "").toContain("Pendente");
+  });
+
+  it("opens the OT test path from the outline", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createReviewDraft()));
+
+    await renderApp();
+
+    expect(container.querySelector("#test-card-macro-a-micro-at-test-missing-status")).toBeNull();
+
+    await clickOutlineItem("teste sem status");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    expect(container.textContent ?? "").toContain("Status rapido");
+    expect(document.activeElement?.id).toBe("test-card-macro-a-micro-at--test-missing-status");
+  });
+
+  it("shows and navigates the TEA outline with real titles and block targets", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createMixedTeaPendingDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+
+    const outline = container.querySelector<HTMLElement>(".documentOutline");
+
+    expect(outline?.textContent ?? "").toContain("Documento TEA");
+    expect(outline?.textContent ?? "").toContain("Imagem geral");
+    expect(outline?.textContent ?? "").toContain("Atividade com pendência");
+    expect(outline?.textContent ?? "").toContain("Bloco 1 - Texto");
+    expect(outline?.textContent ?? "").toContain("Pendente");
+
+    await clickButton("Atividades");
+    await clickButton("Recolher todos");
+    expect(
+      getToggleByControlId("tea-content-block-pending-empty-text-panel")?.getAttribute(
+        "aria-expanded",
+      ),
+    ).toBe("false");
+
+    await clickButton("Documento");
+    await clickOutlineItem("Bloco 1 - Texto");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    expect(
+      getToggleByControlId("tea-content-block-pending-empty-text-panel")?.getAttribute(
+        "aria-expanded",
+      ),
+    ).toBe("true");
+    expect(document.activeElement?.id).toBe("tea-content-block-pending-empty-text");
   });
 });
 
@@ -260,7 +398,7 @@ describe("App TEA content blocks", () => {
       expect.stringContaining("Imagens"),
     ]);
 
-    await clickAriaButtonAt("Mais acoes do bloco", 1);
+    await clickAriaButtonAt("Mais ações do bloco", 1);
     await clickMenuItem("Mover bloco para cima");
 
     expect(getTeaBlockTexts()).toEqual([
@@ -273,19 +411,18 @@ describe("App TEA content blocks", () => {
     await clickMenuItem("Texto");
     expect(getTeaBlockTexts()).toHaveLength(4);
 
-    await clickAriaButtonAt("Mais acoes do bloco", 0);
+    await clickAriaButtonAt("Mais ações do bloco", 0);
     await clickMenuItem("Duplicar bloco");
     expect(getTeaBlockTexts()).toHaveLength(5);
 
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    await clickAriaButtonAt("Mais acoes do bloco", 0);
+    await clickAriaButtonAt("Mais ações do bloco", 0);
     await clickMenuItem("Remover bloco");
+    await confirmDialog("Remover bloco");
     expect(getTeaBlockTexts()).toHaveLength(4);
   });
 
   it("confirms removal only when a TEA block has filled content", async () => {
     window.localStorage.setItem(teaDraftKey, JSON.stringify(createLegacyTeaDraft()));
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     await renderApp();
     await clickControl("TEA");
@@ -293,15 +430,16 @@ describe("App TEA content blocks", () => {
 
     expect(getTeaBlockTexts()).toHaveLength(3);
 
-    await clickAriaButtonAt("Mais acoes do bloco", 1);
+    await clickAriaButtonAt("Mais ações do bloco", 1);
     await clickMenuItem("Remover bloco");
+    await waitForBodyText("Remover bloco?");
+    await cancelDialog();
 
-    expect(confirm).toHaveBeenCalledTimes(1);
     expect(getTeaBlockTexts()).toHaveLength(3);
 
-    confirm.mockReturnValue(true);
-    await clickAriaButtonAt("Mais acoes do bloco", 1);
+    await clickAriaButtonAt("Mais ações do bloco", 1);
     await clickMenuItem("Remover bloco");
+    await confirmDialog("Remover bloco");
 
     expect(getTeaBlockTexts()).toHaveLength(2);
 
@@ -309,11 +447,10 @@ describe("App TEA content blocks", () => {
     await clickMenuItem("Texto");
     expect(getTeaBlockTexts()).toHaveLength(3);
 
-    confirm.mockClear();
-    await clickAriaButtonAt("Mais acoes do bloco", 2);
+    await clickAriaButtonAt("Mais ações do bloco", 2);
     await clickMenuItem("Remover bloco");
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(container.textContent ?? "").not.toContain("Remover bloco?");
     expect(getTeaBlockTexts()).toHaveLength(2);
   });
 
@@ -390,11 +527,38 @@ describe("App TEA content blocks", () => {
     await clickButton("Atividades");
 
     const activityCard = container.querySelector<HTMLElement>(".teaActivityCard");
+    const subActivityCard = container.querySelector<HTMLElement>(".teaSubActivityCard");
+    const text = container.textContent ?? "";
 
+    expect(activityCard?.textContent ?? "").toContain("2.1 Atividade com imagens");
     expect(activityCard?.textContent ?? "").toContain("3 blocos");
-    expect(activityCard?.textContent ?? "").toContain("1 subtopico");
+    expect(activityCard?.textContent ?? "").toContain("1 subtópico");
     expect(activityCard?.textContent ?? "").toContain("2 imagens");
-    expect(activityCard?.textContent ?? "").toContain("0 pendencias");
+    expect(activityCard?.textContent ?? "").not.toContain("0 pendências");
+    expect(subActivityCard?.textContent ?? "").toContain("2.1.1 Subtopico com imagem");
+    expect(text).toContain("Blocos de Atividade com imagens");
+    expect(text).toContain("Blocos de Subtopico com imagem");
+    expect(text).toContain("Bloco 1 - Texto");
+    expect(text).not.toContain("Conteúdo");
+    expect(text).toContain("Legenda da imagem");
+    expect(text).toContain("Adicionar imagem");
+  });
+
+  it("shows contextual empty state for TEA activity blocks", async () => {
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    const activityTitle = container.querySelector<HTMLInputElement>(
+      "#tea-activity-title-tea-activity-default",
+    );
+    const text = container.textContent ?? "";
+
+    expect(text).toContain("2.1 Atividade sem título");
+    expect(text).toContain("Blocos da atividade 2.1");
+    expect(text).toContain("Nenhum bloco adicionado nesta atividade.");
+    expect(text).toContain("Adicionar primeiro bloco");
+    expect(activityTitle?.getAttribute("aria-invalid")).toBe("true");
   });
 
   it("shows inline review state in incomplete TEA activities", async () => {
@@ -406,8 +570,58 @@ describe("App TEA content blocks", () => {
 
     const incompleteActivity = container.querySelector<HTMLElement>(".teaActivityCard");
 
-    expect(incompleteActivity?.textContent ?? "").toContain("7 pendencias");
+    expect(incompleteActivity?.textContent ?? "").toContain("2.1 Atividade sem título");
+    expect(incompleteActivity?.textContent ?? "").toContain("2.1.1 Subtópico sem título");
+    expect(incompleteActivity?.textContent ?? "").toContain("7 pendências");
     expect(incompleteActivity?.querySelector(".teaSummaryChip--red")).toBeTruthy();
+  });
+
+  it("shows TEA inline errors and accessible draft status", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createIncompleteTeaDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+
+    const status = container.querySelector<HTMLElement>('[role="status"]');
+    const serviceOrderInput = container.querySelector<HTMLInputElement>(
+      "#tea-metadata-service-order",
+    );
+
+    expect(status?.getAttribute("aria-live")).toBe("polite");
+    expect(status?.textContent ?? "").toContain("pendentes");
+    expect(serviceOrderInput?.getAttribute("aria-invalid")).toBe("true");
+
+    await clickButton("Atividades");
+
+    const activityTitle = container.querySelector<HTMLInputElement>(
+      "#tea-activity-title-incomplete-activity",
+    );
+    const textBlockInput = container.querySelector<HTMLTextAreaElement>(
+      "#tea-content-block-input-empty-text-block",
+    );
+
+    expect(activityTitle?.getAttribute("aria-invalid")).toBe("true");
+    expect(textBlockInput?.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("focuses the TEA field selected from the review panel", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createIncompleteTeaDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Revis");
+
+    expect(container.textContent ?? "").toContain("Documento");
+    expect(container.textContent ?? "").toContain("Atividades");
+    expect(container.textContent ?? "").toContain("Imagens");
+    expect(container.textContent ?? "").toContain("Corrigir agora");
+    await clickReviewIssue("Bloco de texto vazio");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+
+    expect(document.activeElement?.id).toBe("tea-content-block-input-empty-text-block");
   });
 
   it("reports stricter TEA review issues", async () => {
@@ -428,6 +642,52 @@ describe("App TEA content blocks", () => {
     expect(text).toContain("Lista vazia");
     expect(text).not.toContain("Imagem sem legenda");
     expect(text).toContain("Imagem sem dados");
+    expect(text).toContain("Crítica");
+    expect(text).toContain("Aviso");
+  });
+
+  it("expands only TEA activity panels that have pending review issues", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createMixedTeaPendingDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+    await clickButton("Recolher todos");
+
+    expect(getToggleByControlId("tea-activity-pending-activity-panel")?.getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(getToggleByControlId("tea-activity-clean-activity-panel")?.getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+
+    await clickButton("Expandir pendências");
+
+    expect(getToggleByControlId("tea-activity-pending-activity-panel")?.getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+    expect(getToggleByControlId("tea-composer-pending-activity-panel")?.getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+    expect(getToggleByControlId("tea-content-block-pending-empty-text-panel")?.getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+    expect(getToggleByControlId("tea-activity-clean-activity-panel")?.getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+  });
+
+  it("disables TEA pending expansion when there are no pending activities", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftWithBlockImages()));
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    const expandPendingButton = getButton("Expandir pendências");
+
+    expect(expandPendingButton).toBeTruthy();
+    expect(expandPendingButton?.disabled).toBe(true);
   });
 });
 
@@ -442,14 +702,78 @@ async function renderApp(): Promise<void> {
 }
 
 async function clickButton(label: string): Promise<void> {
-  const button = Array.from(container.querySelectorAll("button")).find((element) =>
-    element.textContent?.includes(label),
-  );
+  const button = getButton(label);
 
   expect(button).toBeTruthy();
 
   await act(async () => {
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    button?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function getButton(label: string): HTMLButtonElement | undefined {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((element) =>
+    element.textContent?.includes(label),
+  );
+}
+
+async function confirmDialog(confirmLabel: string): Promise<void> {
+  await clickDialogButton(confirmLabel);
+}
+
+async function cancelDialog(): Promise<void> {
+  await clickDialogButton("Cancelar");
+}
+
+async function waitForBodyText(text: string): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if ((document.body.textContent ?? "").includes(text)) {
+      return;
+    }
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  expect(document.body.textContent ?? "").toContain(text);
+}
+
+async function clickDocumentButton(label: string): Promise<void> {
+  const root = document.body.querySelector<HTMLElement>('[role="dialog"]') ?? document.body;
+  const button = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
+    (element) => element.textContent?.includes(label),
+  );
+
+  expect(button).toBeTruthy();
+
+  await act(async () => {
+    button?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function clickDialogButton(label: string): Promise<void> {
+  let dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+
+  for (let attempt = 0; !dialog && attempt < 10; attempt += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+  }
+
+  expect(dialog).toBeTruthy();
+
+  const button = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
+    (element) => element.textContent?.includes(label),
+  );
+
+  expect(button).toBeTruthy();
+
+  await act(async () => {
     button?.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -501,7 +825,7 @@ async function clickMenuItem(label: string): Promise<void> {
 
 function getMenuItem(label: string): HTMLElement | undefined {
   return Array.from(
-    document.body.querySelectorAll<HTMLElement>('[role="menuitem"], button'),
+    document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'),
   ).find((element) => element.textContent?.includes(label));
 }
 
@@ -513,9 +837,41 @@ async function clickElement(element: HTMLElement | null | undefined): Promise<vo
   });
 }
 
+async function clickReviewIssue(label: string): Promise<void> {
+  const issueButton = Array.from(
+    container.querySelectorAll<HTMLButtonElement>(".reviewIssueButton"),
+  ).find((button) => button.textContent?.includes(label));
+
+  expect(issueButton).toBeTruthy();
+
+  await act(async () => {
+    issueButton?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function clickOutlineItem(label: string): Promise<void> {
+  const item = Array.from(
+    container.querySelectorAll<HTMLButtonElement>(".documentOutlineItem"),
+  ).find((button) => button.textContent?.includes(label));
+
+  expect(item).toBeTruthy();
+
+  await act(async () => {
+    item?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 function getToggleByControlPrefix(prefix: string): HTMLButtonElement | null {
   return container.querySelector<HTMLButtonElement>(
     `button[aria-controls^="${prefix}"][aria-expanded]`,
+  );
+}
+
+function getToggleByControlId(controlId: string): HTMLButtonElement | null {
+  return container.querySelector<HTMLButtonElement>(
+    `button[aria-controls="${controlId}"][aria-expanded]`,
   );
 }
 
@@ -782,6 +1138,48 @@ function createTeaDraftWithBlockImages(): TeaDocument {
             ],
           },
         ],
+      },
+    ],
+  };
+}
+
+function createMixedTeaPendingDraft(): TeaDocument {
+  return {
+    metadata: {
+      serviceOrder: "OS2171",
+      phase: "Etapa 5",
+      ticket: "Chamado 202504000396",
+      subject: "Telas - Novo Layout",
+      date: "2026-06-08",
+      author: "Gabriel Sousa",
+    },
+    overview: "Validar novo layout.",
+    activityIntro: "Atividades realizadas:",
+    activityImages: [],
+    activities: [
+      {
+        id: "pending-activity",
+        title: "Atividade com pendência",
+        blocks: [
+          {
+            id: "pending-empty-text",
+            type: "text",
+            text: "",
+          },
+        ],
+        subActivities: [],
+      },
+      {
+        id: "clean-activity",
+        title: "Atividade completa",
+        blocks: [
+          {
+            id: "clean-text",
+            type: "text",
+            text: "Conteúdo preenchido.",
+          },
+        ],
+        subActivities: [],
       },
     ],
   };
