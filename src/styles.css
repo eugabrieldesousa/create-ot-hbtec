@@ -17,6 +17,7 @@
   --app-primary-soft: #eff6ff;
   --app-danger: #dc2626;
   --app-focus: rgba(37, 99, 235, 0.32);
+  --app-focus-neutral: rgba(102, 112, 133, 0.28);
   --app-nested-bg: #fcfdff;
   --app-toolbar-bg: #f8fafc;
   --empty-bg: #f8fafc;
@@ -49,6 +50,7 @@
   --app-primary-soft: #182236;
   --app-danger: #f87171;
   --app-focus: rgba(122, 167, 255, 0.34);
+  --app-focus-neutral: rgba(164, 175, 189, 0.28);
   --app-nested-bg: #181d23;
   --app-toolbar-bg: #171b20;
   --empty-bg: #171b20;
@@ -677,9 +679,13 @@ main:focus {
 
 .workspaceLayout {
   display: grid;
-  grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
-  gap: 1rem;
+  grid-template-columns: minmax(10.5rem, 12.75rem) minmax(0, 1fr);
+  gap: 0.875rem;
   align-items: start;
+}
+
+.workspaceLayout--noOutline {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .workspaceContent {
@@ -688,19 +694,24 @@ main:focus {
 
 .documentOutline {
   position: sticky;
-  top: 1rem;
+  top: 0.75rem;
   align-self: start;
-  max-height: calc(100vh - 2rem);
-  overflow: auto;
+  max-height: calc(100dvh - 1.5rem);
+  min-height: 0;
 }
 
 .documentOutlinePanel {
+  display: flex;
+  max-height: inherit;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--app-card-bg);
   border-color: var(--app-border);
 }
 
 .documentOutlineHeader {
-  padding-bottom: 0.625rem;
+  flex: 0 0 auto;
+  padding-bottom: 0.375rem;
   border-bottom: 1px solid var(--app-border-soft);
 }
 
@@ -710,37 +721,61 @@ main:focus {
 
 .documentOutlineNav {
   display: grid;
-  gap: 0.875rem;
-  padding-top: 0.75rem;
+  max-height: calc(100dvh - 4.5rem);
+  gap: 0.5rem;
+  overflow-y: auto;
+  padding-top: 0.5rem;
+  padding-right: 0.25rem;
+  scrollbar-color: color-mix(in srgb, var(--app-muted) 38%, transparent) transparent;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+
+.documentOutlineNav::-webkit-scrollbar {
+  width: 0.375rem;
+}
+
+.documentOutlineNav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.documentOutlineNav::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--app-muted) 30%, transparent);
+  border-radius: 999px;
+}
+
+.documentOutlineNav::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--app-muted) 48%, transparent);
 }
 
 .documentOutlineGroup {
   display: grid;
-  gap: 0.375rem;
+  gap: 0.1875rem;
 }
 
 .documentOutlineGroupTitle {
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
+  font-size: 0.66rem;
 }
 
 .documentOutlineItems {
   display: grid;
-  gap: 0.25rem;
+  gap: 0.125rem;
 }
 
 .documentOutlineItem {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   width: 100%;
-  min-height: 2.375rem;
+  min-height: 1.75rem;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.625rem;
+  gap: 0.25rem;
+  padding: 0.25rem 0.375rem;
   color: var(--app-text);
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 5px;
   font: inherit;
   cursor: pointer;
 }
@@ -750,24 +785,36 @@ main:focus {
   border-color: var(--app-border-soft);
 }
 
+.documentOutlineItem:disabled {
+  color: var(--app-muted);
+  cursor: default;
+  opacity: 0.58;
+}
+
+.documentOutlineItem:disabled:hover {
+  background: transparent;
+  border-color: transparent;
+}
+
 .documentOutlineItem:focus-visible {
   outline: none;
-  border-color: var(--app-primary);
-  box-shadow: 0 0 0 2px var(--app-focus);
+  border-color: var(--app-border);
+  box-shadow: 0 0 0 2px var(--app-focus-neutral);
 }
 
 .documentOutlineItem[data-active="true"] {
   color: var(--app-heading);
-  background: var(--app-primary-soft);
-  border-color: rgba(37, 99, 235, 0.24);
+  background: var(--app-surface-quiet);
+  border-color: var(--app-border);
+  box-shadow: inset 2px 0 0 var(--app-muted);
 }
 
 .documentOutlineItem--level1 {
-  padding-left: 1rem;
+  padding-left: 0.625rem;
 }
 
 .documentOutlineItem--level2 {
-  padding-left: 1.5rem;
+  padding-left: 1.375rem;
 }
 
 .documentOutlineItemCopy {
@@ -776,8 +823,7 @@ main:focus {
   gap: 0.0625rem;
 }
 
-.documentOutlineItemTitle,
-.documentOutlineItemMeta {
+.documentOutlineItemTitle {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -785,28 +831,38 @@ main:focus {
 }
 
 .documentOutlineItemTitle {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   font-weight: 750;
-}
-
-.documentOutlineItemMeta {
-  color: var(--app-muted);
-  font-size: 0.72rem;
 }
 
 .documentOutlinePending {
   align-self: center;
-  padding: 0.125rem 0.375rem;
+  padding: 0.0625rem 0.3125rem;
   color: #991b1b;
   background: #fee2e2;
   border-radius: 999px;
-  font-size: 0.625rem;
+  font-size: 0.56rem;
   font-weight: 800;
 }
 
 [data-mantine-color-scheme="dark"] .documentOutlinePending {
   color: #fecaca;
   background: #441313;
+}
+
+.teaBackToTopButton {
+  position: fixed;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  z-index: 60;
+  color: var(--app-card-bg);
+  background: var(--app-heading);
+  border: 1px solid var(--app-border);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+}
+
+.teaBackToTopButton:hover {
+  background: var(--app-text);
 }
 
 .reviewTabLabel {
@@ -1226,6 +1282,202 @@ main:focus {
   white-space: pre-wrap;
 }
 
+.docxPreviewSection {
+  scroll-margin-top: 1rem;
+}
+
+.docxPreviewSection:focus {
+  outline: none;
+}
+
+.docxPreviewShell {
+  min-width: 0;
+  padding: clamp(0.75rem, 2vw, 1.5rem);
+  overflow: hidden;
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+}
+
+.docxPreviewPage {
+  width: min(100%, 816px);
+  min-height: min(1056px, calc((100vw - 3rem) * 1.294));
+  margin: 0 auto;
+  padding: clamp(1.5rem, 11.764vw, 96px) clamp(1.25rem, 14.705vw, 120px);
+  color: #1f2937;
+  background: #ffffff;
+  border: 1px solid #d8dee6;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.14);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14.667px;
+  line-height: 1.25;
+}
+
+.docxPreviewParagraph {
+  margin: 0 0 10px;
+  color: #1f2937;
+  letter-spacing: 0;
+}
+
+.docxPreviewParagraph[id] {
+  scroll-margin-top: 1rem;
+}
+
+.docxPreviewParagraph[id]:focus {
+  outline: none;
+}
+
+.docxPreviewParagraph--center {
+  text-align: center;
+}
+
+.docxPreviewParagraph--ot-title {
+  margin-bottom: 15px;
+  color: #111827;
+  font-size: 18.667px;
+  line-height: 1.2;
+}
+
+.docxPreviewParagraph--ot-heading {
+  margin: 17px 0 8px;
+  padding: 2px 4px;
+  color: #111827;
+}
+
+.docxPreviewParagraph--ot-label {
+  margin: 5px 0 4px;
+  color: #111827;
+}
+
+.docxPreviewParagraph--ot-empty {
+  margin-bottom: 8px;
+  padding: 5px 8px;
+  color: #6b7280;
+}
+
+.docxPreviewParagraph--ot-spacer {
+  height: 5px;
+  margin: 0;
+  overflow: hidden;
+  color: transparent;
+}
+
+.docxPreviewParagraph--tea-title {
+  margin-bottom: 13px;
+  color: #000000;
+  font-family: Calibri, Arial, Helvetica, sans-serif;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.docxPreviewParagraph--tea-heading1 {
+  margin: 17px 0 8px;
+  color: #000000;
+  font-family: Calibri, Arial, Helvetica, sans-serif;
+  font-size: 18.667px;
+  line-height: 1.2;
+}
+
+.docxPreviewParagraph--tea-heading2 {
+  margin: 15px 0 7px;
+  color: #000000;
+  font-family: Calibri, Arial, Helvetica, sans-serif;
+  font-size: 18.667px;
+  line-height: 1.2;
+}
+
+.docxPreviewParagraph--tea-subheading {
+  margin: 11px 0 5px;
+  color: #000000;
+}
+
+.docxPreviewParagraph--tea-text {
+  margin-bottom: 13px;
+  color: #000000;
+  line-height: 1.255;
+}
+
+.docxPreviewParagraph--tea-image-label {
+  margin: 3px 0 5px;
+  color: #000000;
+}
+
+.docxPreviewRun--bold {
+  font-weight: 700;
+}
+
+.docxPreviewRun--italic {
+  font-style: italic;
+}
+
+.docxPreviewRun--underline {
+  text-decoration: underline;
+}
+
+.docxPreviewTable {
+  width: 100%;
+  margin: 0 0 10px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  color: #1f2937;
+}
+
+.docxPreviewTable--ot {
+  border: 1px solid #aeb7c2;
+}
+
+.docxPreviewTable--tea {
+  border: 1px solid #000000;
+  color: #000000;
+}
+
+.docxPreviewCell {
+  padding: 7px 11px;
+  vertical-align: middle;
+}
+
+.docxPreviewCell--ot {
+  border: 1px solid #d8dee6;
+}
+
+.docxPreviewCell--tea {
+  border: 1px solid #000000;
+}
+
+.docxPreviewCell--center {
+  text-align: center;
+}
+
+.docxPreviewCellParagraph {
+  margin: 0;
+  line-height: 1.25;
+}
+
+.docxPreviewList {
+  margin: 0 0 8px 1.4rem;
+  padding: 0;
+  color: #000000;
+  line-height: 1.255;
+}
+
+.docxPreviewList li {
+  margin-bottom: 8px;
+  padding-left: 0.15rem;
+}
+
+.docxPreviewImage {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 11px;
+}
+
+.docxPreviewImage img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
 @media (max-width: 840px) {
   .workspaceLayout {
     grid-template-columns: 1fr;
@@ -1234,7 +1486,10 @@ main:focus {
   .documentOutline {
     position: static;
     max-height: none;
-    overflow: visible;
+  }
+
+  .documentOutlinePanel {
+    max-height: none;
   }
 
   .documentOutlineToggle {
@@ -1242,8 +1497,8 @@ main:focus {
   }
 
   .documentOutlineNav {
-    max-height: 22rem;
-    overflow: auto;
+    max-height: 18rem;
+    overflow-y: auto;
   }
 
   .sectionHeader {

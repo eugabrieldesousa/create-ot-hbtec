@@ -26,6 +26,7 @@ import {
   Modal,
   Paper,
   SegmentedControl,
+  Select,
   Stack,
   Tabs,
   Text,
@@ -48,6 +49,7 @@ import {
   ClipboardList,
   Copy,
   Download,
+  FileSearch,
   FileText,
   FileUp,
   ImagePlus,
@@ -61,6 +63,9 @@ import {
   Trash2,
 } from "lucide-react";
 import { checkLabels, checkOrder, createEmptyTestResult, createPermissionKey } from "./defaultDocument";
+import { DocxPreview } from "./docxPreview";
+import { buildOtPreviewModel, buildTeaPreviewModel } from "./docxPreviewModel";
+import type { DocxPreviewModel } from "./docxPreviewModel";
 import { exportOtDocument, exportTeaDocument } from "./docxExport";
 import { parseDocxFile } from "./docxImport";
 import type { DocxImportResult } from "./docxImport";
@@ -108,10 +113,11 @@ type FilteredPermissionBlockEntry = PermissionBlockEntry & {
   sourceBlock: PermissionBlock;
 };
 
-type ActiveTab = "document" | "permissions" | "tests" | "review";
-type TeaTab = "document" | "activities" | "review";
+type ActiveTab = "document" | "permissions" | "tests" | "review" | "preview";
+type TeaTab = "document" | "activities" | "review" | "preview";
 type DocumentKind = "ot" | "tea";
 type MoveDirection = "up" | "down";
+type TeaOutlineContext = "activities" | "preview";
 
 type DraftStatus =
   | "Alterações pendentes"
@@ -180,6 +186,12 @@ type ConfirmationOptions = {
 
 type PendingConfirmation = ConfirmationOptions & {
   onConfirm: () => void | Promise<void>;
+};
+
+type TeaSubActivityCopyRequest = {
+  sourceActivityId: string;
+  subActivityId: string;
+  targetActivityId: string | null;
 };
 
 type ConfirmAction = (
@@ -485,6 +497,8 @@ export default function App() {
   const [isImporting, setIsImporting] = useState(false);
   const [importPreview, setImportPreview] = useState<DocxImportResult | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
+  const [teaSubActivityCopyRequest, setTeaSubActivityCopyRequest] =
+    useState<TeaSubActivityCopyRequest | null>(null);
   const [draftStatus, setDraftStatus] = useState<DraftStatus>("Rascunho salvo");
   const [permissionBulkText, setPermissionBulkText] = useState(() =>
     formatPermissionBulk(documentData.permissionGroups),
@@ -700,14 +714,42 @@ export default function App() {
     [deferredTeaData],
   );
 
+  const otPreviewModel = useMemo(
+    () => buildOtPreviewModel(deferredDocumentData),
+    [deferredDocumentData],
+  );
+
+  const teaPreviewModel = useMemo(
+    () => buildTeaPreviewModel(deferredTeaData),
+    [deferredTeaData],
+  );
+
   const otOutlineGroups = useMemo(
     () => buildOtOutlineItems(documentData, permissionBlockEntries, reviewSummary),
     [documentData, permissionBlockEntries, reviewSummary],
   );
 
+  const teaOutlineContext: TeaOutlineContext | null =
+    teaActiveTab === "activities" || teaActiveTab === "preview" ? teaActiveTab : null;
   const teaOutlineGroups = useMemo(
-    () => buildTeaOutlineItems(teaData, teaReviewSummary),
-    [teaData, teaReviewSummary],
+    () =>
+      teaOutlineContext
+        ? buildTeaOutlineItems(teaData, teaReviewSummary, teaOutlineContext)
+        : [],
+    [teaData, teaOutlineContext, teaReviewSummary],
+  );
+  const showDocumentOutline = documentKind === "ot" || teaOutlineContext !== null;
+  const isTeaActivitiesOutlineNavigable =
+    documentKind !== "tea" ||
+    teaActiveTab !== "activities" ||
+    areTeaActivityOutlineTargetsOpen(teaData, collapsedTeaActivities, collapsedTeaSubActivities);
+  const isDocumentOutlineNavigationDisabled =
+    documentKind === "tea" && teaActiveTab === "activities" && !isTeaActivitiesOutlineNavigable;
+  const outlineGroups = documentKind === "tea" ? teaOutlineGroups : otOutlineGroups;
+  const outlineTargetIds = useMemo(() => getOutlineTargetIds(outlineGroups), [outlineGroups]);
+  const [activeOutlineTargetId, setActiveOutlineTargetId] = useActiveOutlineTargetId(
+    outlineTargetIds,
+    `${documentKind}:${documentKind === "tea" ? teaActiveTab : activeTab}`,
   );
 
   const updateDocument = useCallback((updater: (current: OtDocument) => OtDocument): void => {
@@ -887,6 +929,73 @@ export default function App() {
       subActivities: moveItemById(activity.subActivities, subActivityId, direction),
     }));
   }, [updateTeaActivity]);
+
+  const openTeaSubActivityCopyModal = useCallback((
+    sourceActivityId: string,
+    subActivityId: string,
+  ): void => {
+    const targetActivityId =
+      teaDataRef.current.activities.find((activity) => activity.id !== sourceActivityId)?.id ??
+      null;
+
+    setTeaSubActivityCopyRequest({
+      sourceActivityId,
+      subActivityId,
+      targetActivityId,
+    });
+  }, []);
+
+  const updateTeaSubActivityCopyTarget = useCallback((targetActivityId: string | null): void => {
+    setTeaSubActivityCopyRequest((current) =>
+      current ? { ...current, targetActivityId } : current,
+    );
+  }, []);
+
+  async function confirmTeaSubActivityCopy(): Promise<void> {
+    const request = teaSubActivityCopyRequest;
+
+    if (!request?.targetActivityId) {
+      return;
+    }
+
+    const sourceSubActivity = findTeaSubActivity(
+      teaDataRef.current,
+      request.sourceActivityId,
+      request.subActivityId,
+    );
+
+    if (!sourceSubActivity) {
+      setTeaSubActivityCopyRequest(null);
+      return;
+    }
+
+    const duplicatedSubActivity = await duplicateTeaSubActivity(sourceSubActivity);
+
+    setTeaSubActivityCopyRequest(null);
+    setTeaActiveTab("activities");
+    setTeaActivityCollapsed(request.targetActivityId, false);
+    setTeaSubActivityCollapsed(duplicatedSubActivity.id, false);
+    setTeaComposerCollapsed(duplicatedSubActivity.id, false);
+    duplicatedSubActivity.blocks.forEach((block) => {
+      setTeaContentBlockCollapsed(block.id, false);
+    });
+
+    updateTeaDocument((current) => ({
+      ...current,
+      activities: current.activities.map((activity) =>
+        activity.id === request.targetActivityId
+          ? {
+              ...activity,
+              subActivities: [...activity.subActivities, duplicatedSubActivity],
+            }
+          : activity,
+      ),
+    }));
+
+    window.setTimeout(() => {
+      scrollAndFocusReviewTarget(`tea-subactivity-${toDomId(duplicatedSubActivity.id)}`);
+    }, 80);
+  }
 
   const updateTeaOverview = useCallback((overview: string): void => {
     updateTeaDocument((current) => ({ ...current, overview }));
@@ -1482,6 +1591,7 @@ export default function App() {
   }
 
   function handleOtOutlineItemClick(item: DocumentOutlineItem): void {
+    setActiveOutlineTargetId(item.targetId);
     setActiveTab(item.tab as ActiveTab);
 
     if (item.tab === "tests") {
@@ -1532,24 +1642,11 @@ export default function App() {
   }
 
   function handleTeaOutlineItemClick(item: DocumentOutlineItem): void {
+    setActiveOutlineTargetId(item.targetId);
     setTeaActiveTab(item.tab as TeaTab);
 
-    if (item.activityId) {
-      setTeaActivityCollapsed(item.activityId, false);
-      setTeaComposerCollapsed(item.activityId, false);
-    }
-
-    if (item.subActivityId) {
-      setTeaSubActivityCollapsed(item.subActivityId, false);
-      setTeaComposerCollapsed(item.subActivityId, false);
-    }
-
-    if (item.blockId) {
-      setTeaContentBlockCollapsed(item.blockId, false);
-    }
-
     window.setTimeout(() => {
-      scrollAndFocusReviewTarget(item.targetId);
+      scrollAndFocusReviewTarget(item.targetId, "start");
     }, 60);
   }
 
@@ -1827,15 +1924,22 @@ export default function App() {
           </Group>
         </Paper>
 
-        <div className="workspaceLayout">
-          <DocumentOutline
-            title="Índice do documento"
-            groups={documentKind === "tea" ? teaOutlineGroups : otOutlineGroups}
-            activeTab={documentKind === "tea" ? teaActiveTab : activeTab}
-            onItemClick={
-              documentKind === "tea" ? handleTeaOutlineItemClick : handleOtOutlineItemClick
-            }
-          />
+        <div
+          className={`workspaceLayout ${showDocumentOutline ? "" : "workspaceLayout--noOutline"}`}
+        >
+          {showDocumentOutline ? (
+            <DocumentOutline
+              title="Índice do documento"
+              groups={outlineGroups}
+              activeTargetId={
+                isDocumentOutlineNavigationDisabled ? undefined : activeOutlineTargetId
+              }
+              isNavigationDisabled={isDocumentOutlineNavigationDisabled}
+              onItemClick={
+                documentKind === "tea" ? handleTeaOutlineItemClick : handleOtOutlineItemClick
+              }
+            />
+          ) : null}
           <div className="workspaceContent">
         {documentKind === "ot" ? (
         <Tabs
@@ -1860,6 +1964,9 @@ export default function App() {
             </Tabs.Tab>
             <Tabs.Tab value="review" leftSection={<AlertCircle size={16} />}>
               <ReviewTabLabel count={reviewSummary.issues.length} />
+            </Tabs.Tab>
+            <Tabs.Tab value="preview" leftSection={<FileSearch size={16} />}>
+              Prévia DOCX
             </Tabs.Tab>
           </Tabs.List>
 
@@ -2124,10 +2231,15 @@ export default function App() {
           <Tabs.Panel value="review" pt="md" id="ot-section-review">
             <ReviewPanel summary={reviewSummary} onIssueClick={handleReviewIssueClick} />
           </Tabs.Panel>
+
+          <Tabs.Panel value="preview" pt="md">
+            <DocxPreview model={otPreviewModel} />
+          </Tabs.Panel>
         </Tabs>
         ) : (
           <TeaWorkspace
             documentData={teaData}
+            previewModel={teaPreviewModel}
             activeTab={teaActiveTab}
             reviewSummary={teaReviewSummary}
             collapsedActivities={collapsedTeaActivities}
@@ -2147,6 +2259,7 @@ export default function App() {
             onSubActivityChange={updateTeaSubActivity}
             onSubActivityRemove={removeTeaSubActivity}
             onSubActivityMove={moveTeaSubActivity}
+            onSubActivityCopy={openTeaSubActivityCopyModal}
             onActivityCollapseChange={setTeaActivityCollapsed}
             onSubActivityCollapseChange={setTeaSubActivityCollapsed}
             onComposerCollapseChange={setTeaComposerCollapsed}
@@ -2158,6 +2271,21 @@ export default function App() {
         </div>
       </Stack>
     </Container>
+    {documentKind === "tea" ? (
+      <Tooltip label="Voltar ao topo" position="left">
+        <ActionIcon
+          aria-label="Voltar ao topo"
+          className="teaBackToTopButton"
+          size="xl"
+          radius="xl"
+          onClick={() => {
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        >
+          <ArrowUp size={20} />
+        </ActionIcon>
+      </Tooltip>
+    ) : null}
     </main>
     <ImportPreviewModal
       result={importPreview}
@@ -2183,12 +2311,22 @@ export default function App() {
         void confirmPendingAction();
       }}
     />
+    <TeaSubActivityCopyModal
+      documentData={teaData}
+      request={teaSubActivityCopyRequest}
+      onTargetActivityChange={updateTeaSubActivityCopyTarget}
+      onClose={() => setTeaSubActivityCopyRequest(null)}
+      onConfirm={() => {
+        void confirmTeaSubActivityCopy();
+      }}
+    />
     </ConfirmationContext.Provider>
   );
 }
 
 function TeaWorkspace({
   documentData,
+  previewModel,
   activeTab,
   reviewSummary,
   collapsedActivities,
@@ -2208,6 +2346,7 @@ function TeaWorkspace({
   onSubActivityChange,
   onSubActivityRemove,
   onSubActivityMove,
+  onSubActivityCopy,
   onActivityCollapseChange,
   onSubActivityCollapseChange,
   onComposerCollapseChange,
@@ -2215,6 +2354,7 @@ function TeaWorkspace({
   onReviewIssueClick,
 }: {
   documentData: TeaDocument;
+  previewModel: DocxPreviewModel;
   activeTab: TeaTab;
   reviewSummary: TeaReviewSummary;
   collapsedActivities: Record<string, boolean>;
@@ -2245,6 +2385,7 @@ function TeaWorkspace({
     subActivityId: string,
     direction: MoveDirection,
   ) => void;
+  onSubActivityCopy: (activityId: string, subActivityId: string) => void;
   onActivityCollapseChange: (activityId: string, collapsed: boolean) => void;
   onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
   onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
@@ -2319,6 +2460,9 @@ function TeaWorkspace({
         </Tabs.Tab>
         <Tabs.Tab value="review" leftSection={<AlertCircle size={16} />}>
           <ReviewTabLabel count={reviewSummary.issues.length} />
+        </Tabs.Tab>
+        <Tabs.Tab value="preview" leftSection={<FileSearch size={16} />}>
+          Prévia DOCX
         </Tabs.Tab>
       </Tabs.List>
 
@@ -2480,6 +2624,9 @@ function TeaWorkspace({
                 onSubActivityMove={(subActivityId, direction) =>
                   onSubActivityMove(activity.id, subActivityId, direction)
                 }
+                onSubActivityCopy={(subActivityId) =>
+                  onSubActivityCopy(activity.id, subActivityId)
+                }
                 onCollapseChange={(collapsed) =>
                   onActivityCollapseChange(activity.id, collapsed)
                 }
@@ -2503,6 +2650,10 @@ function TeaWorkspace({
       <Tabs.Panel value="review" pt="md" id="tea-section-review">
         <TeaReviewPanel summary={reviewSummary} onIssueClick={onReviewIssueClick} />
       </Tabs.Panel>
+
+      <Tabs.Panel value="preview" pt="md">
+        <DocxPreview model={previewModel} />
+      </Tabs.Panel>
     </Tabs>
   );
 }
@@ -2523,6 +2674,7 @@ function TeaActivityEditor({
   onSubActivityChange,
   onSubActivityRemove,
   onSubActivityMove,
+  onSubActivityCopy,
   onCollapseChange,
   onSubActivityCollapseChange,
   onComposerCollapseChange,
@@ -2546,6 +2698,7 @@ function TeaActivityEditor({
   ) => void;
   onSubActivityRemove: (subActivityId: string) => void;
   onSubActivityMove: (subActivityId: string, direction: MoveDirection) => void;
+  onSubActivityCopy: (subActivityId: string) => void;
   onCollapseChange: (collapsed: boolean) => void;
   onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
   onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
@@ -2700,6 +2853,7 @@ function TeaActivityEditor({
               onChange={(updater) => onSubActivityChange(subActivity.id, updater)}
               onRemove={() => onSubActivityRemove(subActivity.id)}
               onMove={(direction) => onSubActivityMove(subActivity.id, direction)}
+              onCopy={() => onSubActivityCopy(subActivity.id)}
               onCollapseChange={(collapsed) =>
                 onSubActivityCollapseChange(subActivity.id, collapsed)
               }
@@ -2730,6 +2884,7 @@ function TeaSubActivityEditor({
   onChange,
   onRemove,
   onMove,
+  onCopy,
   onCollapseChange,
   onComposerCollapseChange,
   onContentBlockCollapseChange,
@@ -2745,6 +2900,7 @@ function TeaSubActivityEditor({
   onChange: (updater: (subActivity: TeaSubActivity) => TeaSubActivity) => void;
   onRemove: () => void;
   onMove: (direction: MoveDirection) => void;
+  onCopy: () => void;
   onCollapseChange: (collapsed: boolean) => void;
   onComposerCollapseChange: (collapsed: boolean) => void;
   onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
@@ -2826,6 +2982,7 @@ function TeaSubActivityEditor({
             canMoveUp={index > 0}
             canMoveDown={index < totalSubActivities - 1}
             onMove={onMove}
+            onCopy={onCopy}
             onRemove={confirmAndRemove}
           />
           <Group gap={4} wrap="nowrap" className="teaLegacyActionsHidden">
@@ -3390,11 +3547,13 @@ function TeaSubActivityActionsMenu({
   canMoveUp,
   canMoveDown,
   onMove,
+  onCopy,
   onRemove,
 }: {
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMove: (direction: MoveDirection) => void;
+  onCopy: () => void;
   onRemove: () => void;
 }) {
   return (
@@ -3406,6 +3565,8 @@ function TeaSubActivityActionsMenu({
       canMoveUp={canMoveUp}
       canMoveDown={canMoveDown}
       onMove={onMove}
+      copyLabel="Copiar subtópico"
+      onCopy={onCopy}
       onRemove={onRemove}
     />
   );
@@ -3415,22 +3576,31 @@ function TeaMoveRemoveMenu({
   ariaLabel,
   upLabel,
   downLabel,
+  copyLabel,
   removeLabel,
   canMoveUp,
   canMoveDown,
   onMove,
+  onCopy,
   onRemove,
 }: {
   ariaLabel: string;
   upLabel: string;
   downLabel: string;
+  copyLabel?: string;
   removeLabel: string;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMove: (direction: MoveDirection) => void;
+  onCopy?: () => void;
   onRemove: () => void;
 }) {
   const [opened, setOpened] = useState(false);
+
+  function copy(): void {
+    onCopy?.();
+    setOpened(false);
+  }
 
   function move(direction: MoveDirection): void {
     onMove(direction);
@@ -3460,6 +3630,14 @@ function TeaMoveRemoveMenu({
         </span>
       </Menu.Target>
       <Menu.Dropdown>
+        {onCopy ? (
+          <>
+            <Menu.Item leftSection={<Copy size={15} />} onClick={copy}>
+              {copyLabel ?? "Copiar"}
+            </Menu.Item>
+            <Menu.Divider />
+          </>
+        ) : null}
         <Menu.Item
           leftSection={<ArrowUp size={15} />}
           disabled={!canMoveUp}
@@ -3681,20 +3859,33 @@ function TeaReviewPanel({
 function DocumentOutline({
   title,
   groups,
-  activeTab,
+  activeTargetId,
+  isNavigationDisabled = false,
   onItemClick,
 }: {
   title: string;
   groups: DocumentOutlineGroup[];
-  activeTab: string;
+  activeTargetId?: string;
+  isNavigationDisabled?: boolean;
   onItemClick: (item: DocumentOutlineItem) => void;
 }) {
   const [isOpen, setIsOpen] = useState(true);
+  const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const pendingCount = groups.reduce(
     (total, group) =>
       total + group.items.filter((item) => item.status === "pending").length,
     0,
   );
+
+  useEffect(() => {
+    if (!activeTargetId) {
+      return;
+    }
+
+    itemRefs.current[activeTargetId]?.scrollIntoView?.({
+      block: "nearest",
+    });
+  }, [activeTargetId]);
 
   return (
     <aside className="documentOutline" aria-label={title}>
@@ -3741,22 +3932,25 @@ function DocumentOutline({
                 </Text>
                 <div className="documentOutlineItems">
                   {group.items.map((item) => {
-                    const isActive = item.tab === activeTab;
+                    const isActive = Boolean(item.targetId && item.targetId === activeTargetId);
 
                     return (
                       <button
                         key={item.id}
                         type="button"
+                        ref={(element) => {
+                          if (item.targetId) {
+                            itemRefs.current[item.targetId] = element;
+                          }
+                        }}
                         className={`documentOutlineItem documentOutlineItem--level${item.level ?? 0}`}
                         data-active={isActive ? "true" : undefined}
                         aria-current={isActive ? "location" : undefined}
+                        disabled={isNavigationDisabled}
                         onClick={() => onItemClick(item)}
                       >
                         <span className="documentOutlineItemCopy">
                           <span className="documentOutlineItemTitle">{item.title}</span>
-                          {item.meta ? (
-                            <span className="documentOutlineItemMeta">{item.meta}</span>
-                          ) : null}
                         </span>
                         {item.status === "pending" ? (
                           <span className="documentOutlinePending">Pendente</span>
@@ -4812,6 +5006,87 @@ function ConfirmationModal({
   );
 }
 
+function TeaSubActivityCopyModal({
+  documentData,
+  request,
+  onTargetActivityChange,
+  onClose,
+  onConfirm,
+}: {
+  documentData: TeaDocument;
+  request: TeaSubActivityCopyRequest | null;
+  onTargetActivityChange: (targetActivityId: string | null) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const sourceSubActivity = request
+    ? findTeaSubActivity(documentData, request.sourceActivityId, request.subActivityId)
+    : undefined;
+  const targetOptions = request
+    ? buildTeaActivitySelectOptions(documentData, request.sourceActivityId)
+    : [];
+  const canConfirm = Boolean(
+    request?.targetActivityId &&
+      sourceSubActivity &&
+      targetOptions.some((option) => option.value === request.targetActivityId),
+  );
+
+  return (
+    <Modal
+      opened={request !== null}
+      onClose={onClose}
+      title="Copiar subtópico"
+      centered
+    >
+      {request ? (
+        <Stack gap="md">
+          <div>
+            <Text fw={800}>
+              {sourceSubActivity?.title.trim() || "Subtópico sem título"}
+            </Text>
+            <Text size="sm" c="dimmed">
+              Selecione a atividade que receberá uma cópia completa deste subtópico.
+            </Text>
+          </div>
+
+          <Select
+            label="Atividade destino"
+            aria-label="Atividade destino"
+            placeholder={
+              targetOptions.length > 0
+                ? "Selecione uma atividade"
+                : "Nenhuma outra atividade disponível"
+            }
+            data={targetOptions}
+            value={request.targetActivityId}
+            onChange={onTargetActivityChange}
+            disabled={targetOptions.length === 0}
+            allowDeselect={false}
+            searchable
+          />
+
+          {targetOptions.length === 0 ? (
+            <Paper withBorder p="sm" className="softEmpty">
+              <Text size="sm" c="dimmed">
+                Crie outra atividade antes de copiar este subtópico.
+              </Text>
+            </Paper>
+          ) : null}
+
+          <Group justify="flex-end" gap="xs">
+            <Button variant="light" color="gray" onClick={onClose}>
+              Cancelar
+            </Button>
+            <Button leftSection={<Copy size={17} />} disabled={!canConfirm} onClick={onConfirm}>
+              Copiar subtópico
+            </Button>
+          </Group>
+        </Stack>
+      ) : null}
+    </Modal>
+  );
+}
+
 function ImportPreviewModal({
   result,
   onClose,
@@ -5088,7 +5363,112 @@ function getReviewSeverityLabel(severity: ReviewSeverity): string {
   return severity === "danger" ? "Crítica" : "Aviso";
 }
 
-function scrollAndFocusReviewTarget(targetId: string | undefined): void {
+function getOutlineTargetIds(groups: DocumentOutlineGroup[]): string[] {
+  return groups.flatMap((group) =>
+    group.items.flatMap((item) => (item.targetId ? [item.targetId] : [])),
+  );
+}
+
+function useActiveOutlineTargetId(
+  targetIds: string[],
+  scopeKey: string,
+): [string | undefined, (targetId?: string) => void] {
+  const [activeTargetId, setActiveTargetId] = useState<string | undefined>();
+  const targetSignature = targetIds.join("|");
+
+  useEffect(() => {
+    let animationFrame: number | undefined;
+
+    function getMountedTargets(): HTMLElement[] {
+      return targetIds
+        .map((targetId) => window.document.getElementById(targetId))
+        .filter((element): element is HTMLElement => Boolean(element));
+    }
+
+    function updateActiveTarget(): void {
+      const mountedTargets = getMountedTargets();
+
+      if (mountedTargets.length === 0) {
+        setActiveTargetId(undefined);
+        return;
+      }
+
+      const marker = Math.min(180, window.innerHeight * 0.3);
+      let activeTarget: HTMLElement | undefined;
+      let activeTargetTop = Number.NEGATIVE_INFINITY;
+      let closestBelow: HTMLElement | undefined;
+      let closestBelowDistance = Number.POSITIVE_INFINITY;
+      let firstTargetTop: number | undefined;
+      let hasDistinctTargetPositions = false;
+
+      mountedTargets.forEach((target) => {
+        const rect = target.getBoundingClientRect();
+
+        if (firstTargetTop === undefined) {
+          firstTargetTop = rect.top;
+        } else if (rect.top !== firstTargetTop) {
+          hasDistinctTargetPositions = true;
+        }
+
+        if (rect.top <= marker && rect.top > activeTargetTop) {
+          activeTarget = target;
+          activeTargetTop = rect.top;
+          return;
+        }
+
+        const distance = rect.top - marker;
+
+        if (distance < closestBelowDistance) {
+          closestBelow = target;
+          closestBelowDistance = distance;
+        }
+      });
+
+      const nextTargetId = (activeTarget ?? closestBelow ?? mountedTargets[0]).id;
+
+      setActiveTargetId((currentTargetId) =>
+        currentTargetId &&
+        !hasDistinctTargetPositions &&
+        mountedTargets.some((target) => target.id === currentTargetId)
+          ? currentTargetId
+          : nextTargetId,
+      );
+    }
+
+    function scheduleActiveTargetUpdate(): void {
+      if (animationFrame !== undefined) {
+        return;
+      }
+
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = undefined;
+        updateActiveTarget();
+      });
+    }
+
+    updateActiveTarget();
+    const timeoutId = window.setTimeout(updateActiveTarget, 80);
+    window.addEventListener("scroll", scheduleActiveTargetUpdate, { passive: true });
+    window.addEventListener("resize", scheduleActiveTargetUpdate);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("scroll", scheduleActiveTargetUpdate);
+      window.removeEventListener("resize", scheduleActiveTargetUpdate);
+
+      if (animationFrame !== undefined) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+    };
+  }, [scopeKey, targetIds, targetSignature]);
+
+  return [activeTargetId, setActiveTargetId];
+}
+
+function scrollAndFocusReviewTarget(
+  targetId: string | undefined,
+  block: ScrollLogicalPosition = "center",
+): void {
   if (!targetId) {
     return;
   }
@@ -5101,7 +5481,7 @@ function scrollAndFocusReviewTarget(targetId: string | undefined): void {
 
   target.scrollIntoView?.({
     behavior: "smooth",
-    block: "center",
+    block,
   });
 
   if (!target.matches("input, textarea, button, select, a[href], [tabindex]")) {
@@ -5551,162 +5931,84 @@ function buildOtOutlineItems(
         },
       ],
     },
+    {
+      id: "ot-preview",
+      title: "Prévia",
+      items: [
+        {
+          id: "ot-preview-main",
+          title: "Prévia DOCX",
+          meta: "Formato de exportação",
+          tab: "preview",
+          targetId: "ot-section-preview",
+        },
+      ],
+    },
   ];
 }
 
 function buildTeaOutlineItems(
   documentData: TeaDocument,
   reviewSummary: TeaReviewSummary,
+  context: TeaOutlineContext,
 ): DocumentOutlineGroup[] {
   const issues = reviewSummary.issues;
-  const documentIssues = countTeaIssues(issues, (issue) => issue.category === "document");
-  const imageIssues = countTeaIssues(
-    issues,
-    (issue) => issue.category === "image" && issue.tab === "document",
-  );
-  const activityIssues = countTeaIssues(issues, (issue) => issue.tab === "activities");
+  const tab: TeaTab = context === "preview" ? "preview" : "activities";
 
   return [
     {
-      id: "tea-document",
-      title: "Documento TEA",
-      items: [
-        {
-          id: "tea-document-main",
-          title:
-            documentData.metadata.subject.trim() ||
-            documentData.metadata.serviceOrder.trim() ||
-            "TEA sem assunto definido",
-          meta: documentData.metadata.phase.trim() || "Fase não informada",
-          tab: "document",
-          targetId: "tea-section-document",
-          status: outlineStatus(documentIssues),
-        },
-        {
-          id: "tea-document-images",
-          title: "Imagem geral",
-          meta: formatTeaCount(documentData.activityImages.length, "imagem", "imagens"),
-          tab: "document",
-          targetId: "tea-section-images",
-          status: outlineStatus(imageIssues),
-        },
-      ],
-    },
-    {
-      id: "tea-activities",
+      id: `tea-${context}-activities`,
       title: "Atividades",
-      items: [
-        {
-          id: "tea-activities-main",
-          title: "Atividades",
-          meta: formatTeaCount(documentData.activities.length, "atividade", "atividades"),
-          tab: "activities",
-          targetId: "tea-section-activities",
-          status: outlineStatus(activityIssues),
-        },
-        ...documentData.activities.flatMap((activity, activityIndex) => {
-          const activityNumber = `2.${activityIndex + 1}`;
-          const activityIssueCount = countTeaIssues(
-            issues,
-            (issue) => issue.activityId === activity.id,
-          );
-          const activityItem: DocumentOutlineItem = {
-            id: `tea-activity-outline-${activity.id}`,
-            title: formatTeaEditorTitle(
-              activityNumber,
-              activity.title,
-              "Atividade sem título",
-            ),
-            meta: buildTeaActivitySummaryItems(activity).join(" • "),
-            tab: "activities",
-            targetId: `tea-activity-${toDomId(activity.id)}`,
-            activityId: activity.id,
-            level: 1,
-            status: outlineStatus(activityIssueCount),
-          };
-          const activityBlocks = activity.blocks.map<DocumentOutlineItem>((block, blockIndex) => {
-            const blockIssueCount = countTeaIssues(
+      items: documentData.activities.flatMap((activity, activityIndex) => {
+        const activityNumber = `2.${activityIndex + 1}`;
+        const activityIssueCount = countTeaIssues(
+          issues,
+          (issue) => issue.activityId === activity.id,
+        );
+        const activityTargetPrefix =
+          context === "preview" ? "tea-preview-activity" : "tea-activity";
+        const subActivityTargetPrefix =
+          context === "preview" ? "tea-preview-subactivity" : "tea-subactivity";
+        const activityItem: DocumentOutlineItem = {
+          id: `tea-${context}-activity-outline-${activity.id}`,
+          title: formatTeaEditorTitle(
+            activityNumber,
+            activity.title,
+            "Atividade sem título",
+          ),
+          tab,
+          targetId: `${activityTargetPrefix}-${toDomId(activity.id)}`,
+          activityId: activity.id,
+          level: 0,
+          status: outlineStatus(activityIssueCount),
+        };
+        const subActivityItems = activity.subActivities.map<DocumentOutlineItem>(
+          (subActivity, subIndex) => {
+            const subActivityNumber = `${activityNumber}.${subIndex + 1}`;
+            const subActivityIssueCount = countTeaIssues(
               issues,
-              (issue) => issue.blockId === block.id,
+              (issue) => issue.subActivityId === subActivity.id,
             );
 
             return {
-              id: `tea-block-outline-${block.id}`,
-              title: `Bloco ${blockIndex + 1} - ${teaContentBlockLabels[block.type]}`,
-              meta: buildTeaContentBlockSummaryItem(block),
-              tab: "activities",
-              targetId: `tea-content-block-${toDomId(block.id)}`,
+              id: `tea-${context}-subactivity-outline-${subActivity.id}`,
+              title: formatTeaEditorTitle(
+                subActivityNumber,
+                subActivity.title,
+                "Subtópico sem título",
+              ),
+              tab,
+              targetId: `${subActivityTargetPrefix}-${toDomId(subActivity.id)}`,
               activityId: activity.id,
-              blockId: block.id,
-              level: 2,
-              status: outlineStatus(blockIssueCount),
+              subActivityId: subActivity.id,
+              level: 1,
+              status: outlineStatus(subActivityIssueCount),
             };
-          });
-          const subActivityItems = activity.subActivities.flatMap<DocumentOutlineItem>(
-            (subActivity, subIndex) => {
-              const subActivityNumber = `${activityNumber}.${subIndex + 1}`;
-              const subActivityIssueCount = countTeaIssues(
-                issues,
-                (issue) => issue.subActivityId === subActivity.id,
-              );
-              const subActivityItem: DocumentOutlineItem = {
-                id: `tea-subactivity-outline-${subActivity.id}`,
-                title: formatTeaEditorTitle(
-                  subActivityNumber,
-                  subActivity.title,
-                  "Subtópico sem título",
-                ),
-                meta: buildTeaSubActivitySummaryItems(subActivity).join(" • "),
-                tab: "activities",
-                targetId: `tea-subactivity-${toDomId(subActivity.id)}`,
-                activityId: activity.id,
-                subActivityId: subActivity.id,
-                level: 2,
-                status: outlineStatus(subActivityIssueCount),
-              };
-              const subActivityBlocks = subActivity.blocks.map<DocumentOutlineItem>(
-                (block, blockIndex) => {
-                  const blockIssueCount = countTeaIssues(
-                    issues,
-                    (issue) => issue.blockId === block.id,
-                  );
+          },
+        );
 
-                  return {
-                    id: `tea-sub-block-outline-${block.id}`,
-                    title: `Bloco ${blockIndex + 1} - ${teaContentBlockLabels[block.type]}`,
-                    meta: buildTeaContentBlockSummaryItem(block),
-                    tab: "activities",
-                    targetId: `tea-content-block-${toDomId(block.id)}`,
-                    activityId: activity.id,
-                    subActivityId: subActivity.id,
-                    blockId: block.id,
-                    level: 2,
-                    status: outlineStatus(blockIssueCount),
-                  };
-                },
-              );
-
-              return [subActivityItem, ...subActivityBlocks];
-            },
-          );
-
-          return [activityItem, ...activityBlocks, ...subActivityItems];
-        }),
-      ],
-    },
-    {
-      id: "tea-review",
-      title: "Revisão",
-      items: [
-        {
-          id: "tea-review-main",
-          title: "Revisão",
-          meta: formatTeaCount(reviewSummary.issues.length, "pendência", "pendências"),
-          tab: "review",
-          targetId: "tea-section-review",
-          status: outlineStatus(reviewSummary.issues.length),
-        },
-      ],
+        return [activityItem, ...subActivityItems];
+      }),
     },
   ];
 }
@@ -6416,6 +6718,42 @@ function createTeaContentBlock(type: TeaContentBlockType): TeaContentBlock {
   };
 }
 
+function findTeaSubActivity(
+  documentData: TeaDocument,
+  activityId: string,
+  subActivityId: string,
+): TeaSubActivity | undefined {
+  return documentData.activities
+    .find((activity) => activity.id === activityId)
+    ?.subActivities.find((subActivity) => subActivity.id === subActivityId);
+}
+
+function buildTeaActivitySelectOptions(
+  documentData: TeaDocument,
+  sourceActivityId: string,
+): Array<{ value: string; label: string }> {
+  return documentData.activities.flatMap((activity, index) =>
+    activity.id === sourceActivityId
+      ? []
+      : [{
+      value: activity.id,
+      label: formatTeaEditorTitle(`2.${index + 1}`, activity.title, "Atividade sem título"),
+    }],
+  );
+}
+
+function areTeaActivityOutlineTargetsOpen(
+  documentData: TeaDocument,
+  collapsedActivities: Record<string, boolean>,
+  collapsedSubActivities: Record<string, boolean>,
+): boolean {
+  return documentData.activities.every(
+    (activity) =>
+      !collapsedActivities[activity.id] &&
+      activity.subActivities.every((subActivity) => !collapsedSubActivities[subActivity.id]),
+  );
+}
+
 function summarizeTeaReviewIssues(issues: TeaReviewIssue[]): TeaInlineReviewSummary {
   return issues.reduce<TeaInlineReviewSummary>(
     (summary, issue) => ({
@@ -6596,6 +6934,14 @@ async function duplicateTeaContentBlock(block: TeaContentBlock): Promise<TeaCont
     ...block,
     id: createId(),
     images,
+  };
+}
+
+async function duplicateTeaSubActivity(subActivity: TeaSubActivity): Promise<TeaSubActivity> {
+  return {
+    ...subActivity,
+    id: createId(),
+    blocks: await Promise.all(subActivity.blocks.map(duplicateTeaContentBlock)),
   };
 }
 

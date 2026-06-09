@@ -47,6 +47,11 @@ beforeEach(() => {
     })),
   });
 
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
+
   window.localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -339,21 +344,52 @@ describe("App document outline", () => {
     expect(document.activeElement?.id).toBe("test-card-macro-a-micro-at--test-missing-status");
   });
 
-  it("shows and navigates the TEA outline with real titles and block targets", async () => {
+  it("shows and opens the OT DOCX preview without replacing import or export actions", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+
+    const tabs = Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]')).map(
+      (tab) => tab.textContent,
+    );
+
+    expect(tabs).toContain("Prévia DOCX");
+    expect(container.textContent ?? "").toContain("Importar DOCX");
+    expect(container.textContent ?? "").toContain("Exportar DOCX");
+
+    await clickButton("Prévia DOCX");
+
+    expect(container.querySelector(".docxPreviewPage")?.textContent ?? "").toContain(
+      "OBSERVABILIDADE DE TESTES",
+    );
+
+    await clickOutlineItem("Prévia DOCX");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+
+    expect(document.activeElement?.id).toBe("ot-section-preview");
+  });
+
+  it("shows and navigates the TEA outline with activity and subtopic targets", async () => {
     window.localStorage.setItem(teaDraftKey, JSON.stringify(createMixedTeaPendingDraft()));
 
     await renderApp();
     await clickControl("TEA");
 
-    const outline = container.querySelector<HTMLElement>(".documentOutline");
-
-    expect(outline?.textContent ?? "").toContain("Documento TEA");
-    expect(outline?.textContent ?? "").toContain("Imagem geral");
-    expect(outline?.textContent ?? "").toContain("Atividade com pendência");
-    expect(outline?.textContent ?? "").toContain("Bloco 1 - Texto");
-    expect(outline?.textContent ?? "").toContain("Pendente");
+    expect(container.querySelector<HTMLElement>(".documentOutline")).toBeNull();
 
     await clickButton("Atividades");
+    const outline = container.querySelector<HTMLElement>(".documentOutline");
+
+    expect(outline?.textContent ?? "").not.toContain("Documento TEA");
+    expect(outline?.textContent ?? "").not.toContain("Imagem geral");
+    expect(outline?.textContent ?? "").toContain("Atividade com pendência");
+    expect(outline?.textContent ?? "").not.toContain("Bloco 1 - Texto");
+    expect(outline?.textContent ?? "").not.toContain("1 bloco");
+    expect(outline?.textContent ?? "").toContain("Pendente");
+
     await clickButton("Recolher todos");
     expect(
       getToggleByControlId("tea-content-block-pending-empty-text-panel")?.getAttribute(
@@ -361,19 +397,116 @@ describe("App document outline", () => {
       ),
     ).toBe("false");
 
-    await clickButton("Documento");
-    await clickOutlineItem("Bloco 1 - Texto");
+    vi.clearAllMocks();
+
+    await clickOutlineItem("Atividade com pendência");
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
     });
 
     expect(
-      getToggleByControlId("tea-content-block-pending-empty-text-panel")?.getAttribute(
+      getToggleByControlId("tea-activity-pending-activity-panel")?.getAttribute(
+        "aria-expanded",
+      ),
+    ).toBe("false");
+    expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+
+    await clickButton("Expandir todos");
+    vi.clearAllMocks();
+    await clickOutlineItem("Atividade com pendência");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    expect(
+      getToggleByControlId("tea-activity-pending-activity-panel")?.getAttribute(
         "aria-expanded",
       ),
     ).toBe("true");
-    expect(document.activeElement?.id).toBe("tea-content-block-pending-empty-text");
+    expect(
+      getToggleByControlId("tea-composer-pending-activity-panel")?.getAttribute(
+        "aria-expanded",
+      ),
+    ).toBe("true");
+    expect(document.activeElement?.id).toBe("tea-activity-pending-activity");
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith(
+      expect.objectContaining({ block: "start" }),
+    );
+    const activeOutlineItems = getActiveOutlineItems();
+    expect(activeOutlineItems).toHaveLength(1);
+    expect(activeOutlineItems[0]?.textContent ?? "").toContain("Atividade com pendência");
+  });
+
+  it("updates the active TEA outline item while scrolling through activities and subtopics", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftWithBlockImages()));
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const id = this.id;
+
+      if (id === "tea-section-activities") {
+        return createRect(-320);
+      }
+
+      if (id === "tea-activity-tea-activity") {
+        return createRect(-120);
+      }
+
+      if (id === "tea-subactivity-tea-subactivity") {
+        return createRect(96);
+      }
+
+      return createRect(900);
+    });
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    await act(async () => {
+      window.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    const activeOutlineItems = getActiveOutlineItems();
+
+    expect(activeOutlineItems).toHaveLength(1);
+    expect(activeOutlineItems[0]?.textContent ?? "").toContain("Subtopico com imagem");
+  });
+
+  it("shows and opens the TEA DOCX preview without replacing import or export actions", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftWithBlockImages()));
+
+    await renderApp();
+    await clickControl("TEA");
+
+    const tabs = Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]')).map(
+      (tab) => tab.textContent,
+    );
+
+    expect(tabs).toContain("Prévia DOCX");
+    expect(container.textContent ?? "").toContain("Importar DOCX");
+    expect(container.textContent ?? "").toContain("Exportar DOCX");
+
+    await clickButton("Prévia DOCX");
+
+    const previewText = container.querySelector(".docxPreviewPage")?.textContent ?? "";
+    expect(previewText).toContain("Termo de Entrega de Atividade");
+    expect(previewText).toContain("Atividade com imagens");
+    const outline = container.querySelector<HTMLElement>(".documentOutline");
+    expect(outline?.textContent ?? "").toContain("Atividade com imagens");
+    expect(outline?.textContent ?? "").toContain("Subtopico com imagem");
+    expect(outline?.textContent ?? "").not.toContain("Prévia DOCX");
+
+    await clickOutlineItem("Subtopico com imagem");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+
+    expect(document.activeElement?.id).toBe("tea-preview-subactivity-tea-subactivity");
   });
 });
 
@@ -689,6 +822,74 @@ describe("App TEA content blocks", () => {
     expect(expandPendingButton).toBeTruthy();
     expect(expandPendingButton?.disabled).toBe(true);
   });
+
+  it("copies a TEA subtopic to the selected target activity", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftForSubActivityCopy()));
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    await clickAriaButtonAt("Mais ações do subtópico");
+    await waitForBodyText("Copiar subtópico");
+    await clickMenuItem("Copiar subtópico");
+    await waitForDialogText("Atividade destino");
+    await selectComboboxOption("Atividade destino", "2.3 Atividade destino B");
+    await confirmDialog("Copiar subtópico");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    });
+
+    const activityCards = Array.from(container.querySelectorAll<HTMLElement>(".teaActivityCard"));
+    const destinationActivity = activityCards.find((activityCard) =>
+      activityCard.textContent?.includes("2.3 Atividade destino B"),
+    );
+
+    expect(container.querySelectorAll(".teaSubActivityCard")).toHaveLength(2);
+    expect(destinationActivity?.textContent ?? "").toContain("2.3.1 Subtopico origem");
+    expect(destinationActivity?.textContent ?? "").toContain("Texto copiado");
+    expect(destinationActivity?.textContent ?? "").toContain("Item copiado");
+    expect(destinationActivity?.textContent ?? "").toContain("copy-source-image.png");
+  });
+
+  it("disables subtopic copy confirmation when there is no other activity", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createSingleActivitySubtopicDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    await clickAriaButtonAt("Mais ações do subtópico");
+    await waitForBodyText("Copiar subtópico");
+    await clickMenuItem("Copiar subtópico");
+    await waitForDialogText("Crie outra atividade");
+
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    const copyButton = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+      .find((button) => button.textContent?.includes("Copiar subtópico"));
+
+    expect(copyButton).toBeTruthy();
+    expect(copyButton?.disabled).toBe(true);
+  });
+
+  it("shows a TEA-only floating action to scroll back to the top", async () => {
+    const scrollTo = vi.fn();
+
+    Object.defineProperty(window, "scrollTo", {
+      writable: true,
+      value: scrollTo,
+    });
+
+    await renderApp();
+
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Voltar ao topo"]')).toBeNull();
+
+    await clickControl("TEA");
+    await clickElement(container.querySelector<HTMLButtonElement>('button[aria-label="Voltar ao topo"]'));
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
+  });
 });
 
 async function renderApp(): Promise<void> {
@@ -739,6 +940,24 @@ async function waitForBodyText(text: string): Promise<void> {
   }
 
   expect(document.body.textContent ?? "").toContain(text);
+}
+
+async function waitForDialogText(text: string): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+
+    if ((dialog?.textContent ?? "").includes(text)) {
+      return;
+    }
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+
+  expect(dialog?.textContent ?? "").toContain(text);
 }
 
 async function clickDocumentButton(label: string): Promise<void> {
@@ -829,6 +1048,48 @@ function getMenuItem(label: string): HTMLElement | undefined {
   ).find((element) => element.textContent?.includes(label));
 }
 
+async function selectComboboxOption(label: string, optionLabel: string): Promise<void> {
+  const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+  const input = Array.from(
+    dialog?.querySelectorAll<HTMLInputElement>("input") ?? [],
+  ).find(
+    (element) =>
+      element.getAttribute("aria-label") === label ||
+      element.getAttribute("role") === "combobox" ||
+      element.closest(".mantine-Select-root")?.textContent?.includes(label),
+  );
+
+  expect(input).toBeTruthy();
+
+  await act(async () => {
+    input?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    input?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  let option = getComboboxOption(optionLabel);
+
+  for (let attempt = 0; !option && attempt < 5; attempt += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    option = getComboboxOption(optionLabel);
+  }
+
+  expect(option).toBeTruthy();
+
+  await act(async () => {
+    option?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function getComboboxOption(label: string): HTMLElement | undefined {
+  return Array.from(
+    document.body.querySelectorAll<HTMLElement>('[role="option"]'),
+  ).find((element) => element.textContent?.includes(label));
+}
+
 async function clickElement(element: HTMLElement | null | undefined): Promise<void> {
   expect(element).toBeTruthy();
 
@@ -912,6 +1173,26 @@ function getTeaBlockTexts(): string[] {
   return Array.from(container.querySelectorAll<HTMLElement>(".teaContentBlock")).map(
     (element) => element.textContent ?? "",
   );
+}
+
+function getActiveOutlineItems(): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>('.documentOutlineItem[data-active="true"]'),
+  );
+}
+
+function createRect(top: number): DOMRect {
+  return {
+    x: 0,
+    y: top,
+    width: 100,
+    height: 40,
+    top,
+    right: 100,
+    bottom: top + 40,
+    left: 0,
+    toJSON: () => ({}),
+  } as DOMRect;
 }
 
 function getReviewMetricValue(label: string): string | undefined {
@@ -1143,6 +1424,73 @@ function createTeaDraftWithBlockImages(): TeaDocument {
   };
 }
 
+function createTeaDraftForSubActivityCopy(): TeaDocument {
+  return {
+    metadata: {
+      serviceOrder: "OS2171",
+      phase: "Etapa 5",
+      ticket: "Chamado 202504000396",
+      subject: "Telas - Novo Layout",
+      date: "2026-06-08",
+      author: "Gabriel Sousa",
+    },
+    overview: "Validar novo layout.",
+    activityIntro: "Atividades realizadas:",
+    activityImages: [],
+    activities: [
+      {
+        id: "copy-source-activity",
+        title: "Atividade origem",
+        blocks: [],
+        subActivities: [
+          {
+            id: "copy-source-subactivity",
+            title: "Subtopico origem",
+            blocks: [
+              {
+                id: "copy-source-text",
+                type: "text",
+                text: "Texto copiado",
+              },
+              {
+                id: "copy-source-list",
+                type: "list",
+                items: [{ id: "copy-source-item", text: "Item copiado" }],
+              },
+              {
+                id: "copy-source-images",
+                type: "images",
+                images: [createImageWithoutData("copy-source-image", "Evidencia copiada")],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: "copy-target-a",
+        title: "Atividade destino A",
+        blocks: [],
+        subActivities: [],
+      },
+      {
+        id: "copy-target-b",
+        title: "Atividade destino B",
+        blocks: [],
+        subActivities: [],
+      },
+    ],
+  };
+}
+
+function createSingleActivitySubtopicDraft(): TeaDocument {
+  const documentData = createTeaDraftForSubActivityCopy();
+
+  return {
+    ...documentData,
+    activities: documentData.activities.slice(0, 1),
+  };
+}
+
 function createMixedTeaPendingDraft(): TeaDocument {
   return {
     metadata: {
@@ -1276,5 +1624,14 @@ function createImage(id: string): EvidenceImage {
     width: 10,
     height: 10,
     dataUrl: "data:image/png;base64,AAAA",
+  };
+}
+
+function createImageWithoutData(id: string, label: string): EvidenceImage {
+  const { dataUrl: _dataUrl, ...image } = createImage(id);
+
+  return {
+    ...image,
+    label,
   };
 }
