@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOtHtml } from "./docxImport";
+import { parseOtHtml, parseTeaHtml } from "./docxImport";
 
 const pngDataUrl =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lSZ8nAAAAABJRU5ErkJggg==";
@@ -128,5 +128,113 @@ describe("parseOtHtml", () => {
     expect(result.summary.tests).toBe(0);
     expect(result.summary.images).toBe(0);
     expect(result.warnings).toContain("Nenhum teste reconhecido.");
+  });
+});
+
+describe("parseTeaHtml", () => {
+  it("imports the TEA model with metadata, sections, content blocks and images", () => {
+    const result = parseTeaHtml(
+      `
+        <p><strong>Termo de Entrega de Atividade (TEA)</strong></p>
+        <table>
+          <tr><td>Ordem de Serviço:</td><td>OS2171 - Documentos Vencidos</td></tr>
+          <tr><td>Fase/Etapa</td><td>Etapa 5</td></tr>
+          <tr><td>Chamado:</td><td>Chamado 202504000396</td></tr>
+          <tr><td>Assunto:</td><td>Telas - Novo Layout</td></tr>
+          <tr><td>Data:</td><td>28/04/2026</td></tr>
+          <tr><td>Elaborado por:</td><td>Gabriel Sousa</td></tr>
+        </table>
+        <h1>1. VISÃO GERAL</h1>
+        <p>Visão geral importada.</p>
+        <h1>2. ATIVIDADES REALIZADAS</h1>
+        <p>Texto inicial das atividades.</p>
+        <p><img src="${pngDataUrl}" /></p>
+        <h2>2.1 - Botão Editar:</h2>
+        <p>Texto da atividade.</p>
+        <ul>
+          <li>Item da atividade</li>
+          <li>Outro item</li>
+        </ul>
+        <p><img src="${pngDataUrl}" /></p>
+        <p>2.1.1 - Modal de edição:</p>
+        <p>Texto da subatividade.</p>
+        <ul>
+          <li>Item da subatividade</li>
+        </ul>
+      `,
+      { sourceName: "TEA - Documentos Vencidos.docx" },
+    );
+
+    expect(result.kind).toBe("tea");
+    expect(result.document.metadata).toMatchObject({
+      serviceOrder: "OS2171 - Documentos Vencidos",
+      phase: "Etapa 5",
+      ticket: "Chamado 202504000396",
+      subject: "Telas - Novo Layout",
+      date: "2026-04-28",
+      author: "Gabriel Sousa",
+    });
+    expect(result.document.overview).toBe("Visão geral importada.");
+    expect(result.document.activityIntro).toBe("Texto inicial das atividades.");
+    expect(result.document.activityImages).toHaveLength(1);
+
+    const activity = result.document.activities[0];
+    expect(activity.title).toBe("Botão Editar");
+    expect(activity.blocks.map((block) => block.type)).toEqual(["text", "list", "images"]);
+    expect(activity.blocks[0]).toMatchObject({
+      type: "text",
+      text: "Texto da atividade.",
+    });
+    expect(activity.blocks[1]).toMatchObject({
+      type: "list",
+      items: [{ text: "Item da atividade" }, { text: "Outro item" }],
+    });
+
+    const subActivity = activity.subActivities[0];
+    expect(subActivity.title).toBe("Modal de edição");
+    expect(subActivity.blocks.map((block) => block.type)).toEqual(["text", "list"]);
+    expect(result.summary).toMatchObject({
+      subject: "Telas - Novo Layout",
+      activities: 1,
+      subActivities: 1,
+      blocks: 5,
+      images: 2,
+    });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("uses the source name and reports warnings when TEA sections are incomplete", () => {
+    const result = parseTeaHtml(
+      `
+        <h1>1. VISÃO GERAL</h1>
+        <p>Visão geral importada.</p>
+      `,
+      { sourceName: "TEA - Documento Parcial.docx" },
+    );
+
+    expect(result.document.metadata.subject).toBe("Documento Parcial");
+    expect(result.warnings).toContain("Assunto nao encontrado no DOCX; usei o nome do arquivo.");
+    expect(result.warnings).toContain("Nenhuma atividade reconhecida.");
+  });
+
+  it("ignores Mammoth's built-in Title style warning", () => {
+    const result = parseTeaHtml(
+      `
+        <h1>1. VISÃO GERAL</h1>
+        <p>Visão geral importada.</p>
+      `,
+      {
+        sourceName: "TEA - Documento Parcial.docx",
+        mammothMessages: [
+          {
+            message: "Unrecognised paragraph style: 'Title' (Style ID: Title)",
+          },
+        ],
+      },
+    );
+
+    expect(result.warnings).not.toContain(
+      "Conversao DOCX: Unrecognised paragraph style: 'Title' (Style ID: Title)",
+    );
   });
 });

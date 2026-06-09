@@ -11,6 +11,7 @@ import {
   Divider,
   FileButton,
   Group,
+  Menu,
   Modal,
   Paper,
   SegmentedControl,
@@ -41,13 +42,12 @@ import {
   ImagePlus,
   ListChecks,
   Moon,
+  MoreVertical,
   Plus,
   RotateCcw,
   Save,
-  SearchCheck,
   Sun,
   Trash2,
-  Wand2,
   X,
 } from "lucide-react";
 import { checkLabels, checkOrder, createEmptyTestResult, createPermissionKey } from "./defaultDocument";
@@ -80,9 +80,10 @@ import type {
   PermissionGroup,
   PermissionItem,
   TeaActivity,
+  TeaContentBlock,
+  TeaContentBlockType,
   TeaDocument,
   TeaSubActivity,
-  TeaTextItem,
   TestResult,
 } from "./types";
 
@@ -97,9 +98,10 @@ type FilteredPermissionBlockEntry = PermissionBlockEntry & {
   sourceBlock: PermissionBlock;
 };
 
-type ActiveTab = "document" | "permissions" | "tests" | "review" | "help";
+type ActiveTab = "document" | "permissions" | "tests" | "review";
 type TeaTab = "document" | "activities" | "review";
 type DocumentKind = "ot" | "tea";
+type MoveDirection = "up" | "down";
 
 type DraftStatus =
   | "Alterações pendentes"
@@ -114,11 +116,14 @@ type ReviewSummary = {
   issues: ReviewIssue[];
 };
 
+type ReviewSeverity = "warning" | "danger";
+
 type ReviewIssue = {
   id: string;
   label: string;
   detail: string;
-  tab: Exclude<ActiveTab, "help">;
+  tab: ActiveTab;
+  severity: ReviewSeverity;
   targetId?: string;
   blockKey?: string;
   testId?: string;
@@ -130,12 +135,27 @@ type TeaReviewSummary = {
   issues: TeaReviewIssue[];
 };
 
+type TeaReviewSeverity = ReviewSeverity;
+
 type TeaReviewIssue = {
   id: string;
   label: string;
   detail: string;
   tab: TeaTab;
+  severity: TeaReviewSeverity;
+  targetId?: string;
+  activityId?: string;
+  subActivityId?: string;
+  blockId?: string;
 };
+
+type TeaInlineReviewSummary = {
+  total: number;
+  danger: number;
+  warning: number;
+};
+
+type InlineReviewSummary = TeaInlineReviewSummary;
 
 type FaqSection = {
   title: string;
@@ -173,6 +193,11 @@ type PermissionBlockGroupProps = {
   macro: PermissionGroup;
   entries: FilteredPermissionBlockEntry[];
   expandedTests: Record<string, boolean>;
+  reviewIssues: ReviewIssue[];
+  isCollapsed: boolean;
+  collapsedBlocks: Record<string, boolean>;
+  onMacroCollapseChange: (macroId: string, collapsed: boolean) => void;
+  onBlockCollapseChange: (blockKey: string, collapsed: boolean) => void;
   onAddTest: (blockKey: string) => void;
   onAddStandardTests: (blockKey: string) => void;
   onDuplicateBlockStructure: (blockKey: string) => void;
@@ -188,11 +213,15 @@ type PermissionBlockGroupProps = {
   ) => void;
 };
 
-type PermissionBlockEditorProps = Omit<PermissionBlockGroupProps, "macro" | "entries"> & {
+type PermissionBlockEditorProps = Omit<
+  PermissionBlockGroupProps,
+  "macro" | "entries" | "isCollapsed" | "collapsedBlocks" | "onMacroCollapseChange"
+> & {
   blockKey: string;
   entry: PermissionBlockEntry;
   block: PermissionBlock;
   sourceBlock: PermissionBlock;
+  isCollapsed: boolean;
 };
 
 type BlockTestEditorProps = {
@@ -201,6 +230,7 @@ type BlockTestEditorProps = {
   test: PermissionBlockTest;
   selfReferenceKey: string;
   isExpanded: boolean;
+  reviewIssues: ReviewIssue[];
   canMoveUp: boolean;
   canMoveDown: boolean;
   onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
@@ -223,6 +253,20 @@ const quickCheckLabels: Record<CheckKey, string> = {
   bothIssue: "Ambos",
   newIssue: "Novo",
   errorReport: "Erros",
+};
+
+const quickCheckToneClassNames: Record<CheckKey, string> = {
+  sameBehavior: "",
+  possibleIssue: "",
+  bothIssue: "quickCheck--warning",
+  newIssue: "quickCheck--warning",
+  errorReport: "quickCheck--danger",
+};
+
+const teaContentBlockLabels: Record<TeaContentBlockType, string> = {
+  text: "Texto",
+  list: "Lista",
+  images: "Imagens",
 };
 
 const testBlockFilterLabels: Record<TestBlockFilter, string> = {
@@ -260,7 +304,7 @@ const faqSections: FaqSection[] = [
       {
         title: "Feche pela Revisão",
         description:
-          "A Revisão mostra pendências, contadores de testes e imagens. Use Próxima pendência para ir direto ao primeiro ponto incompleto.",
+          "A Revisão mostra pendências, contadores de testes e imagens para conferir o documento antes da exportação.",
       },
     ],
   },
@@ -312,11 +356,6 @@ const faqSections: FaqSection[] = [
     title: "Testes e evidências",
     items: [
       {
-        title: "Padrão em todos",
-        description:
-          "Adiciona Criação, Edição, Consulta e Exclusão em todos os blocos de permissão selecionados, sem duplicar títulos que já existem no bloco.",
-      },
-      {
         title: "Adicionar pacote padrão",
         description:
           "Faz a mesma lista padrão, mas apenas no bloco de permissão onde o botão foi clicado.",
@@ -361,9 +400,22 @@ export default function App() {
   const [documentData, setDocumentData] = useState<OtDocument>(() => loadDraft());
   const [teaData, setTeaData] = useState<TeaDocument>(() => loadTeaDraft());
   const [expandedTests, setExpandedTests] = useState<Record<string, boolean>>({});
+  const [collapsedMacros, setCollapsedMacros] = useState<Record<string, boolean>>({});
+  const [collapsedPermissionBlocks, setCollapsedPermissionBlocks] = useState<
+    Record<string, boolean>
+  >({});
+  const [collapsedTeaActivities, setCollapsedTeaActivities] = useState<Record<string, boolean>>({});
+  const [collapsedTeaSubActivities, setCollapsedTeaSubActivities] = useState<
+    Record<string, boolean>
+  >({});
+  const [collapsedTeaComposers, setCollapsedTeaComposers] = useState<Record<string, boolean>>({});
+  const [collapsedTeaContentBlocks, setCollapsedTeaContentBlocks] = useState<
+    Record<string, boolean>
+  >({});
   const [activeTab, setActiveTab] = useState<ActiveTab>("document");
   const [teaActiveTab, setTeaActiveTab] = useState<TeaTab>("document");
   const [testBlockFilter, setTestBlockFilter] = useState<TestBlockFilter>("all");
+  const [isFaqOpen, setIsFaqOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importPreview, setImportPreview] = useState<DocxImportResult | null>(null);
@@ -590,6 +642,32 @@ export default function App() {
     setTeaData((current) => updater(current));
   }, []);
 
+  const setTeaActivityCollapsed = useCallback((activityId: string, collapsed: boolean): void => {
+    setCollapsedTeaActivities((current) => setCollapsedMapValue(current, activityId, collapsed));
+  }, []);
+
+  const setTeaSubActivityCollapsed = useCallback(
+    (subActivityId: string, collapsed: boolean): void => {
+      setCollapsedTeaSubActivities((current) =>
+        setCollapsedMapValue(current, subActivityId, collapsed),
+      );
+    },
+    [],
+  );
+
+  const setTeaComposerCollapsed = useCallback((composerId: string, collapsed: boolean): void => {
+    setCollapsedTeaComposers((current) => setCollapsedMapValue(current, composerId, collapsed));
+  }, []);
+
+  const setTeaContentBlockCollapsed = useCallback(
+    (blockId: string, collapsed: boolean): void => {
+      setCollapsedTeaContentBlocks((current) =>
+        setCollapsedMapValue(current, blockId, collapsed),
+      );
+    },
+    [],
+  );
+
   function selectDocumentKind(nextKind: DocumentKind): void {
     if (nextKind === documentKindRef.current) {
       return;
@@ -599,7 +677,7 @@ export default function App() {
     setDocumentKind(nextKind);
   }
 
-  function updateTeaMetadata(field: keyof TeaDocument["metadata"], value: string): void {
+  const updateTeaMetadata = useCallback((field: keyof TeaDocument["metadata"], value: string): void => {
     updateTeaDocument((current) => ({
       ...current,
       metadata: {
@@ -607,109 +685,130 @@ export default function App() {
         [field]: value,
       },
     }));
-  }
+  }, [updateTeaDocument]);
 
-  function updateTeaActivity(
+  const updateTeaActivity = useCallback((
     activityId: string,
     updater: (activity: TeaActivity) => TeaActivity,
-  ): void {
+  ): void => {
     updateTeaDocument((current) => ({
       ...current,
       activities: current.activities.map((activity) =>
         activity.id === activityId ? updater(activity) : activity,
       ),
     }));
-  }
+  }, [updateTeaDocument]);
 
-  function addTeaActivity(): void {
+  const addTeaActivity = useCallback((): void => {
+    const activityId = createId();
+
+    setTeaActivityCollapsed(activityId, false);
+    setTeaComposerCollapsed(activityId, false);
     updateTeaDocument((current) => ({
       ...current,
       activities: [
         ...current.activities,
         {
-          id: createId(),
+          id: activityId,
           title: "",
-          description: "",
-          items: [],
-          images: [],
+          blocks: [],
           subActivities: [],
         },
       ],
     }));
-  }
+  }, [setTeaActivityCollapsed, setTeaComposerCollapsed, updateTeaDocument]);
 
-  function removeTeaActivity(activityId: string): void {
+  const removeTeaActivity = useCallback((activityId: string): void => {
+    setTeaActivityCollapsed(activityId, false);
+    setTeaComposerCollapsed(activityId, false);
     updateTeaDocument((current) => ({
       ...current,
       activities: current.activities.filter((activity) => activity.id !== activityId),
     }));
-  }
+  }, [setTeaActivityCollapsed, setTeaComposerCollapsed, updateTeaDocument]);
 
-  function updateTeaActivityItems(activityId: string, value: string): void {
-    const items = teaItemsFromBulk(value);
-
-    updateTeaActivity(activityId, (activity) => ({
-      ...activity,
-      items: items.map((text, index) => ({
-        id: activity.items[index]?.id ?? createId(),
-        text,
-      })),
+  const moveTeaActivity = useCallback((activityId: string, direction: MoveDirection): void => {
+    updateTeaDocument((current) => ({
+      ...current,
+      activities: moveItemById(current.activities, activityId, direction),
     }));
-  }
+  }, [updateTeaDocument]);
 
-  function addTeaSubActivity(activityId: string): void {
+  const addTeaSubActivity = useCallback((activityId: string): void => {
+    const subActivityId = createId();
+
+    setTeaActivityCollapsed(activityId, false);
+    setTeaSubActivityCollapsed(subActivityId, false);
+    setTeaComposerCollapsed(subActivityId, false);
     updateTeaActivity(activityId, (activity) => ({
       ...activity,
       subActivities: [
         ...activity.subActivities,
         {
-          id: createId(),
+          id: subActivityId,
           title: "",
-          description: "",
-          items: [],
-          images: [],
+          blocks: [],
         },
       ],
     }));
-  }
+  }, [
+    setTeaActivityCollapsed,
+    setTeaComposerCollapsed,
+    setTeaSubActivityCollapsed,
+    updateTeaActivity,
+  ]);
 
-  function updateTeaSubActivity(
+  const updateTeaSubActivity = useCallback((
     activityId: string,
     subActivityId: string,
     updater: (subActivity: TeaSubActivity) => TeaSubActivity,
-  ): void {
+  ): void => {
     updateTeaActivity(activityId, (activity) => ({
       ...activity,
       subActivities: activity.subActivities.map((subActivity) =>
         subActivity.id === subActivityId ? updater(subActivity) : subActivity,
       ),
     }));
-  }
+  }, [updateTeaActivity]);
 
-  function removeTeaSubActivity(activityId: string, subActivityId: string): void {
+  const removeTeaSubActivity = useCallback((activityId: string, subActivityId: string): void => {
+    setTeaSubActivityCollapsed(subActivityId, false);
+    setTeaComposerCollapsed(subActivityId, false);
     updateTeaActivity(activityId, (activity) => ({
       ...activity,
       subActivities: activity.subActivities.filter(
         (subActivity) => subActivity.id !== subActivityId,
       ),
     }));
-  }
+  }, [setTeaComposerCollapsed, setTeaSubActivityCollapsed, updateTeaActivity]);
 
-  function updateTeaSubActivityItems(
+  const moveTeaSubActivity = useCallback((
     activityId: string,
     subActivityId: string,
-    value: string,
-  ): void {
-    const items = teaItemsFromBulk(value);
-
-    updateTeaSubActivity(activityId, subActivityId, (subActivity) => ({
-      ...subActivity,
-      items: items.map((text, index) => ({
-        id: subActivity.items[index]?.id ?? createId(),
-        text,
-      })),
+    direction: MoveDirection,
+  ): void => {
+    updateTeaActivity(activityId, (activity) => ({
+      ...activity,
+      subActivities: moveItemById(activity.subActivities, subActivityId, direction),
     }));
-  }
+  }, [updateTeaActivity]);
+
+  const updateTeaOverview = useCallback((overview: string): void => {
+    updateTeaDocument((current) => ({ ...current, overview }));
+  }, [updateTeaDocument]);
+
+  const updateTeaActivityIntro = useCallback((activityIntro: string): void => {
+    updateTeaDocument((current) => ({ ...current, activityIntro }));
+  }, [updateTeaDocument]);
+
+  const updateTeaActivityImages = useCallback((
+    updater: (images: EvidenceImage[]) => EvidenceImage[],
+  ): void => {
+    updateTeaDocument((current) => ({
+      ...current,
+      activityImages: updater(current.activityImages),
+    }));
+  }, [updateTeaDocument]);
 
   function updateMetadata(field: keyof OtDocument["metadata"], value: string): void {
     updateDocument((current) => ({
@@ -897,6 +996,46 @@ export default function App() {
     }));
   }, []);
 
+  const setMacroCollapsed = useCallback((macroId: string, collapsed: boolean): void => {
+    setCollapsedMacros((current) => {
+      if (collapsed) {
+        return {
+          ...current,
+          [macroId]: true,
+        };
+      }
+
+      const { [macroId]: _removed, ...rest } = current;
+      return rest;
+    });
+  }, []);
+
+  const setPermissionBlockCollapsed = useCallback((blockKey: string, collapsed: boolean): void => {
+    setCollapsedPermissionBlocks((current) => {
+      if (collapsed) {
+        return {
+          ...current,
+          [blockKey]: true,
+        };
+      }
+
+      const { [blockKey]: _removed, ...rest } = current;
+      return rest;
+    });
+  }, []);
+
+  const expandPermissionPath = useCallback((
+    blockKey: string,
+  ): void => {
+    const macroId = getMacroIdFromBlockKey(blockKey);
+
+    if (macroId) {
+      setMacroCollapsed(macroId, false);
+    }
+
+    setPermissionBlockCollapsed(blockKey, false);
+  }, [setMacroCollapsed, setPermissionBlockCollapsed]);
+
   const updateBlock = useCallback((
     blockKey: string,
     updater: (block: PermissionBlock) => PermissionBlock,
@@ -913,17 +1052,20 @@ export default function App() {
   const addBlockTest = useCallback((blockKey: string): void => {
     const testId = createId();
 
+    expandPermissionPath(blockKey);
     setTestExpansion(createTestReferenceKey(blockKey, testId), true);
 
     updateBlock(blockKey, (block) => ({
       ...block,
       tests: [...block.tests, createBlockTest(testId)],
     }));
-  }, [setTestExpansion, updateBlock]);
+  }, [expandPermissionPath, setTestExpansion, updateBlock]);
 
   const addStandardTests = useCallback((blockKey: string): void => {
     const tests = standardTestTitles.map((title) => createBlockTest(createId(), title));
     const firstReferenceKey = createTestReferenceKey(blockKey, tests[0]?.id ?? "");
+
+    expandPermissionPath(blockKey);
 
     if (tests[0]) {
       setTestExpansion(firstReferenceKey, true);
@@ -933,7 +1075,7 @@ export default function App() {
       ...block,
       tests: [...block.tests, ...tests],
     }));
-  }, [setTestExpansion, updateBlock]);
+  }, [expandPermissionPath, setTestExpansion, updateBlock]);
 
   const addStandardTestsToAll = useCallback((): void => {
     updateDocument((current) => ({
@@ -995,6 +1137,7 @@ export default function App() {
   const duplicateBlockTest = useCallback((blockKey: string, testId: string): void => {
     const duplicatedId = createId();
 
+    expandPermissionPath(blockKey);
     setTestExpansion(createTestReferenceKey(blockKey, duplicatedId), true);
 
     updateBlock(blockKey, (block) => {
@@ -1020,7 +1163,7 @@ export default function App() {
 
       return { ...block, tests };
     });
-  }, [setTestExpansion, updateBlock]);
+  }, [expandPermissionPath, setTestExpansion, updateBlock]);
 
   const updateBlockTestTitle = useCallback((
     blockKey: string,
@@ -1117,6 +1260,10 @@ export default function App() {
   }
 
   const setVisibleTestsExpansion = useCallback((expanded: boolean): void => {
+    const visibleMacroIds = filteredPermissionBlockGroups.map((group) => group.macro.id);
+    const visibleBlockKeys = filteredPermissionBlockGroups.flatMap((group) =>
+      group.entries.map((entry) => entry.key),
+    );
     const visibleReferenceKeys = filteredPermissionBlockGroups.flatMap((group) =>
       group.entries.flatMap((entry) =>
         entry.block.tests.map((test) =>
@@ -1138,10 +1285,42 @@ export default function App() {
 
       return next;
     });
+
+    setCollapsedMacros((current) => {
+      const next = { ...current };
+
+      visibleMacroIds.forEach((macroId) => {
+        if (expanded) {
+          delete next[macroId];
+        } else {
+          next[macroId] = true;
+        }
+      });
+
+      return next;
+    });
+
+    setCollapsedPermissionBlocks((current) => {
+      const next = { ...current };
+
+      visibleBlockKeys.forEach((blockKey) => {
+        if (expanded) {
+          delete next[blockKey];
+        } else {
+          next[blockKey] = true;
+        }
+      });
+
+      return next;
+    });
   }, [filteredPermissionBlockGroups]);
 
   function handleReviewIssueClick(issue: ReviewIssue): void {
     setActiveTab(issue.tab);
+
+    if (issue.blockKey) {
+      expandPermissionPath(issue.blockKey);
+    }
 
     if (issue.blockKey && issue.testId) {
       setTestExpansion(createTestReferenceKey(issue.blockKey, issue.testId), true);
@@ -1167,6 +1346,29 @@ export default function App() {
 
   function handleTeaReviewIssueClick(issue: TeaReviewIssue): void {
     setTeaActiveTab(issue.tab);
+
+    if (issue.activityId) {
+      setTeaActivityCollapsed(issue.activityId, false);
+      setTeaComposerCollapsed(issue.activityId, false);
+    }
+
+    if (issue.subActivityId) {
+      setTeaSubActivityCollapsed(issue.subActivityId, false);
+      setTeaComposerCollapsed(issue.subActivityId, false);
+    }
+
+    if (issue.blockId) {
+      setTeaContentBlockCollapsed(issue.blockId, false);
+    }
+
+    window.setTimeout(() => {
+      if (issue.targetId) {
+        window.document.getElementById(issue.targetId)?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }
+    }, 40);
   }
 
   async function handleImportFile(file: File | null): Promise<void> {
@@ -1177,7 +1379,7 @@ export default function App() {
     setIsImporting(true);
 
     try {
-      setImportPreview(await parseDocxFile(file));
+      setImportPreview(await parseDocxFile(file, documentKindRef.current));
     } catch {
       window.alert("Nao foi possivel importar este DOCX.");
     } finally {
@@ -1190,10 +1392,27 @@ export default function App() {
       return;
     }
 
+    if (importPreview.kind === "tea") {
+      try {
+        await persistEmbeddedTeaImages(importPreview.document);
+      } catch {
+        window.alert("O TEA foi importado, mas algumas imagens podem nao ficar salvas no rascunho.");
+      }
+
+      setTeaData(importPreview.document);
+      setCollapsedTeaActivities({});
+      setCollapsedTeaSubActivities({});
+      setCollapsedTeaComposers({});
+      setCollapsedTeaContentBlocks({});
+      setTeaActiveTab("review");
+      setImportPreview(null);
+      return;
+    }
+
     try {
       await persistEmbeddedEvidenceImages(importPreview.document);
     } catch {
-      window.alert("O documento foi importado, mas algumas imagens podem nao ficar salvas no rascunho.");
+      window.alert("A OT foi importada, mas algumas imagens podem nao ficar salvas no rascunho.");
     }
 
     setDocumentData(importPreview.document);
@@ -1227,6 +1446,10 @@ export default function App() {
       await clearTeaDraft();
       setTeaData(loadTeaDraft());
       setTeaActiveTab("document");
+      setCollapsedTeaActivities({});
+      setCollapsedTeaSubActivities({});
+      setCollapsedTeaComposers({});
+      setCollapsedTeaContentBlocks({});
     } else {
       await clearDraft();
       const nextDocument = loadDraft();
@@ -1269,7 +1492,7 @@ export default function App() {
               </Text>
             </div>
 
-            <Group gap="xs">
+            <Group gap="xs" className="topBarActions">
               <Badge
                 variant="light"
                 color={draftStatusColor(draftStatus)}
@@ -1278,49 +1501,42 @@ export default function App() {
               >
                 {draftStatus}
               </Badge>
+              <div className="topBarDesktopOnly">
+                <FileButton
+                  onChange={(file) => {
+                    void handleImportFile(file);
+                  }}
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                >
+                  {(props) => (
+                    <Button
+                      {...props}
+                      variant="light"
+                      leftSection={<FileUp size={17} />}
+                      loading={isImporting}
+                    >
+                      Importar DOCX
+                    </Button>
+                  )}
+                </FileButton>
+              </div>
               {documentKind === "ot" ? (
-                <>
-              <FileButton
-                onChange={(file) => {
-                  void handleImportFile(file);
-                }}
-                accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              >
-                {(props) => (
-                  <Button
-                    {...props}
-                    variant="light"
-                    leftSection={<FileUp size={17} />}
-                    loading={isImporting}
-                  >
-                    Importar DOCX
-                  </Button>
-                )}
-              </FileButton>
-              <Button
-                variant="light"
-                leftSection={<Wand2 size={17} />}
-                disabled={permissionBlockEntries.length === 0}
-                onClick={addStandardTestsToAll}
-              >
-                Padrão em todos
-              </Button>
-              <Button
-                variant="light"
-                color={reviewSummary.issues.length > 0 ? "yellow" : "gray"}
-                leftSection={<SearchCheck size={17} />}
-                disabled={reviewSummary.issues.length === 0}
-                onClick={goToNextIssue}
-              >
-                Próxima pendência
-              </Button>
-                </>
+                <Button
+                  variant="light"
+                  color="gray"
+                  leftSection={<CircleHelp size={17} />}
+                  className="topBarDesktopOnly"
+                  onClick={() => setIsFaqOpen(true)}
+                >
+                  Ajuda
+                </Button>
               ) : null}
               <Tooltip label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}>
                 <ActionIcon
                   variant="light"
                   color="gray"
                   size="lg"
+                  className="topBarDesktopOnly"
                   onClick={toggleColorScheme}
                   aria-label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}
                 >
@@ -1331,6 +1547,7 @@ export default function App() {
                 variant="light"
                 color="gray"
                 leftSection={<RotateCcw size={17} />}
+                className="topBarDesktopOnly"
                 onClick={() => {
                   void handleClearDraft();
                 }}
@@ -1344,6 +1561,60 @@ export default function App() {
               >
                 Exportar DOCX
               </Button>
+              <Menu position="bottom-end" withArrow>
+                <Menu.Target>
+                  <ActionIcon
+                    variant="light"
+                    color="gray"
+                    size="lg"
+                    className="topBarCompactMenu"
+                    aria-label="Mais acoes globais"
+                  >
+                    <MoreVertical size={18} />
+                  </ActionIcon>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <FileButton
+                    onChange={(file) => {
+                      void handleImportFile(file);
+                    }}
+                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  >
+                    {(props) => (
+                      <Menu.Item
+                        leftSection={<FileUp size={15} />}
+                        disabled={isImporting}
+                        onClick={props.onClick}
+                      >
+                        Importar DOCX
+                      </Menu.Item>
+                    )}
+                  </FileButton>
+                  {documentKind === "ot" ? (
+                    <Menu.Item
+                      leftSection={<CircleHelp size={15} />}
+                      onClick={() => setIsFaqOpen(true)}
+                    >
+                      Ajuda
+                    </Menu.Item>
+                  ) : null}
+                  <Menu.Item
+                    leftSection={isDarkMode ? <Sun size={15} /> : <Moon size={15} />}
+                    onClick={toggleColorScheme}
+                  >
+                    {isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}
+                  </Menu.Item>
+                  <Menu.Item
+                    color="red"
+                    leftSection={<RotateCcw size={15} />}
+                    onClick={() => {
+                      void handleClearDraft();
+                    }}
+                  >
+                    Limpar
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
             </Group>
           </Group>
         </Paper>
@@ -1370,10 +1641,7 @@ export default function App() {
               Testes
             </Tabs.Tab>
             <Tabs.Tab value="review" leftSection={<AlertCircle size={16} />}>
-              Revisão
-            </Tabs.Tab>
-            <Tabs.Tab value="help" leftSection={<CircleHelp size={16} />}>
-              FAQ
+              <ReviewTabLabel count={reviewSummary.issues.length} />
             </Tabs.Tab>
           </Tabs.List>
 
@@ -1561,7 +1829,7 @@ export default function App() {
                 variant="light"
                 size="xs"
                 leftSection={<ChevronsDown size={15} />}
-                disabled={visibleTestCount === 0}
+                disabled={filteredPermissionBlockGroups.length === 0}
                 onClick={() => setVisibleTestsExpansion(true)}
               >
                 Expandir todos
@@ -1570,7 +1838,7 @@ export default function App() {
                 variant="light"
                 size="xs"
                 leftSection={<ChevronsUp size={15} />}
-                disabled={visibleTestCount === 0}
+                disabled={filteredPermissionBlockGroups.length === 0}
                 onClick={() => setVisibleTestsExpansion(false)}
               >
                 Recolher todos
@@ -1582,6 +1850,11 @@ export default function App() {
                 macro={macro}
                 entries={entries}
                 expandedTests={expandedTests}
+                reviewIssues={reviewSummary.issues}
+                isCollapsed={collapsedMacros[macro.id] ?? false}
+                collapsedBlocks={collapsedPermissionBlocks}
+                onMacroCollapseChange={setMacroCollapsed}
+                onBlockCollapseChange={setPermissionBlockCollapsed}
                 onAddTest={addBlockTest}
                 onAddStandardTests={addStandardTests}
                 onDuplicateBlockStructure={duplicateBlockStructureToEmpty}
@@ -1620,38 +1893,33 @@ export default function App() {
           <Tabs.Panel value="review" pt="md">
             <ReviewPanel summary={reviewSummary} onIssueClick={handleReviewIssueClick} />
           </Tabs.Panel>
-
-          <Tabs.Panel value="help" pt="md">
-            <FaqPanel />
-          </Tabs.Panel>
         </Tabs>
         ) : (
           <TeaWorkspace
             documentData={teaData}
             activeTab={teaActiveTab}
             reviewSummary={teaReviewSummary}
+            collapsedActivities={collapsedTeaActivities}
+            collapsedSubActivities={collapsedTeaSubActivities}
+            collapsedComposers={collapsedTeaComposers}
+            collapsedContentBlocks={collapsedTeaContentBlocks}
             onTabChange={setTeaActiveTab}
             onMetadataChange={updateTeaMetadata}
-            onOverviewChange={(overview) =>
-              updateTeaDocument((current) => ({ ...current, overview }))
-            }
-            onActivityIntroChange={(activityIntro) =>
-              updateTeaDocument((current) => ({ ...current, activityIntro }))
-            }
-            onActivityImagesChange={(updater) =>
-              updateTeaDocument((current) => ({
-                ...current,
-                activityImages: updater(current.activityImages),
-              }))
-            }
+            onOverviewChange={updateTeaOverview}
+            onActivityIntroChange={updateTeaActivityIntro}
+            onActivityImagesChange={updateTeaActivityImages}
             onAddActivity={addTeaActivity}
             onActivityChange={updateTeaActivity}
             onActivityRemove={removeTeaActivity}
-            onActivityItemsChange={updateTeaActivityItems}
+            onActivityMove={moveTeaActivity}
             onAddSubActivity={addTeaSubActivity}
             onSubActivityChange={updateTeaSubActivity}
             onSubActivityRemove={removeTeaSubActivity}
-            onSubActivityItemsChange={updateTeaSubActivityItems}
+            onSubActivityMove={moveTeaSubActivity}
+            onActivityCollapseChange={setTeaActivityCollapsed}
+            onSubActivityCollapseChange={setTeaSubActivityCollapsed}
+            onComposerCollapseChange={setTeaComposerCollapsed}
+            onContentBlockCollapseChange={setTeaContentBlockCollapsed}
             onReviewIssueClick={handleTeaReviewIssueClick}
           />
         )}
@@ -1664,6 +1932,16 @@ export default function App() {
         void confirmImport();
       }}
     />
+    {isFaqOpen ? (
+      <Modal
+        opened
+        onClose={() => setIsFaqOpen(false)}
+        title="Ajuda do Gerador de OT"
+        size="lg"
+      >
+        <FaqPanel />
+      </Modal>
+    ) : null}
     </>
   );
 }
@@ -1672,6 +1950,10 @@ function TeaWorkspace({
   documentData,
   activeTab,
   reviewSummary,
+  collapsedActivities,
+  collapsedSubActivities,
+  collapsedComposers,
+  collapsedContentBlocks,
   onTabChange,
   onMetadataChange,
   onOverviewChange,
@@ -1680,16 +1962,24 @@ function TeaWorkspace({
   onAddActivity,
   onActivityChange,
   onActivityRemove,
-  onActivityItemsChange,
+  onActivityMove,
   onAddSubActivity,
   onSubActivityChange,
   onSubActivityRemove,
-  onSubActivityItemsChange,
+  onSubActivityMove,
+  onActivityCollapseChange,
+  onSubActivityCollapseChange,
+  onComposerCollapseChange,
+  onContentBlockCollapseChange,
   onReviewIssueClick,
 }: {
   documentData: TeaDocument;
   activeTab: TeaTab;
   reviewSummary: TeaReviewSummary;
+  collapsedActivities: Record<string, boolean>;
+  collapsedSubActivities: Record<string, boolean>;
+  collapsedComposers: Record<string, boolean>;
+  collapsedContentBlocks: Record<string, boolean>;
   onTabChange: (tab: TeaTab) => void;
   onMetadataChange: (field: keyof TeaDocument["metadata"], value: string) => void;
   onOverviewChange: (value: string) => void;
@@ -1701,7 +1991,7 @@ function TeaWorkspace({
     updater: (activity: TeaActivity) => TeaActivity,
   ) => void;
   onActivityRemove: (activityId: string) => void;
-  onActivityItemsChange: (activityId: string, value: string) => void;
+  onActivityMove: (activityId: string, direction: MoveDirection) => void;
   onAddSubActivity: (activityId: string) => void;
   onSubActivityChange: (
     activityId: string,
@@ -1709,9 +1999,35 @@ function TeaWorkspace({
     updater: (subActivity: TeaSubActivity) => TeaSubActivity,
   ) => void;
   onSubActivityRemove: (activityId: string, subActivityId: string) => void;
-  onSubActivityItemsChange: (activityId: string, subActivityId: string, value: string) => void;
+  onSubActivityMove: (
+    activityId: string,
+    subActivityId: string,
+    direction: MoveDirection,
+  ) => void;
+  onActivityCollapseChange: (activityId: string, collapsed: boolean) => void;
+  onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
+  onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
+  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
   onReviewIssueClick: (issue: TeaReviewIssue) => void;
 }) {
+  const overview = useBufferedText(documentData.overview, onOverviewChange, 180);
+  const activityIntro = useBufferedText(documentData.activityIntro, onActivityIntroChange, 180);
+  const activityCount = documentData.activities.length;
+
+  function setAllActivityPanelsCollapsed(collapsed: boolean): void {
+    documentData.activities.forEach((activity) => {
+      onActivityCollapseChange(activity.id, collapsed);
+      onComposerCollapseChange(activity.id, collapsed);
+      activity.blocks.forEach((block) => onContentBlockCollapseChange(block.id, collapsed));
+
+      activity.subActivities.forEach((subActivity) => {
+        onSubActivityCollapseChange(subActivity.id, collapsed);
+        onComposerCollapseChange(subActivity.id, collapsed);
+        subActivity.blocks.forEach((block) => onContentBlockCollapseChange(block.id, collapsed));
+      });
+    });
+  }
+
   return (
     <Tabs
       value={activeTab}
@@ -1731,7 +2047,7 @@ function TeaWorkspace({
           Atividades
         </Tabs.Tab>
         <Tabs.Tab value="review" leftSection={<AlertCircle size={16} />}>
-          Revisão
+          <ReviewTabLabel count={reviewSummary.issues.length} />
         </Tabs.Tab>
       </Tabs.List>
 
@@ -1742,6 +2058,7 @@ function TeaWorkspace({
               <div className="documentFields">
                 <TextInput
                   label="Ordem de Serviço"
+                  id="tea-metadata-service-order"
                   value={documentData.metadata.serviceOrder}
                   placeholder="OS2171 - Login/Menu/Prestador/Documentos Vencidos"
                   onChange={(event) =>
@@ -1750,30 +2067,35 @@ function TeaWorkspace({
                 />
                 <TextInput
                   label="Fase/Etapa"
+                  id="tea-metadata-phase"
                   value={documentData.metadata.phase}
                   placeholder="Etapa 5"
                   onChange={(event) => onMetadataChange("phase", event.currentTarget.value)}
                 />
                 <TextInput
                   label="Chamado"
+                  id="tea-metadata-ticket"
                   value={documentData.metadata.ticket}
                   placeholder="Chamado 202504000396"
                   onChange={(event) => onMetadataChange("ticket", event.currentTarget.value)}
                 />
                 <TextInput
                   label="Assunto"
+                  id="tea-metadata-subject"
                   value={documentData.metadata.subject}
                   placeholder="Telas - Novo Layout"
                   onChange={(event) => onMetadataChange("subject", event.currentTarget.value)}
                 />
                 <TextInput
                   label="Data"
+                  id="tea-metadata-date"
                   type="date"
                   value={documentData.metadata.date}
                   onChange={(event) => onMetadataChange("date", event.currentTarget.value)}
                 />
                 <TextInput
                   label="Elaborado por"
+                  id="tea-metadata-author"
                   value={documentData.metadata.author}
                   onChange={(event) => onMetadataChange("author", event.currentTarget.value)}
                 />
@@ -1783,16 +2105,20 @@ function TeaWorkspace({
                 minRows={5}
                 autosize
                 styles={{ input: { resize: "vertical" } }}
-                value={documentData.overview}
-                onChange={(event) => onOverviewChange(event.currentTarget.value)}
+                id="tea-overview"
+                value={overview.value}
+                onChange={(event) => overview.setValue(event.currentTarget.value)}
+                onBlur={overview.commit}
               />
               <Textarea
                 label="Texto inicial das atividades"
                 minRows={2}
                 autosize
                 styles={{ input: { resize: "vertical" } }}
-                value={documentData.activityIntro}
-                onChange={(event) => onActivityIntroChange(event.currentTarget.value)}
+                id="tea-activity-intro"
+                value={activityIntro.value}
+                onChange={(event) => activityIntro.setValue(event.currentTarget.value)}
+                onBlur={activityIntro.commit}
               />
             </Stack>
           </Section>
@@ -1813,9 +2139,29 @@ function TeaWorkspace({
           title="Atividades"
           tone="blocks"
           action={
-            <Button variant="light" leftSection={<Plus size={17} />} onClick={onAddActivity}>
-              Adicionar atividade
-            </Button>
+            <Group gap="xs">
+              <Button
+                variant="light"
+                size="xs"
+                leftSection={<ChevronsDown size={15} />}
+                disabled={activityCount === 0}
+                onClick={() => setAllActivityPanelsCollapsed(false)}
+              >
+                Expandir todos
+              </Button>
+              <Button
+                variant="light"
+                size="xs"
+                leftSection={<ChevronsUp size={15} />}
+                disabled={activityCount === 0}
+                onClick={() => setAllActivityPanelsCollapsed(true)}
+              >
+                Recolher todos
+              </Button>
+              <Button variant="light" leftSection={<Plus size={17} />} onClick={onAddActivity}>
+                Adicionar atividade
+              </Button>
+            </Group>
           }
         >
           <Stack gap="md">
@@ -1823,10 +2169,18 @@ function TeaWorkspace({
               <TeaActivityEditor
                 key={activity.id}
                 index={index}
+                totalActivities={documentData.activities.length}
                 activity={activity}
+                reviewIssues={reviewSummary.issues.filter(
+                  (issue) => issue.activityId === activity.id,
+                )}
+                isCollapsed={collapsedActivities[activity.id] ?? false}
+                collapsedSubActivities={collapsedSubActivities}
+                collapsedComposers={collapsedComposers}
+                collapsedContentBlocks={collapsedContentBlocks}
                 onChange={(updater) => onActivityChange(activity.id, updater)}
                 onRemove={() => onActivityRemove(activity.id)}
-                onItemsChange={(value) => onActivityItemsChange(activity.id, value)}
+                onMove={(direction) => onActivityMove(activity.id, direction)}
                 onAddSubActivity={() => onAddSubActivity(activity.id)}
                 onSubActivityChange={(subActivityId, updater) =>
                   onSubActivityChange(activity.id, subActivityId, updater)
@@ -1834,9 +2188,15 @@ function TeaWorkspace({
                 onSubActivityRemove={(subActivityId) =>
                   onSubActivityRemove(activity.id, subActivityId)
                 }
-                onSubActivityItemsChange={(subActivityId, value) =>
-                  onSubActivityItemsChange(activity.id, subActivityId, value)
+                onSubActivityMove={(subActivityId, direction) =>
+                  onSubActivityMove(activity.id, subActivityId, direction)
                 }
+                onCollapseChange={(collapsed) =>
+                  onActivityCollapseChange(activity.id, collapsed)
+                }
+                onSubActivityCollapseChange={onSubActivityCollapseChange}
+                onComposerCollapseChange={onComposerCollapseChange}
+                onContentBlockCollapseChange={onContentBlockCollapseChange}
               />
             ))}
 
@@ -1856,83 +2216,146 @@ function TeaWorkspace({
 
 function TeaActivityEditor({
   index,
+  totalActivities,
   activity,
+  reviewIssues,
+  isCollapsed,
+  collapsedSubActivities,
+  collapsedComposers,
+  collapsedContentBlocks,
   onChange,
   onRemove,
-  onItemsChange,
+  onMove,
   onAddSubActivity,
   onSubActivityChange,
   onSubActivityRemove,
-  onSubActivityItemsChange,
+  onSubActivityMove,
+  onCollapseChange,
+  onSubActivityCollapseChange,
+  onComposerCollapseChange,
+  onContentBlockCollapseChange,
 }: {
   index: number;
+  totalActivities: number;
   activity: TeaActivity;
+  reviewIssues: TeaReviewIssue[];
+  isCollapsed: boolean;
+  collapsedSubActivities: Record<string, boolean>;
+  collapsedComposers: Record<string, boolean>;
+  collapsedContentBlocks: Record<string, boolean>;
   onChange: (updater: (activity: TeaActivity) => TeaActivity) => void;
   onRemove: () => void;
-  onItemsChange: (value: string) => void;
+  onMove: (direction: MoveDirection) => void;
   onAddSubActivity: () => void;
   onSubActivityChange: (
     subActivityId: string,
     updater: (subActivity: TeaSubActivity) => TeaSubActivity,
   ) => void;
   onSubActivityRemove: (subActivityId: string) => void;
-  onSubActivityItemsChange: (subActivityId: string, value: string) => void;
+  onSubActivityMove: (subActivityId: string, direction: MoveDirection) => void;
+  onCollapseChange: (collapsed: boolean) => void;
+  onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
+  onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
+  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
 }) {
+  const activityId = `tea-activity-${toDomId(activity.id)}`;
+  const panelId = `${activityId}-panel`;
+  const isExpanded = !isCollapsed;
+  const review = summarizeTeaReviewIssues(reviewIssues);
+  const summaryItems = buildTeaActivitySummaryItems(activity);
+  const commitTitle = useCallback(
+    (title: string) => onChange((current) => ({ ...current, title })),
+    [onChange],
+  );
+  const title = useBufferedText(activity.title, commitTitle);
+
+  const updateBlocks = useCallback((updater: (blocks: TeaContentBlock[]) => TeaContentBlock[]): void => {
+    onChange((current) => ({ ...current, blocks: updater(current.blocks) }));
+  }, [onChange]);
+
+  function confirmAndRemove(): void {
+    if (
+      hasTeaActivityRemovalContent(activity) &&
+      !window.confirm("Remover esta atividade e todo o seu conteudo?")
+    ) {
+      return;
+    }
+
+    onRemove();
+  }
+
   return (
-    <Paper withBorder p="md" className="teaActivityCard">
+    <Paper
+      id={activityId}
+      withBorder
+      p="md"
+      className={`teaActivityCard ${isExpanded ? "teaActivityCard--expanded" : "teaActivityCard--collapsed"}`}
+    >
       <Stack gap="sm">
-        <Group justify="space-between" align="center">
-          <Group gap="xs">
+        <Group justify="space-between" align="center" className="teaActivityHeader">
+          <Group gap="xs" wrap="nowrap" className="teaActivityTitle">
+            <Tooltip label={isExpanded ? "Recolher atividade" : "Abrir atividade"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onCollapseChange(isExpanded)}
+                aria-label={isExpanded ? "Recolher atividade" : "Abrir atividade"}
+                aria-expanded={isExpanded}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${isExpanded ? "testToggleIcon--open" : ""}`}
+                />
+              </ActionIcon>
+            </Tooltip>
             <Badge variant="outline" color="gray">
               2.{index + 1}
             </Badge>
-            <Text fw={800}>Atividade</Text>
+            <div className="teaHeaderCopy">
+              <Text fw={800}>Atividade</Text>
+              <Text c="dimmed" size="xs">
+                {activity.title.trim() || "Sem titulo"}
+              </Text>
+              <TeaSummaryChips items={summaryItems} review={review} />
+            </div>
           </Group>
-          <Tooltip label="Remover atividade">
-            <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label="Remover atividade">
-              <Trash2 size={17} />
-            </ActionIcon>
-          </Tooltip>
+          <TeaActivityActionsMenu
+            canMoveUp={index > 0}
+            canMoveDown={index < totalActivities - 1}
+            onMove={onMove}
+            onRemove={confirmAndRemove}
+          />
         </Group>
 
+        <Collapse in={isExpanded}>
+          <div id={panelId}>
+            <Stack gap="sm">
         <TextInput
           label="Título"
-          value={activity.title}
+          id={`tea-activity-title-${toDomId(activity.id)}`}
+          value={title.value}
           placeholder="Seletor Situação do Prestador"
-          onChange={(event) =>
-            onChange((current) => ({ ...current, title: event.currentTarget.value }))
-          }
+          onChange={(event) => {
+            title.setValue(event.currentTarget.value);
+          }}
+          onBlur={title.commit}
         />
-        <Textarea
-          label="Descrição"
-          minRows={4}
-          autosize
-          styles={{ input: { resize: "vertical" } }}
-          value={activity.description}
-          onChange={(event) =>
-            onChange((current) => ({ ...current, description: event.currentTarget.value }))
-          }
-        />
-        <Textarea
-          label="Itens em lista"
-          minRows={2}
-          autosize
-          placeholder="Um item por linha"
-          value={activity.items.map((item) => item.text).join("\n")}
-          onChange={(event) => onItemsChange(event.currentTarget.value)}
-        />
-        <EvidenceUploader
-          title="Imagens da atividade"
+        <TeaContentComposer
+          composerId={activity.id}
+          label={`Atividade 2.${index + 1}`}
+          blocks={activity.blocks}
           tone="new"
-          images={activity.images}
-          onChange={(updater) =>
-            onChange((current) => ({ ...current, images: updater(current.images) }))
-          }
+          isCollapsed={collapsedComposers[activity.id] ?? false}
+          collapsedBlocks={collapsedContentBlocks}
+          reviewIssues={reviewIssues.filter((issue) => !issue.subActivityId)}
+          onCollapseChange={(collapsed) => onComposerCollapseChange(activity.id, collapsed)}
+          onBlockCollapseChange={onContentBlockCollapseChange}
+          onBlocksChange={updateBlocks}
         />
 
-        <Divider />
+        <Divider className="teaSubActivityDivider" />
 
-        <Group justify="space-between" align="center">
+        <Group justify="space-between" align="center" className="teaSubActivityGroupHeader">
           <Text fw={700} size="sm">
             Subtópicos
           </Text>
@@ -1946,19 +2369,36 @@ function TeaActivityEditor({
           </Button>
         </Group>
 
-        <Stack gap="sm">
+        <Stack gap="sm" className="teaSubActivityList">
           {activity.subActivities.map((subActivity, subIndex) => (
             <TeaSubActivityEditor
               key={subActivity.id}
               activityIndex={index}
               index={subIndex}
+              totalSubActivities={activity.subActivities.length}
               subActivity={subActivity}
+              reviewIssues={reviewIssues.filter(
+                (issue) => issue.subActivityId === subActivity.id,
+              )}
+              isCollapsed={collapsedSubActivities[subActivity.id] ?? false}
+              isComposerCollapsed={collapsedComposers[subActivity.id] ?? false}
+              collapsedBlocks={collapsedContentBlocks}
               onChange={(updater) => onSubActivityChange(subActivity.id, updater)}
               onRemove={() => onSubActivityRemove(subActivity.id)}
-              onItemsChange={(value) => onSubActivityItemsChange(subActivity.id, value)}
+              onMove={(direction) => onSubActivityMove(subActivity.id, direction)}
+              onCollapseChange={(collapsed) =>
+                onSubActivityCollapseChange(subActivity.id, collapsed)
+              }
+              onComposerCollapseChange={(collapsed) =>
+                onComposerCollapseChange(subActivity.id, collapsed)
+              }
+              onContentBlockCollapseChange={onContentBlockCollapseChange}
             />
           ))}
         </Stack>
+            </Stack>
+          </div>
+        </Collapse>
       </Stack>
     </Paper>
   );
@@ -1967,68 +2407,793 @@ function TeaActivityEditor({
 function TeaSubActivityEditor({
   activityIndex,
   index,
+  totalSubActivities,
   subActivity,
+  reviewIssues,
+  isCollapsed,
+  isComposerCollapsed,
+  collapsedBlocks,
   onChange,
   onRemove,
-  onItemsChange,
+  onMove,
+  onCollapseChange,
+  onComposerCollapseChange,
+  onContentBlockCollapseChange,
 }: {
   activityIndex: number;
   index: number;
+  totalSubActivities: number;
   subActivity: TeaSubActivity;
+  reviewIssues: TeaReviewIssue[];
+  isCollapsed: boolean;
+  isComposerCollapsed: boolean;
+  collapsedBlocks: Record<string, boolean>;
   onChange: (updater: (subActivity: TeaSubActivity) => TeaSubActivity) => void;
   onRemove: () => void;
-  onItemsChange: (value: string) => void;
+  onMove: (direction: MoveDirection) => void;
+  onCollapseChange: (collapsed: boolean) => void;
+  onComposerCollapseChange: (collapsed: boolean) => void;
+  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
 }) {
+  const subActivityId = `tea-subactivity-${toDomId(subActivity.id)}`;
+  const panelId = `${subActivityId}-panel`;
+  const isExpanded = !isCollapsed;
+  const review = summarizeTeaReviewIssues(reviewIssues);
+  const summaryItems = buildTeaSubActivitySummaryItems(subActivity);
+  const commitTitle = useCallback(
+    (title: string) => onChange((current) => ({ ...current, title })),
+    [onChange],
+  );
+  const title = useBufferedText(subActivity.title, commitTitle);
+
+  const updateBlocks = useCallback((updater: (blocks: TeaContentBlock[]) => TeaContentBlock[]): void => {
+    onChange((current) => ({ ...current, blocks: updater(current.blocks) }));
+  }, [onChange]);
+
+  function confirmAndRemove(): void {
+    if (
+      hasTeaSubActivityRemovalContent(subActivity) &&
+      !window.confirm("Remover este subtopico e todo o seu conteudo?")
+    ) {
+      return;
+    }
+
+    onRemove();
+  }
+
   return (
-    <Paper withBorder p="sm" className="teaSubActivityCard">
+    <Paper id={subActivityId} p="sm" className="teaSubActivityCard">
       <Stack gap="sm">
-        <Group justify="space-between" align="center">
-          <Badge variant="outline" color="gray">
-            2.{activityIndex + 1}.{index + 1}
-          </Badge>
-          <Tooltip label="Remover subtópico">
-            <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label="Remover subtópico">
-              <Trash2 size={17} />
-            </ActionIcon>
-          </Tooltip>
+        <Group justify="space-between" align="center" className="teaSubActivityHeader">
+          <Group gap="xs" wrap="nowrap" className="teaSubActivityTitle">
+            <Tooltip label={isExpanded ? "Recolher subtópico" : "Abrir subtópico"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onCollapseChange(isExpanded)}
+                aria-label={isExpanded ? "Recolher subtópico" : "Abrir subtópico"}
+                aria-expanded={isExpanded}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${isExpanded ? "testToggleIcon--open" : ""}`}
+                />
+              </ActionIcon>
+            </Tooltip>
+            <Badge variant="outline" color="gray">
+              2.{activityIndex + 1}.{index + 1}
+            </Badge>
+            <div className="teaHeaderCopy">
+              <Text fw={700} size="sm">
+                Subtopico
+              </Text>
+              <Text c="dimmed" size="xs">
+                {subActivity.title.trim() || "Sem titulo"}
+              </Text>
+              <TeaSummaryChips items={summaryItems} review={review} />
+            </div>
+          </Group>
+          <TeaSubActivityActionsMenu
+            canMoveUp={index > 0}
+            canMoveDown={index < totalSubActivities - 1}
+            onMove={onMove}
+            onRemove={confirmAndRemove}
+          />
+          <Group gap={4} wrap="nowrap" className="teaLegacyActionsHidden">
+            <Tooltip label="Mover subtópico para cima">
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onMove("up")}
+                disabled={index === 0}
+                aria-label="Mover subtópico para cima"
+              >
+                <ArrowUp size={17} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label="Mover subtópico para baixo">
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onMove("down")}
+                disabled={index >= totalSubActivities - 1}
+                aria-label="Mover subtópico para baixo"
+              >
+                <ArrowDown size={17} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label="Remover subtópico">
+              <ActionIcon
+                variant="subtle"
+                color="red"
+                onClick={onRemove}
+                aria-label="Remover subtópico"
+              >
+                <Trash2 size={17} />
+              </ActionIcon>
+            </Tooltip>
+          </Group>
         </Group>
 
+        <Collapse in={isExpanded}>
+          <div id={panelId}>
+            <Stack gap="sm">
         <TextInput
           label="Título"
-          value={subActivity.title}
+          id={`tea-subactivity-title-${toDomId(subActivity.id)}`}
+          value={title.value}
           placeholder="Botão de Anexo"
-          onChange={(event) =>
-            onChange((current) => ({ ...current, title: event.currentTarget.value }))
-          }
+          onChange={(event) => {
+            title.setValue(event.currentTarget.value);
+          }}
+          onBlur={title.commit}
         />
-        <Textarea
-          label="Descrição"
-          minRows={3}
-          autosize
-          styles={{ input: { resize: "vertical" } }}
-          value={subActivity.description}
-          onChange={(event) =>
-            onChange((current) => ({ ...current, description: event.currentTarget.value }))
-          }
-        />
-        <Textarea
-          label="Itens em lista"
-          minRows={2}
-          autosize
-          placeholder="Um item por linha"
-          value={subActivity.items.map((item) => item.text).join("\n")}
-          onChange={(event) => onItemsChange(event.currentTarget.value)}
-        />
-        <EvidenceUploader
-          title="Imagens do subtópico"
+        <TeaContentComposer
+          label={`Subtópico 2.${activityIndex + 1}.${index + 1}`}
+          composerId={subActivity.id}
+          blocks={subActivity.blocks}
           tone="legacy"
-          images={subActivity.images}
-          onChange={(updater) =>
-            onChange((current) => ({ ...current, images: updater(current.images) }))
-          }
+          isCollapsed={isComposerCollapsed}
+          collapsedBlocks={collapsedBlocks}
+          reviewIssues={reviewIssues}
+          onCollapseChange={onComposerCollapseChange}
+          onBlockCollapseChange={onContentBlockCollapseChange}
+          onBlocksChange={updateBlocks}
         />
+            </Stack>
+          </div>
+        </Collapse>
       </Stack>
     </Paper>
+  );
+}
+
+function TeaContentComposer({
+  composerId,
+  label,
+  blocks,
+  tone,
+  isCollapsed,
+  collapsedBlocks,
+  reviewIssues,
+  onCollapseChange,
+  onBlockCollapseChange,
+  onBlocksChange,
+}: {
+  composerId: string;
+  label: string;
+  blocks: TeaContentBlock[];
+  tone: "legacy" | "new";
+  isCollapsed: boolean;
+  collapsedBlocks: Record<string, boolean>;
+  reviewIssues: TeaReviewIssue[];
+  onCollapseChange: (collapsed: boolean) => void;
+  onBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
+  onBlocksChange: (updater: (blocks: TeaContentBlock[]) => TeaContentBlock[]) => void;
+}) {
+  const panelId = `tea-composer-${toDomId(composerId)}-panel`;
+  const isExpanded = !isCollapsed;
+
+  function addBlock(type: TeaContentBlockType): void {
+    onCollapseChange(false);
+    onBlocksChange((current) => [...current, createTeaContentBlock(type)]);
+  }
+
+  function updateBlock(
+    blockId: string,
+    updater: (block: TeaContentBlock) => TeaContentBlock,
+  ): void {
+    onBlocksChange((current) =>
+      current.map((block) => (block.id === blockId ? updater(block) : block)),
+    );
+  }
+
+  function moveBlock(blockId: string, direction: MoveDirection): void {
+    onBlocksChange((current) => moveItemById(current, blockId, direction));
+  }
+
+  function removeBlock(block: TeaContentBlock): void {
+    if (
+      hasMeaningfulTeaBlockContent(block) &&
+      !window.confirm("Remover este bloco de conteudo?")
+    ) {
+      return;
+    }
+
+    if (block.type === "images") {
+      block.images.forEach((image) => {
+        void deleteEvidenceImageData(image.id);
+      });
+    }
+
+    onBlocksChange((current) => current.filter((candidate) => candidate.id !== block.id));
+  }
+
+  async function duplicateBlock(block: TeaContentBlock): Promise<void> {
+    const duplicate = await duplicateTeaContentBlock(block);
+
+    onBlocksChange((current) => {
+      const sourceIndex = current.findIndex((candidate) => candidate.id === block.id);
+      const insertIndex = sourceIndex >= 0 ? sourceIndex + 1 : current.length;
+
+      return [
+        ...current.slice(0, insertIndex),
+        duplicate,
+        ...current.slice(insertIndex),
+      ];
+    });
+  }
+
+  return (
+    <Paper p="sm" className="teaComposer">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center" className="teaComposerHeader">
+          <Group gap="xs" wrap="nowrap" className="teaComposerTitle">
+            <Tooltip label={isExpanded ? "Recolher conteudo" : "Abrir conteudo"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onCollapseChange(isExpanded)}
+                aria-label={isExpanded ? "Recolher conteudo" : "Abrir conteudo"}
+                aria-expanded={isExpanded}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${isExpanded ? "testToggleIcon--open" : ""}`}
+                />
+              </ActionIcon>
+            </Tooltip>
+          <div>
+            <Text fw={800} size="sm">
+              Conteúdo
+            </Text>
+            <Text c="dimmed" size="xs">
+              {label} - {blocks.length} bloco{blocks.length === 1 ? "" : "s"}
+            </Text>
+          </div>
+          </Group>
+          <TeaAddBlockMenu onAddBlock={addBlock} />
+        </Group>
+
+        <Collapse in={isExpanded}>
+          <div id={panelId}>
+        {blocks.length > 0 ? (
+          <Stack gap="xs">
+            {blocks.map((block, blockIndex) => (
+              <TeaContentBlockEditor
+                key={block.id}
+                block={block}
+                index={blockIndex}
+                totalBlocks={blocks.length}
+                tone={tone}
+                isCollapsed={collapsedBlocks[block.id] ?? false}
+                reviewIssues={reviewIssues.filter((issue) => issue.blockId === block.id)}
+                onChange={(updater) => updateBlock(block.id, updater)}
+                onMove={(direction) => moveBlock(block.id, direction)}
+                onDuplicate={() => {
+                  void duplicateBlock(block);
+                }}
+                onRemove={() => removeBlock(block)}
+                onCollapseChange={(collapsed) => onBlockCollapseChange(block.id, collapsed)}
+              />
+            ))}
+          </Stack>
+        ) : (
+          <Paper p="md" ta="center" className="teaComposerEmpty">
+            <Stack gap="xs" align="center">
+              <Text c="dimmed">Nenhum bloco de conteúdo.</Text>
+            </Stack>
+          </Paper>
+        )}
+          </div>
+        </Collapse>
+      </Stack>
+    </Paper>
+  );
+}
+
+function TeaContentBlockEditor({
+  block,
+  index,
+  totalBlocks,
+  tone,
+  isCollapsed,
+  reviewIssues,
+  onChange,
+  onMove,
+  onDuplicate,
+  onRemove,
+  onCollapseChange,
+}: {
+  block: TeaContentBlock;
+  index: number;
+  totalBlocks: number;
+  tone: "legacy" | "new";
+  isCollapsed: boolean;
+  reviewIssues: TeaReviewIssue[];
+  onChange: (updater: (block: TeaContentBlock) => TeaContentBlock) => void;
+  onMove: (direction: MoveDirection) => void;
+  onDuplicate: () => void;
+  onRemove: () => void;
+  onCollapseChange: (collapsed: boolean) => void;
+}) {
+  const blockId = `tea-content-block-${toDomId(block.id)}`;
+  const panelId = `${blockId}-panel`;
+  const label = teaContentBlockLabels[block.type];
+  const review = summarizeTeaReviewIssues(reviewIssues);
+  const summaryItems = [buildTeaContentBlockSummaryItem(block)];
+  const commitText = useCallback(
+    (text: string) =>
+      onChange((current) => (current.type === "text" ? { ...current, text } : current)),
+    [onChange],
+  );
+  const text = useBufferedText(block.type === "text" ? block.text : "", commitText);
+  const listValue = block.type === "list" ? block.items.map((item) => item.text).join("\n") : "";
+  const commitList = useCallback(
+    (value: string) =>
+      onChange((current) =>
+        current.type === "list"
+          ? { ...current, items: updateTeaItemsFromBulk(current.items, value) }
+          : current,
+      ),
+    [onChange],
+  );
+  const list = useBufferedText(listValue, commitList);
+
+  return (
+    <Paper id={blockId} p="sm" className="teaContentBlock">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center" className="teaContentBlockHeader">
+          <Group gap="xs" wrap="nowrap" className="teaContentBlockTitle">
+            <Tooltip label={isCollapsed ? "Abrir bloco" : "Recolher bloco"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onCollapseChange(!isCollapsed)}
+                aria-label={isCollapsed ? "Abrir bloco" : "Recolher bloco"}
+                aria-expanded={!isCollapsed}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${!isCollapsed ? "testToggleIcon--open" : ""}`}
+                />
+              </ActionIcon>
+            </Tooltip>
+            <span className={`teaBlockIcon teaBlockIcon--${block.type}`}>
+              {block.type === "text" ? <FileText size={16} /> : null}
+              {block.type === "list" ? <ListChecks size={16} /> : null}
+              {block.type === "images" ? <ImagePlus size={16} /> : null}
+            </span>
+            <div className="teaHeaderCopy">
+              <Text fw={800} size="sm">
+                {label}
+              </Text>
+              <Text c="dimmed" size="xs">
+                Bloco {index + 1}
+              </Text>
+              <TeaSummaryChips items={summaryItems} review={review} />
+            </div>
+          </Group>
+
+          <TeaBlockActionsMenu
+            canMoveUp={index > 0}
+            canMoveDown={index < totalBlocks - 1}
+            onDuplicate={onDuplicate}
+            onMove={onMove}
+            onRemove={onRemove}
+          />
+        </Group>
+
+        <Collapse in={!isCollapsed}>
+          <div id={panelId}>
+            {block.type === "text" ? (
+              <Textarea
+                label="Texto"
+                minRows={4}
+                autosize
+                styles={{ input: { resize: "vertical" } }}
+                value={text.value}
+                onChange={(event) => {
+                  text.setValue(event.currentTarget.value);
+                }}
+                onBlur={text.commit}
+              />
+            ) : null}
+
+            {block.type === "list" ? (
+              <Textarea
+                label="Itens em lista"
+                minRows={3}
+                autosize
+                placeholder="Um item por linha"
+                styles={{ input: { resize: "vertical" } }}
+                value={list.value}
+                onChange={(event) => {
+                  list.setValue(event.currentTarget.value);
+                }}
+                onBlur={list.commit}
+              />
+            ) : null}
+
+            {block.type === "images" ? (
+              <EvidenceUploader
+                title="Imagens"
+                tone={tone}
+                images={block.images}
+                onChange={(updater) =>
+                  onChange((current) =>
+                    current.type === "images"
+                      ? { ...current, images: updater(current.images) }
+                      : current,
+                  )
+                }
+              />
+            ) : null}
+          </div>
+        </Collapse>
+      </Stack>
+    </Paper>
+  );
+}
+
+function SummaryChips({
+  items,
+  review,
+}: {
+  items: string[];
+  review: InlineReviewSummary;
+}) {
+  const issueTone = getInlineReviewTone(review);
+
+  return (
+    <div className="summaryChips">
+      {items.map((item) => (
+        <Badge key={item} size="xs" variant="outline" color="gray" className="summaryChip">
+          {item}
+        </Badge>
+      ))}
+      <Badge
+        size="xs"
+        variant={review.total > 0 ? "light" : "outline"}
+        color={issueTone}
+        className={`summaryChip summaryChip--${issueTone}`}
+      >
+        {formatOtCount(review.total, "pendencia", "pendencias")}
+      </Badge>
+    </div>
+  );
+}
+
+function CheckStatusChips({ result }: { result: TestResult }) {
+  const selectedKeys = getSelectedCheckKeys(result);
+
+  return (
+    <div className="statusChips">
+      {selectedKeys.length > 0 ? (
+        selectedKeys.map((key) => (
+          <Badge
+            key={key}
+            size="xs"
+            variant="light"
+            color={getCheckTone(key)}
+            leftSection={renderCheckIcon(key, 13)}
+            className="statusChip"
+          >
+            {quickCheckLabels[key]}
+          </Badge>
+        ))
+      ) : (
+        <Badge
+          size="xs"
+          variant="outline"
+          color="gray"
+          leftSection={<AlertCircle size={13} />}
+          className="statusChip"
+        >
+          Sem status
+        </Badge>
+      )}
+    </div>
+  );
+}
+
+function TeaSummaryChips({
+  items,
+  review,
+}: {
+  items: string[];
+  review: TeaInlineReviewSummary;
+}) {
+  const issueTone = getTeaReviewTone(review);
+
+  return (
+    <div className="teaSummaryChips">
+      {items.map((item) => (
+        <Badge key={item} size="xs" variant="outline" color="gray" className="teaSummaryChip">
+          {item}
+        </Badge>
+      ))}
+      <Badge
+        size="xs"
+        variant={review.total > 0 ? "light" : "outline"}
+        color={issueTone}
+        className={`teaSummaryChip teaSummaryChip--${issueTone}`}
+      >
+        {formatTeaCount(review.total, "pendencia", "pendencias")}
+      </Badge>
+    </div>
+  );
+}
+
+function TeaAddBlockMenu({
+  onAddBlock,
+}: {
+  onAddBlock: (type: TeaContentBlockType) => void;
+}) {
+  const [opened, setOpened] = useState(false);
+
+  function addBlock(type: TeaContentBlockType): void {
+    onAddBlock(type);
+    setOpened(false);
+  }
+
+  return (
+    <Menu opened={opened} onChange={setOpened} position="bottom-end" withArrow>
+      <Menu.Target>
+        <span className="teaMenuTarget">
+          <Button
+            variant="light"
+            size="xs"
+            leftSection={<Plus size={15} />}
+            className="teaAddBlockButton"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpened(true);
+            }}
+          >
+            Adicionar bloco
+          </Button>
+        </span>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Item leftSection={<FileText size={15} />} onClick={() => addBlock("text")}>
+          Texto
+        </Menu.Item>
+        <Menu.Item leftSection={<ListChecks size={15} />} onClick={() => addBlock("list")}>
+          Lista
+        </Menu.Item>
+        <Menu.Item leftSection={<ImagePlus size={15} />} onClick={() => addBlock("images")}>
+          Imagens
+        </Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+function TeaActivityActionsMenu({
+  canMoveUp,
+  canMoveDown,
+  onMove,
+  onRemove,
+}: {
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (direction: MoveDirection) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <TeaMoveRemoveMenu
+      ariaLabel="Mais acoes da atividade"
+      upLabel="Mover atividade para cima"
+      downLabel="Mover atividade para baixo"
+      removeLabel="Remover atividade"
+      canMoveUp={canMoveUp}
+      canMoveDown={canMoveDown}
+      onMove={onMove}
+      onRemove={onRemove}
+    />
+  );
+}
+
+function TeaSubActivityActionsMenu({
+  canMoveUp,
+  canMoveDown,
+  onMove,
+  onRemove,
+}: {
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (direction: MoveDirection) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <TeaMoveRemoveMenu
+      ariaLabel="Mais acoes do subtopico"
+      upLabel="Mover subtopico para cima"
+      downLabel="Mover subtopico para baixo"
+      removeLabel="Remover subtopico"
+      canMoveUp={canMoveUp}
+      canMoveDown={canMoveDown}
+      onMove={onMove}
+      onRemove={onRemove}
+    />
+  );
+}
+
+function TeaMoveRemoveMenu({
+  ariaLabel,
+  upLabel,
+  downLabel,
+  removeLabel,
+  canMoveUp,
+  canMoveDown,
+  onMove,
+  onRemove,
+}: {
+  ariaLabel: string;
+  upLabel: string;
+  downLabel: string;
+  removeLabel: string;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (direction: MoveDirection) => void;
+  onRemove: () => void;
+}) {
+  const [opened, setOpened] = useState(false);
+
+  function move(direction: MoveDirection): void {
+    onMove(direction);
+    setOpened(false);
+  }
+
+  function remove(): void {
+    onRemove();
+    setOpened(false);
+  }
+
+  return (
+    <Menu opened={opened} onChange={setOpened} position="bottom-end" withArrow>
+      <Menu.Target>
+        <span className="teaMenuTarget">
+          <ActionIcon
+            variant="subtle"
+            aria-label={ariaLabel}
+            className="teaActionsMenu"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpened(true);
+            }}
+          >
+            <MoreVertical size={17} />
+          </ActionIcon>
+        </span>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Item
+          leftSection={<ArrowUp size={15} />}
+          disabled={!canMoveUp}
+          onClick={() => move("up")}
+        >
+          {upLabel}
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<ArrowDown size={15} />}
+          disabled={!canMoveDown}
+          onClick={() => move("down")}
+        >
+          {downLabel}
+        </Menu.Item>
+        <Menu.Divider />
+        <Menu.Item color="red" leftSection={<Trash2 size={15} />} onClick={remove}>
+          {removeLabel}
+        </Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+function TeaBlockActionsMenu({
+  canMoveUp,
+  canMoveDown,
+  onDuplicate,
+  onMove,
+  onRemove,
+}: {
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onDuplicate: () => void;
+  onMove: (direction: MoveDirection) => void;
+  onRemove: () => void;
+}) {
+  const [opened, setOpened] = useState(false);
+
+  function duplicate(): void {
+    onDuplicate();
+    setOpened(false);
+  }
+
+  function move(direction: MoveDirection): void {
+    onMove(direction);
+    setOpened(false);
+  }
+
+  function remove(): void {
+    onRemove();
+    setOpened(false);
+  }
+
+  return (
+    <Menu opened={opened} onChange={setOpened} position="bottom-end" withArrow>
+      <Menu.Target>
+        <span className="teaMenuTarget">
+          <ActionIcon
+            variant="subtle"
+            aria-label="Mais acoes do bloco"
+            className="teaActionsMenu"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpened(true);
+            }}
+          >
+            <MoreVertical size={17} />
+          </ActionIcon>
+        </span>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Item leftSection={<Copy size={15} />} onClick={duplicate}>
+          Duplicar bloco
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<ArrowUp size={15} />}
+          disabled={!canMoveUp}
+          onClick={() => move("up")}
+        >
+          Mover bloco para cima
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<ArrowDown size={15} />}
+          disabled={!canMoveDown}
+          onClick={() => move("down")}
+        >
+          Mover bloco para baixo
+        </Menu.Item>
+        <Menu.Divider />
+        <Menu.Item color="red" leftSection={<Trash2 size={15} />} onClick={remove}>
+          Remover bloco
+        </Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+function ReviewTabLabel({ count }: { count: number }) {
+  return (
+    <span className="reviewTabLabel">
+      <span>Revisão</span>
+      {count > 0 ? (
+        <span className="reviewTabBadge" aria-label={`${count} pendências de revisão`}>
+          {count > 99 ? "99+" : count}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -2040,13 +3205,17 @@ function TeaReviewPanel({
   onIssueClick: (issue: TeaReviewIssue) => void;
 }) {
   const totalIssues = summary.issues.length;
+  const dangerIssues = summary.issues.filter((issue) => issue.severity === "danger");
 
   return (
     <Section
       title="Revisão"
       tone="document"
       action={
-        <Badge color={totalIssues > 0 ? "yellow" : "green"} variant="light">
+        <Badge
+          color={dangerIssues.length > 0 ? "red" : totalIssues > 0 ? "yellow" : "green"}
+          variant="light"
+        >
           {totalIssues > 0 ? "Pendências" : "Pronto"}
         </Badge>
       }
@@ -2061,7 +3230,7 @@ function TeaReviewPanel({
         {summary.issues.length > 0 ? (
           <ReviewIssueGroup
             title="Pendências para revisar"
-            tone="warning"
+            tone={dangerIssues.length > 0 ? "danger" : "warning"}
             issues={summary.issues}
             onIssueClick={onIssueClick}
           />
@@ -2288,6 +3457,11 @@ const PermissionBlockGroup = memo(function PermissionBlockGroup({
   macro,
   entries,
   expandedTests,
+  reviewIssues,
+  isCollapsed,
+  collapsedBlocks,
+  onMacroCollapseChange,
+  onBlockCollapseChange,
   onAddTest,
   onAddStandardTests,
   onDuplicateBlockStructure,
@@ -2298,44 +3472,70 @@ const PermissionBlockGroup = memo(function PermissionBlockGroup({
   onTestMove,
   onResultChange,
 }: PermissionBlockGroupProps) {
+  const isExpanded = !isCollapsed;
+  const panelId = `macro-tests-${toDomId(macro.id)}`;
+
   return (
     <Paper withBorder p="md" className="blockGroup">
       <Stack gap="sm">
-        <Group justify="space-between" align="center">
-          <div>
-            <Text size="xs" c="dimmed" fw={700} tt="uppercase">
-              Macro
-            </Text>
-            <Title order={3} size="h5">
-              {formatPermission(macro)}
-            </Title>
-          </div>
+        <Group justify="space-between" align="center" className="blockGroupHeader">
+          <Group gap="xs" align="center" wrap="nowrap">
+            <Tooltip label={isExpanded ? "Recolher macro" : "Abrir macro"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onMacroCollapseChange(macro.id, isExpanded)}
+                aria-label={isExpanded ? "Recolher macro" : "Abrir macro"}
+                aria-expanded={isExpanded}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${
+                    isExpanded ? "testToggleIcon--open" : ""
+                  }`}
+                />
+              </ActionIcon>
+            </Tooltip>
+            <div>
+              <Text size="xs" c="dimmed" fw={700} tt="uppercase">
+                Macro
+              </Text>
+              <Title order={3} size="h5">
+                {formatPermission(macro)}
+              </Title>
+            </div>
+          </Group>
           <Badge variant="outline" color="gray">
             {entries.length} micro{entries.length === 1 ? "" : "s"}
           </Badge>
         </Group>
 
-        <Stack gap="sm">
-          {entries.map((entry) => (
-            <PermissionBlockEditor
-              key={entry.key}
-              blockKey={entry.key}
-              entry={entry}
-              block={entry.block}
-              sourceBlock={entry.sourceBlock}
-              expandedTests={expandedTests}
-              onAddTest={onAddTest}
-              onAddStandardTests={onAddStandardTests}
-              onDuplicateBlockStructure={onDuplicateBlockStructure}
-              onTestExpansionChange={onTestExpansionChange}
-              onTestTitleChange={onTestTitleChange}
-              onDuplicateTest={onDuplicateTest}
-              onTestRemove={onTestRemove}
-              onTestMove={onTestMove}
-              onResultChange={onResultChange}
-            />
-          ))}
-        </Stack>
+        <Collapse in={isExpanded}>
+          <Stack gap="sm" id={panelId}>
+            {entries.map((entry) => (
+              <PermissionBlockEditor
+                key={entry.key}
+                blockKey={entry.key}
+                entry={entry}
+                block={entry.block}
+                sourceBlock={entry.sourceBlock}
+                expandedTests={expandedTests}
+                reviewIssues={reviewIssues}
+                isCollapsed={collapsedBlocks[entry.key] ?? false}
+                onBlockCollapseChange={onBlockCollapseChange}
+                onAddTest={onAddTest}
+                onAddStandardTests={onAddStandardTests}
+                onDuplicateBlockStructure={onDuplicateBlockStructure}
+                onTestExpansionChange={onTestExpansionChange}
+                onTestTitleChange={onTestTitleChange}
+                onDuplicateTest={onDuplicateTest}
+                onTestRemove={onTestRemove}
+                onTestMove={onTestMove}
+                onResultChange={onResultChange}
+              />
+            ))}
+          </Stack>
+        </Collapse>
       </Stack>
     </Paper>
   );
@@ -2347,6 +3547,9 @@ const PermissionBlockEditor = memo(function PermissionBlockEditor({
   block,
   sourceBlock,
   expandedTests,
+  reviewIssues,
+  isCollapsed,
+  onBlockCollapseChange,
   onAddTest,
   onAddStandardTests,
   onDuplicateBlockStructure,
@@ -2357,85 +3560,187 @@ const PermissionBlockEditor = memo(function PermissionBlockEditor({
   onTestMove,
   onResultChange,
 }: PermissionBlockEditorProps) {
-  return (
-    <Paper withBorder p="md" className="permissionBlock">
-      <Stack gap="sm">
-        <Group justify="space-between" align="center" gap="md">
-          <div>
-            <Group gap="xs" mb={4}>
-              <Badge variant="outline" color="gray">
-                Micro
-              </Badge>
-              <Text fw={700}>{formatPermission(entry.micro)}</Text>
-            </Group>
-            <Text c="dimmed" size="sm">
-              {formatPermission(entry.macro)}
-            </Text>
-          </div>
+  const isExpanded = !isCollapsed;
+  const panelId = `micro-tests-${toDomId(blockKey)}`;
+  const blockReviewIssues = reviewIssues.filter((issue) => issue.blockKey === blockKey);
+  const blockReview = summarizeReviewIssues(blockReviewIssues);
+  const summaryItems = buildPermissionBlockSummaryItems(sourceBlock);
 
-          <Group gap="xs">
-            <Button
-              variant="subtle"
-              size="xs"
-              leftSection={<ListChecks size={15} />}
-              onClick={() => onAddStandardTests(blockKey)}
-            >
-              Adicionar pacote padrão
-            </Button>
-            <Button
-              variant="subtle"
-              size="xs"
-              leftSection={<Copy size={15} />}
-              disabled={block.tests.length === 0}
-              onClick={() => onDuplicateBlockStructure(blockKey)}
-            >
-              Copiar para vazios
-            </Button>
-            <Button
-              variant="subtle"
-              size="xs"
-              leftSection={<Plus size={15} />}
-              onClick={() => onAddTest(blockKey)}
-            >
-              Adicionar teste
-            </Button>
+  return (
+    <Paper
+      id={`permission-block-${toDomId(blockKey)}`}
+      withBorder
+      p="md"
+      className="permissionBlock"
+    >
+      <Stack gap="sm">
+        <Group justify="space-between" align="center" gap="md" className="permissionBlockHeader">
+          <Group gap="xs" align="center" wrap="nowrap" className="permissionBlockTitle">
+            <Tooltip label={isExpanded ? "Recolher micro" : "Abrir micro"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onBlockCollapseChange(blockKey, isExpanded)}
+                aria-label={isExpanded ? "Recolher micro" : "Abrir micro"}
+                aria-expanded={isExpanded}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${
+                    isExpanded ? "testToggleIcon--open" : ""
+                  }`}
+                />
+              </ActionIcon>
+            </Tooltip>
+            <div className="summaryHeaderCopy">
+              <Group gap="xs" wrap="wrap">
+                <Badge variant="outline" color="gray">
+                  Micro
+                </Badge>
+                <Text fw={800}>{formatPermission(entry.micro)}</Text>
+              </Group>
+              <Text c="dimmed" size="xs">
+                {formatPermission(entry.macro)}
+              </Text>
+              <SummaryChips items={summaryItems} review={blockReview} />
+            </div>
           </Group>
+
+          <PermissionBlockActionsMenu
+            canCopy={sourceBlock.tests.length > 0}
+            onAddStandardTests={() => onAddStandardTests(blockKey)}
+            onDuplicateBlockStructure={() => onDuplicateBlockStructure(blockKey)}
+            onAddTest={() => onAddTest(blockKey)}
+          />
         </Group>
 
-        <Stack gap="sm">
-          {block.tests.map((test, visibleIndex) => {
-            const selfReferenceKey = createTestReferenceKey(entry.key, test.id);
-            const sourceIndex = sourceBlock.tests.findIndex((sourceTest) => sourceTest.id === test.id);
-            const testIndex = sourceIndex >= 0 ? sourceIndex : visibleIndex;
+        <Collapse in={isExpanded}>
+          <Stack gap="sm" id={panelId}>
+            {block.tests.map((test, visibleIndex) => {
+              const selfReferenceKey = createTestReferenceKey(entry.key, test.id);
+              const sourceIndex = sourceBlock.tests.findIndex(
+                (sourceTest) => sourceTest.id === test.id,
+              );
+              const testIndex = sourceIndex >= 0 ? sourceIndex : visibleIndex;
 
-            return (
-              <BlockTestEditor
-                key={test.id}
-                blockKey={blockKey}
-                index={testIndex}
-                test={test}
-                selfReferenceKey={selfReferenceKey}
-                isExpanded={expandedTests[selfReferenceKey] ?? false}
-                canMoveUp={testIndex > 0}
-                canMoveDown={testIndex < sourceBlock.tests.length - 1}
-                onTestExpansionChange={onTestExpansionChange}
-                onTestTitleChange={onTestTitleChange}
-                onTestMove={onTestMove}
-                onDuplicateTest={onDuplicateTest}
-                onTestRemove={onTestRemove}
-                onResultChange={onResultChange}
-              />
-            );
-          })}
+              return (
+                <BlockTestEditor
+                  key={test.id}
+                  blockKey={blockKey}
+                  index={testIndex}
+                  test={test}
+                  selfReferenceKey={selfReferenceKey}
+                  isExpanded={expandedTests[selfReferenceKey] ?? false}
+                  reviewIssues={reviewIssues}
+                  canMoveUp={testIndex > 0}
+                  canMoveDown={testIndex < sourceBlock.tests.length - 1}
+                  onTestExpansionChange={onTestExpansionChange}
+                  onTestTitleChange={onTestTitleChange}
+                  onTestMove={onTestMove}
+                  onDuplicateTest={onDuplicateTest}
+                  onTestRemove={onTestRemove}
+                  onResultChange={onResultChange}
+                />
+              );
+            })}
 
-          {block.tests.length === 0 ? (
-            <EmptyState actionLabel="Adicionar teste" onAction={() => onAddTest(blockKey)} />
-          ) : null}
-        </Stack>
+            {block.tests.length === 0 ? (
+              <EmptyState actionLabel="Adicionar teste" onAction={() => onAddTest(blockKey)} />
+            ) : null}
+          </Stack>
+        </Collapse>
       </Stack>
     </Paper>
   );
 }, arePermissionBlockEditorPropsEqual);
+
+function PermissionBlockActionsMenu({
+  canCopy,
+  onAddStandardTests,
+  onDuplicateBlockStructure,
+  onAddTest,
+}: {
+  canCopy: boolean;
+  onAddStandardTests: () => void;
+  onDuplicateBlockStructure: () => void;
+  onAddTest: () => void;
+}) {
+  return (
+    <Menu position="bottom-end" withArrow>
+      <Menu.Target>
+        <span className="actionsMenuTarget">
+          <ActionIcon variant="subtle" aria-label="Mais acoes da micro" className="actionsMenu">
+            <MoreVertical size={17} />
+          </ActionIcon>
+        </span>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Item leftSection={<ListChecks size={15} />} onClick={onAddStandardTests}>
+          Adicionar pacote padrão
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<Copy size={15} />}
+          disabled={!canCopy}
+          onClick={onDuplicateBlockStructure}
+        >
+          Copiar para vazios
+        </Menu.Item>
+        <Menu.Item leftSection={<Plus size={15} />} onClick={onAddTest}>
+          Adicionar teste
+        </Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+function BlockTestActionsMenu({
+  canMoveUp,
+  canMoveDown,
+  onDuplicate,
+  onMove,
+  onRemove,
+}: {
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onDuplicate: () => void;
+  onMove: (direction: MoveDirection) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <Menu position="bottom-end" withArrow>
+      <Menu.Target>
+        <span className="actionsMenuTarget">
+          <ActionIcon variant="subtle" aria-label="Mais acoes do teste" className="actionsMenu">
+            <MoreVertical size={17} />
+          </ActionIcon>
+        </span>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Item leftSection={<Copy size={15} />} onClick={onDuplicate}>
+          Duplicar teste
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<ArrowUp size={15} />}
+          disabled={!canMoveUp}
+          onClick={() => onMove("up")}
+        >
+          Mover teste para cima
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<ArrowDown size={15} />}
+          disabled={!canMoveDown}
+          onClick={() => onMove("down")}
+        >
+          Mover teste para baixo
+        </Menu.Item>
+        <Menu.Divider />
+        <Menu.Item color="red" leftSection={<Trash2 size={15} />} onClick={onRemove}>
+          Remover teste
+        </Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
 
 const BlockTestEditor = memo(function BlockTestEditor({
   blockKey,
@@ -2443,6 +3748,7 @@ const BlockTestEditor = memo(function BlockTestEditor({
   test,
   selfReferenceKey,
   isExpanded,
+  reviewIssues,
   canMoveUp,
   canMoveDown,
   onTestExpansionChange,
@@ -2452,9 +3758,13 @@ const BlockTestEditor = memo(function BlockTestEditor({
   onTestRemove,
   onResultChange,
 }: BlockTestEditorProps) {
-  const selectedCheckCount = checkOrder.filter((key) => test.result.checks[key]).length;
-  const evidenceCount = test.result.legacyImages.length + test.result.newImages.length;
   const testPanelId = `test-details-${toDomId(selfReferenceKey)}`;
+  const testReviewIssues = reviewIssues.filter(
+    (issue) => issue.blockKey === blockKey && issue.testId === test.id,
+  );
+  const testReview = summarizeReviewIssues(testReviewIssues);
+  const summaryItems = buildTestSummaryItems(test);
+  const displayTitle = test.title.trim() || `Teste ${index + 1} sem nome`;
   const commitTitle = useCallback(
     (value: string) => onTestTitleChange(blockKey, test.id, value),
     [blockKey, onTestTitleChange, test.id],
@@ -2483,8 +3793,8 @@ const BlockTestEditor = memo(function BlockTestEditor({
       className={`testCard ${isExpanded ? "testCard--expanded" : "testCard--collapsed"}`}
     >
       <Stack gap="sm">
-        <div className="testHeaderGrid">
-          <Group gap={6} wrap="nowrap" className="testIndexCell">
+        <Group justify="space-between" align="center" gap="md" className="testHeader">
+          <Group gap="xs" wrap="nowrap" className="testTitle">
             <Tooltip label={isExpanded ? "Recolher teste" : "Abrir teste"}>
               <ActionIcon
                 variant="subtle"
@@ -2504,89 +3814,69 @@ const BlockTestEditor = memo(function BlockTestEditor({
             <Badge color="gray" variant="outline" w={34} h={34}>
               {index + 1}
             </Badge>
+            <div className="summaryHeaderCopy">
+              <Text fw={800} size="sm">
+                {displayTitle}
+              </Text>
+              <CheckStatusChips result={test.result} />
+              <SummaryChips items={summaryItems} review={testReview} />
+            </div>
           </Group>
-          <TextInput
-            label="Nome do teste"
-            value={title.value}
-            placeholder="Criação, edição, consulta..."
-            onBlur={title.commit}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              title.setValue(value);
-            }}
+          <BlockTestActionsMenu
+            canMoveUp={canMoveUp}
+            canMoveDown={canMoveDown}
+            onDuplicate={() => onDuplicateTest(blockKey, test.id)}
+            onMove={(direction) => onTestMove(blockKey, index, direction === "up" ? -1 : 1)}
+            onRemove={() => onTestRemove(blockKey, test.id)}
           />
-          <Group gap={4} wrap="wrap" className="testActions">
-            <Badge color="gray" variant="outline" className="testMetaBadge">
-              {selectedCheckCount}/{checkOrder.length} checks
-            </Badge>
-            {evidenceCount > 0 ? (
-              <Badge color="gray" variant="outline" className="testMetaBadge">
-                {evidenceCount} img
-              </Badge>
-            ) : null}
-            <Tooltip label="Duplicar teste">
-              <ActionIcon
-                variant="subtle"
-                onClick={() => onDuplicateTest(blockKey, test.id)}
-                aria-label="Duplicar teste"
-              >
-                <Copy size={17} />
-              </ActionIcon>
-            </Tooltip>
-            <Tooltip label="Mover para cima">
-              <ActionIcon
-                variant="subtle"
-                disabled={!canMoveUp}
-                onClick={() => onTestMove(blockKey, index, -1)}
-                aria-label="Mover para cima"
-              >
-                <ArrowUp size={17} />
-              </ActionIcon>
-            </Tooltip>
-            <Tooltip label="Mover para baixo">
-              <ActionIcon
-                variant="subtle"
-                disabled={!canMoveDown}
-                onClick={() => onTestMove(blockKey, index, 1)}
-                aria-label="Mover para baixo"
-              >
-                <ArrowDown size={17} />
-              </ActionIcon>
-            </Tooltip>
-            <Tooltip label="Remover teste">
-              <ActionIcon
-                variant="subtle"
-                color="red"
-                onClick={() => onTestRemove(blockKey, test.id)}
-                aria-label="Remover teste"
-              >
-                <Trash2 size={17} />
-              </ActionIcon>
-            </Tooltip>
-          </Group>
-        </div>
-
-        <Group gap={6} className="quickChecks">
-          {checkOrder.map((key) => (
-            <Tooltip key={key} label={checkLabels[key]}>
-              <button
-                type="button"
-                className={`quickCheck ${test.result.checks[key] ? "quickCheck--active" : ""}`}
-                onClick={() => toggleCheck(key)}
-              >
-                {quickCheckLabels[key]}
-              </button>
-            </Tooltip>
-          ))}
         </Group>
 
         {isExpanded ? (
         <Collapse in transitionDuration={0}>
           <div id={testPanelId} className="testBody">
-            <TestResultEditor
-              result={test.result}
-              onChange={(updater) => onResultChange(blockKey, test.id, updater)}
-            />
+            <Stack gap="md">
+              <TextInput
+                label="Nome do teste"
+                value={title.value}
+                placeholder="Criação, edição, consulta..."
+                onBlur={title.commit}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  title.setValue(value);
+                }}
+              />
+              <Paper withBorder p="sm" className="quickChecksPanel">
+                <Stack gap="xs">
+                  <Text fw={750} size="sm">
+                    Status rapido
+                  </Text>
+                  <Group gap={6} className="quickChecks">
+                    {checkOrder.map((key) => (
+                      <Tooltip key={key} label={checkLabels[key]}>
+                        <button
+                          type="button"
+                          className={[
+                            "quickCheck",
+                            quickCheckToneClassNames[key],
+                            test.result.checks[key] ? "quickCheck--active" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          onClick={() => toggleCheck(key)}
+                        >
+                          {renderCheckIcon(key, 14)}
+                          <span>{quickCheckLabels[key]}</span>
+                        </button>
+                      </Tooltip>
+                    ))}
+                  </Group>
+                </Stack>
+              </Paper>
+              <TestResultEditor
+                result={test.result}
+                onChange={(updater) => onResultChange(blockKey, test.id, updater)}
+              />
+            </Stack>
           </div>
         </Collapse>
         ) : null}
@@ -2607,6 +3897,7 @@ const TestResultEditor = memo(function TestResultEditor({
     [onChange],
   );
   const observations = useBufferedText(result.observations, commitObservations);
+  const needsProblemObservation = hasProblemStatus(result) && !observations.value.trim();
 
   function updateCheck(key: CheckKey): void {
     onChange((current) => ({
@@ -2630,19 +3921,29 @@ const TestResultEditor = memo(function TestResultEditor({
 
   return (
     <Stack gap="md">
-      <Stack gap="xs">
-        {checkOrder.map((key) => (
-          <Checkbox
-            key={key}
-            checked={result.checks[key]}
-            onChange={() => updateCheck(key)}
-            label={checkLabels[key]}
-          />
-        ))}
-      </Stack>
+      <Paper withBorder p="sm" className="detailedChecksPanel">
+        <Stack gap="xs">
+          <Text fw={750} size="sm">
+            Status detalhado
+          </Text>
+          {checkOrder.map((key) => (
+            <Checkbox
+              key={key}
+              checked={result.checks[key]}
+              onChange={() => updateCheck(key)}
+              label={checkLabels[key]}
+            />
+          ))}
+        </Stack>
+      </Paper>
 
       <Textarea
         label="Observações"
+        error={
+          needsProblemObservation
+            ? "Obrigatoria quando o status indica problema ou erro."
+            : undefined
+        }
         minRows={4}
         styles={{ input: { resize: "vertical" } }}
         value={observations.value}
@@ -2653,18 +3954,20 @@ const TestResultEditor = memo(function TestResultEditor({
         }}
       />
 
-      <EvidenceUploader
-        title="Legado"
-        tone="legacy"
-        images={result.legacyImages}
-        onChange={(updater) => updateImages("legacyImages", updater)}
-      />
-      <EvidenceUploader
-        title="Novo"
-        tone="new"
-        images={result.newImages}
-        onChange={(updater) => updateImages("newImages", updater)}
-      />
+      <div className="evidenceGrid">
+        <EvidenceUploader
+          title="Legado"
+          tone="legacy"
+          images={result.legacyImages}
+          onChange={(updater) => updateImages("legacyImages", updater)}
+        />
+        <EvidenceUploader
+          title="Novo"
+          tone="new"
+          images={result.newImages}
+          onChange={(updater) => updateImages("newImages", updater)}
+        />
+      </div>
     </Stack>
   );
 });
@@ -2868,16 +4171,30 @@ function ImportPreviewModal({
       {result ? (
         <Stack gap="md">
           <div>
-            <Text fw={800}>{result.summary.screen || result.sourceName}</Text>
+            <Text fw={800}>
+              {result.kind === "tea"
+                ? result.summary.subject || result.sourceName
+                : result.summary.screen || result.sourceName}
+            </Text>
             <Text size="sm" c="dimmed">
               {result.sourceName}
             </Text>
           </div>
 
           <div className="importMetrics">
-            <ReviewMetric label="Passos" value={result.summary.accessSteps} />
-            <ReviewMetric label="Permissões" value={result.summary.selectedPermissions} />
-            <ReviewMetric label="Testes" value={result.summary.tests} />
+            {result.kind === "tea" ? (
+              <>
+                <ReviewMetric label="Atividades" value={result.summary.activities} />
+                <ReviewMetric label="Subtópicos" value={result.summary.subActivities} />
+                <ReviewMetric label="Blocos" value={result.summary.blocks} />
+              </>
+            ) : (
+              <>
+                <ReviewMetric label="Passos" value={result.summary.accessSteps} />
+                <ReviewMetric label="Permissões" value={result.summary.selectedPermissions} />
+                <ReviewMetric label="Testes" value={result.summary.tests} />
+              </>
+            )}
             <ReviewMetric label="Imagens" value={result.summary.images} />
           </div>
 
@@ -2965,6 +4282,8 @@ function ReviewPanel({
   onIssueClick: (issue: ReviewIssue) => void;
 }) {
   const totalIssues = summary.issues.length;
+  const dangerIssues = summary.issues.filter((issue) => issue.severity === "danger");
+  const warningIssues = summary.issues.filter((issue) => issue.severity === "warning");
 
   return (
     <Section
@@ -2972,7 +4291,7 @@ function ReviewPanel({
       tone="document"
       action={
         <Badge
-          color={totalIssues > 0 ? "yellow" : "green"}
+          color={dangerIssues.length > 0 ? "red" : totalIssues > 0 ? "yellow" : "green"}
           variant="light"
         >
           {totalIssues > 0 ? "Pendências" : "Pronto"}
@@ -2988,11 +4307,19 @@ function ReviewPanel({
         </div>
 
         <div className="reviewIssues">
-          {summary.issues.length > 0 ? (
+          {dangerIssues.length > 0 ? (
             <ReviewIssueGroup
-              title="Pendências para revisar"
+              title="Pendencias criticas"
+              tone="danger"
+              issues={dangerIssues}
+              onIssueClick={onIssueClick}
+            />
+          ) : null}
+          {warningIssues.length > 0 ? (
+            <ReviewIssueGroup
+              title="Avisos para revisar"
               tone="warning"
-              issues={summary.issues}
+              issues={warningIssues}
               onIssueClick={onIssueClick}
             />
           ) : null}
@@ -3028,7 +4355,7 @@ function ReviewIssueGroup<TIssue extends { id: string; label: string; detail: st
   onIssueClick,
 }: {
   title: string;
-  tone: "warning";
+  tone: "warning" | "danger";
   issues: TIssue[];
   onIssueClick: (issue: TIssue) => void;
 }) {
@@ -3138,6 +4465,10 @@ function arePermissionBlockGroupPropsEqual(
   if (
     previous.macro !== next.macro ||
     previous.entries !== next.entries ||
+    previous.reviewIssues !== next.reviewIssues ||
+    previous.isCollapsed !== next.isCollapsed ||
+    previous.onMacroCollapseChange !== next.onMacroCollapseChange ||
+    previous.onBlockCollapseChange !== next.onBlockCollapseChange ||
     previous.onAddTest !== next.onAddTest ||
     previous.onAddStandardTests !== next.onAddStandardTests ||
     previous.onDuplicateBlockStructure !== next.onDuplicateBlockStructure ||
@@ -3155,6 +4486,13 @@ function arePermissionBlockGroupPropsEqual(
     const previousEntry = previous.entries.find((candidate) => candidate.key === entry.key);
 
     if (!previousEntry || previousEntry.block !== entry.block) {
+      return false;
+    }
+
+    if (
+      (previous.collapsedBlocks[entry.key] ?? false) !==
+      (next.collapsedBlocks[entry.key] ?? false)
+    ) {
       return false;
     }
 
@@ -3178,6 +4516,9 @@ function arePermissionBlockEditorPropsEqual(
     previous.entry !== next.entry ||
     previous.block !== next.block ||
     previous.sourceBlock !== next.sourceBlock ||
+    previous.reviewIssues !== next.reviewIssues ||
+    previous.isCollapsed !== next.isCollapsed ||
+    previous.onBlockCollapseChange !== next.onBlockCollapseChange ||
     previous.onAddTest !== next.onAddTest ||
     previous.onAddStandardTests !== next.onAddStandardTests ||
     previous.onDuplicateBlockStructure !== next.onDuplicateBlockStructure ||
@@ -3280,7 +4621,7 @@ function testMatchesFilter(
   }
 
   if (filter === "withPending") {
-    return !test.title.trim();
+    return testHasPendingReview(test);
   }
 
   return problemCheckKeys.some((key) => test.result.checks[key]);
@@ -3288,6 +4629,104 @@ function testMatchesFilter(
 
 function getTestImageCount(test: PermissionBlockTest): number {
   return test.result.legacyImages.length + test.result.newImages.length;
+}
+
+function getSelectedCheckKeys(result: TestResult): CheckKey[] {
+  return checkOrder.filter((key) => result.checks[key]);
+}
+
+function hasProblemStatus(result: TestResult): boolean {
+  return problemCheckKeys.some((key) => result.checks[key]);
+}
+
+function testHasPendingReview(test: PermissionBlockTest): boolean {
+  const selectedCheckCount = getSelectedCheckKeys(test.result).length;
+
+  return (
+    !test.title.trim() ||
+    selectedCheckCount === 0 ||
+    test.result.legacyImages.length === 0 ||
+    test.result.newImages.length === 0 ||
+    (hasProblemStatus(test.result) && !test.result.observations.trim())
+  );
+}
+
+function summarizeReviewIssues(issues: Array<{ severity: ReviewSeverity }>): InlineReviewSummary {
+  return issues.reduce<InlineReviewSummary>(
+    (summary, issue) => ({
+      total: summary.total + 1,
+      danger: summary.danger + (issue.severity === "danger" ? 1 : 0),
+      warning: summary.warning + (issue.severity === "warning" ? 1 : 0),
+    }),
+    { total: 0, danger: 0, warning: 0 },
+  );
+}
+
+function getInlineReviewTone(review: InlineReviewSummary): "gray" | "red" | "yellow" {
+  if (review.danger > 0) {
+    return "red";
+  }
+
+  if (review.warning > 0) {
+    return "yellow";
+  }
+
+  return "gray";
+}
+
+function buildPermissionBlockSummaryItems(block: PermissionBlock): string[] {
+  const pendingCount = block.tests.filter(testHasPendingReview).length;
+  const problemCount = block.tests.filter((test) => hasProblemStatus(test.result)).length;
+
+  return [
+    formatOtCount(block.tests.length, "teste", "testes"),
+    formatOtCount(pendingCount, "pendente", "pendentes"),
+    `${problemCount} com problema`,
+  ];
+}
+
+function buildTestSummaryItems(test: PermissionBlockTest): string[] {
+  return [
+    `${getSelectedCheckKeys(test.result).length}/${checkOrder.length} checks`,
+    `Legado ${test.result.legacyImages.length}`,
+    `Novo ${test.result.newImages.length}`,
+  ];
+}
+
+function formatOtCount(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function getCheckTone(key: CheckKey): "green" | "yellow" | "red" | "gray" {
+  if (key === "sameBehavior") {
+    return "green";
+  }
+
+  if (key === "errorReport") {
+    return "red";
+  }
+
+  if (problemCheckKeys.includes(key)) {
+    return "yellow";
+  }
+
+  return "gray";
+}
+
+function renderCheckIcon(key: CheckKey, size = 14): ReactNode {
+  if (key === "sameBehavior") {
+    return <CheckCircle2 size={size} />;
+  }
+
+  if (key === "possibleIssue") {
+    return <CircleHelp size={size} />;
+  }
+
+  if (key === "errorReport") {
+    return <FileText size={size} />;
+  }
+
+  return <AlertCircle size={size} />;
 }
 
 function buildReviewSummary(
@@ -3304,6 +4743,7 @@ function buildReviewSummary(
   if (!documentData.metadata.screen.trim()) {
     summary.issues.push({
       id: "missing-screen",
+      severity: "warning",
       label: "Tela sem nome",
       detail: "Preencha o campo Tela antes de exportar.",
       tab: "document",
@@ -3313,6 +4753,7 @@ function buildReviewSummary(
   if (!documentData.objective.trim()) {
     summary.issues.push({
       id: "missing-objective",
+      severity: "warning",
       label: "Objetivo vazio",
       detail: "Preencha o objetivo do documento.",
       tab: "document",
@@ -3322,6 +4763,7 @@ function buildReviewSummary(
   if (documentData.accessSteps.filter((step) => step.text.trim()).length === 0) {
     summary.issues.push({
       id: "missing-steps",
+      severity: "warning",
       label: "Sem passo a passo",
       detail: "Inclua ao menos uma etapa de acesso.",
       tab: "document",
@@ -3331,6 +4773,7 @@ function buildReviewSummary(
   if (entries.length === 0) {
     summary.issues.push({
       id: "missing-permissions",
+      severity: "danger",
       label: "Sem permissões selecionadas",
       detail: "Selecione macro e micro-permissões para gerar testes.",
       tab: "permissions",
@@ -3340,7 +4783,24 @@ function buildReviewSummary(
   entries.forEach((entry) => {
     const block = documentData.permissionBlocks[entry.key] ?? createEmptyBlock();
 
+    if (block.tests.length === 0) {
+      summary.issues.push({
+        id: `missing-tests-${entry.key}`,
+        severity: "danger",
+        label: "Permissao sem teste",
+        detail:
+          `${formatPermission(entry.macro)} / ${formatPermission(entry.micro)}: ` +
+          "adicione ao menos um teste.",
+        tab: "tests",
+        targetId: `permission-block-${toDomId(entry.key)}`,
+        blockKey: entry.key,
+      });
+    }
+
     block.tests.forEach((test, index) => {
+      const referenceKey = createTestReferenceKey(entry.key, test.id);
+      const targetId = `test-card-${toDomId(referenceKey)}`;
+      const selectedCheckKeys = getSelectedCheckKeys(test.result);
       const testLabel = `${formatPermission(entry.macro)} / ${formatPermission(entry.micro)} / ${
         test.title.trim() || `Teste ${index + 1}`
       }`;
@@ -3349,13 +4809,65 @@ function buildReviewSummary(
       summary.imageCount += test.result.legacyImages.length + test.result.newImages.length;
 
       if (!test.title.trim()) {
-        const referenceKey = createTestReferenceKey(entry.key, test.id);
         summary.issues.push({
           id: `unnamed-${referenceKey}`,
+          severity: "warning",
           label: "Teste sem nome",
           detail: testLabel,
           tab: "tests",
-          targetId: `test-card-${toDomId(referenceKey)}`,
+          targetId,
+          blockKey: entry.key,
+          testId: test.id,
+        });
+      }
+
+      if (selectedCheckKeys.length === 0) {
+        summary.issues.push({
+          id: `missing-status-${referenceKey}`,
+          severity: "danger",
+          label: "Status do teste vazio",
+          detail: `${testLabel}: marque o status do teste.`,
+          tab: "tests",
+          targetId,
+          blockKey: entry.key,
+          testId: test.id,
+        });
+      }
+
+      if (test.result.legacyImages.length === 0) {
+        summary.issues.push({
+          id: `missing-legacy-image-${referenceKey}`,
+          severity: "danger",
+          label: "Imagem do legado ausente",
+          detail: `${testLabel}: adicione evidencia em Legado.`,
+          tab: "tests",
+          targetId,
+          blockKey: entry.key,
+          testId: test.id,
+        });
+      }
+
+      if (test.result.newImages.length === 0) {
+        summary.issues.push({
+          id: `missing-new-image-${referenceKey}`,
+          severity: "danger",
+          label: "Imagem do novo ausente",
+          detail: `${testLabel}: adicione evidencia em Novo.`,
+          tab: "tests",
+          targetId,
+          blockKey: entry.key,
+          testId: test.id,
+        });
+      }
+
+      if (hasProblemStatus(test.result) && !test.result.observations.trim()) {
+        summary.issues.push({
+          id: `missing-problem-observation-${referenceKey}`,
+          severity: "warning",
+          label: "Observacao obrigatoria",
+          detail: `${testLabel}: status com problema ou erro exige observacao.`,
+          tab: "tests",
+          targetId,
           blockKey: entry.key,
           testId: test.id,
         });
@@ -3374,9 +4886,10 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
       documentData.activities.reduce(
         (total, activity) =>
           total +
-          activity.images.length +
+          countTeaContentImages(activity.blocks) +
           activity.subActivities.reduce(
-            (subTotal, subActivity) => subTotal + subActivity.images.length,
+            (subTotal, subActivity) =>
+              subTotal + countTeaContentImages(subActivity.blocks),
             0,
           ),
         0,
@@ -3387,33 +4900,127 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
   if (!documentData.metadata.serviceOrder.trim()) {
     summary.issues.push({
       id: "missing-service-order",
+      severity: "danger",
       label: "Ordem de serviço vazia",
       detail: "Preencha a ordem de serviço do TEA.",
       tab: "document",
+      targetId: "tea-metadata-service-order",
+    });
+  }
+
+  if (!documentData.metadata.phase.trim()) {
+    summary.issues.push({
+      id: "missing-phase",
+      severity: "warning",
+      label: "Fase/Etapa vazia",
+      detail: "Preencha a fase ou etapa do TEA.",
+      tab: "document",
+      targetId: "tea-metadata-phase",
+    });
+  }
+
+  if (!documentData.metadata.ticket.trim()) {
+    summary.issues.push({
+      id: "missing-ticket",
+      severity: "warning",
+      label: "Chamado vazio",
+      detail: "Preencha o chamado relacionado ao TEA.",
+      tab: "document",
+      targetId: "tea-metadata-ticket",
     });
   }
 
   if (!documentData.metadata.subject.trim()) {
     summary.issues.push({
       id: "missing-subject",
+      severity: "danger",
       label: "Assunto vazio",
       detail: "Preencha o assunto usado no cabeçalho e nome do arquivo.",
       tab: "document",
+      targetId: "tea-metadata-subject",
+    });
+  }
+
+  if (!documentData.metadata.date.trim()) {
+    summary.issues.push({
+      id: "missing-date",
+      severity: "warning",
+      label: "Data vazia",
+      detail: "Preencha a data do TEA.",
+      tab: "document",
+      targetId: "tea-metadata-date",
+    });
+  }
+
+  if (!documentData.metadata.author.trim()) {
+    summary.issues.push({
+      id: "missing-author",
+      severity: "warning",
+      label: "Elaborado por vazio",
+      detail: "Preencha o responsavel pela elaboracao do TEA.",
+      tab: "document",
+      targetId: "tea-metadata-author",
     });
   }
 
   if (!documentData.overview.trim()) {
     summary.issues.push({
       id: "missing-overview",
+      severity: "danger",
       label: "Visão geral vazia",
       detail: "Preencha a seção 1 do documento.",
       tab: "document",
+      targetId: "tea-overview",
     });
   }
+
+  if (hasIncompleteTeaBoldMarkup(documentData.overview)) {
+    summary.issues.push({
+      id: "overview-incomplete-bold",
+      severity: "warning",
+      label: "Negrito incompleto na visao geral",
+      detail: "Revise os pares **texto** na secao 1.",
+      tab: "document",
+      targetId: "tea-overview",
+    });
+  }
+
+  if (!documentData.activityIntro.trim()) {
+    summary.issues.push({
+      id: "missing-activity-intro",
+      severity: "warning",
+      label: "Texto inicial vazio",
+      detail: "Preencha o texto introdutor das atividades realizadas.",
+      tab: "document",
+      targetId: "tea-activity-intro",
+    });
+  }
+
+  if (hasIncompleteTeaBoldMarkup(documentData.activityIntro)) {
+    summary.issues.push({
+      id: "activity-intro-incomplete-bold",
+      severity: "warning",
+      label: "Negrito incompleto no texto inicial",
+      detail: "Revise os pares **texto** no texto inicial das atividades.",
+      tab: "document",
+      targetId: "tea-activity-intro",
+    });
+  }
+
+  documentData.activityImages.forEach((image, imageIndex) => {
+    addTeaImageIssues(summary, image, {
+      issuePrefix: `general-image-${image.id}`,
+      detailPrefix: `Imagem geral ${imageIndex + 1}`,
+      targetId: "tea-activity-intro",
+      tab: "document",
+      severity: "warning",
+    });
+  });
 
   if (documentData.activities.length === 0) {
     summary.issues.push({
       id: "missing-activities",
+      severity: "danger",
       label: "Sem atividades",
       detail: "Adicione ao menos uma atividade realizada.",
       tab: "activities",
@@ -3424,14 +5031,206 @@ function buildTeaReviewSummary(documentData: TeaDocument): TeaReviewSummary {
     if (!activity.title.trim()) {
       summary.issues.push({
         id: `activity-title-${activity.id}`,
+        severity: "danger",
         label: "Atividade sem título",
         detail: `Atividade 2.${index + 1}`,
         tab: "activities",
+        targetId: `tea-activity-title-${toDomId(activity.id)}`,
+        activityId: activity.id,
       });
     }
+
+    if (!hasUsefulTeaContent(activity.blocks)) {
+      summary.issues.push({
+        id: `activity-content-${activity.id}`,
+        severity: "danger",
+        label: "Atividade sem conteúdo",
+        detail: `Atividade 2.${index + 1}: adicione texto, lista ou imagem.`,
+        tab: "activities",
+        targetId: `tea-activity-${toDomId(activity.id)}`,
+        activityId: activity.id,
+      });
+    }
+
+    activity.blocks.forEach((block, blockIndex) => {
+      addTeaContentBlockIssues(summary, block, {
+        issuePrefix: `activity-${activity.id}-block-${block.id}`,
+        detailPrefix: `Atividade 2.${index + 1}, bloco ${blockIndex + 1}`,
+        severity: "warning",
+        activityId: activity.id,
+      });
+    });
+
+    activity.subActivities.forEach((subActivity, subIndex) => {
+      if (!subActivity.title.trim()) {
+        summary.issues.push({
+          id: `subactivity-title-${subActivity.id}`,
+          severity: "warning",
+          label: "Subtópico sem título",
+          detail: `Subtópico 2.${index + 1}.${subIndex + 1}`,
+          tab: "activities",
+          targetId: `tea-subactivity-title-${toDomId(subActivity.id)}`,
+          activityId: activity.id,
+          subActivityId: subActivity.id,
+        });
+      }
+
+      if (!hasUsefulTeaContent(subActivity.blocks)) {
+        summary.issues.push({
+          id: `subactivity-content-${subActivity.id}`,
+          severity: "warning",
+          label: "Subtópico sem conteúdo",
+          detail: `Subtópico 2.${index + 1}.${subIndex + 1}: adicione texto, lista ou imagem.`,
+          tab: "activities",
+          targetId: `tea-subactivity-${toDomId(subActivity.id)}`,
+          activityId: activity.id,
+          subActivityId: subActivity.id,
+        });
+      }
+
+      subActivity.blocks.forEach((block, blockIndex) => {
+        addTeaContentBlockIssues(summary, block, {
+          issuePrefix: `subactivity-${subActivity.id}-block-${block.id}`,
+          detailPrefix: `Subtopico 2.${index + 1}.${subIndex + 1}, bloco ${blockIndex + 1}`,
+          severity: "warning",
+          activityId: activity.id,
+          subActivityId: subActivity.id,
+        });
+      });
+    });
   });
 
   return summary;
+}
+
+function addTeaContentBlockIssues(
+  summary: TeaReviewSummary,
+  block: TeaContentBlock,
+  context: {
+    issuePrefix: string;
+    detailPrefix: string;
+    severity: TeaReviewSeverity;
+    activityId: string;
+    subActivityId?: string;
+  },
+): void {
+  const targetId = `tea-content-block-${toDomId(block.id)}`;
+  const commonIssueFields = {
+    tab: "activities" as const,
+    targetId,
+    activityId: context.activityId,
+    subActivityId: context.subActivityId,
+    blockId: block.id,
+  };
+
+  if (block.type === "text") {
+    if (!block.text.trim()) {
+      summary.issues.push({
+        id: `${context.issuePrefix}-empty-text`,
+        severity: context.severity,
+        label: "Bloco de texto vazio",
+        detail: `${context.detailPrefix}: preencha ou remova o bloco de texto.`,
+        ...commonIssueFields,
+      });
+    }
+
+    if (hasIncompleteTeaBoldMarkup(block.text)) {
+      summary.issues.push({
+        id: `${context.issuePrefix}-incomplete-bold`,
+        severity: "warning",
+        label: "Negrito incompleto",
+        detail: `${context.detailPrefix}: revise os pares **texto**.`,
+        ...commonIssueFields,
+      });
+    }
+
+    return;
+  }
+
+  if (block.type === "list") {
+    if (!block.items.some((item) => item.text.trim())) {
+      summary.issues.push({
+        id: `${context.issuePrefix}-empty-list`,
+        severity: context.severity,
+        label: "Lista vazia",
+        detail: `${context.detailPrefix}: adicione ao menos um item ou remova a lista.`,
+        ...commonIssueFields,
+      });
+    }
+
+    block.items.forEach((item, itemIndex) => {
+      if (hasIncompleteTeaBoldMarkup(item.text)) {
+        summary.issues.push({
+          id: `${context.issuePrefix}-item-${item.id}-incomplete-bold`,
+          severity: "warning",
+          label: "Negrito incompleto na lista",
+          detail: `${context.detailPrefix}, item ${itemIndex + 1}: revise os pares **texto**.`,
+          ...commonIssueFields,
+        });
+      }
+    });
+
+    return;
+  }
+
+  if (block.images.length === 0) {
+    summary.issues.push({
+      id: `${context.issuePrefix}-empty-images`,
+      severity: context.severity,
+      label: "Bloco de imagens vazio",
+      detail: `${context.detailPrefix}: adicione uma imagem ou remova o bloco.`,
+      ...commonIssueFields,
+    });
+  }
+
+  block.images.forEach((image, imageIndex) => {
+    addTeaImageIssues(summary, image, {
+      issuePrefix: `${context.issuePrefix}-image-${image.id}`,
+      detailPrefix: `${context.detailPrefix}, imagem ${imageIndex + 1}`,
+      targetId,
+      severity: context.severity,
+      activityId: context.activityId,
+      subActivityId: context.subActivityId,
+      blockId: block.id,
+    });
+  });
+}
+
+function addTeaImageIssues(
+  summary: TeaReviewSummary,
+  image: EvidenceImage,
+  context: {
+    issuePrefix: string;
+    detailPrefix: string;
+    targetId: string;
+    tab?: TeaTab;
+    severity: TeaReviewSeverity;
+    activityId?: string;
+    subActivityId?: string;
+    blockId?: string;
+  },
+): void {
+  const commonIssueFields = {
+    tab: context.tab ?? ("activities" as const),
+    targetId: context.targetId,
+    activityId: context.activityId,
+    subActivityId: context.subActivityId,
+    blockId: context.blockId,
+  };
+
+  if (!image.dataUrl) {
+    summary.issues.push({
+      id: `${context.issuePrefix}-missing-data`,
+      severity: "danger",
+      label: "Imagem sem dados",
+      detail: `${context.detailPrefix}: recarregue ou substitua a imagem.`,
+      ...commonIssueFields,
+    });
+  }
+}
+
+function hasIncompleteTeaBoldMarkup(value: string): boolean {
+  return ((value.match(/\*\*/g) ?? []).length % 2) === 1;
 }
 
 function createBlockTest(id: string, title = ""): PermissionBlockTest {
@@ -3529,6 +5328,248 @@ function teaItemsFromBulk(value: string): string[] {
   return splitBulkLines(value).filter(Boolean);
 }
 
+function updateTeaItemsFromBulk(
+  currentItems: { id: string; text: string }[],
+  value: string,
+): { id: string; text: string }[] {
+  return teaItemsFromBulk(value).map((text, index) => ({
+    id: currentItems[index]?.id ?? createId(),
+    text,
+  }));
+}
+
+function createTeaContentBlock(type: TeaContentBlockType): TeaContentBlock {
+  if (type === "text") {
+    return {
+      id: createId(),
+      type: "text",
+      text: "",
+    };
+  }
+
+  if (type === "list") {
+    return {
+      id: createId(),
+      type: "list",
+      items: [],
+    };
+  }
+
+  return {
+    id: createId(),
+    type: "images",
+    images: [],
+  };
+}
+
+function summarizeTeaReviewIssues(issues: TeaReviewIssue[]): TeaInlineReviewSummary {
+  return issues.reduce<TeaInlineReviewSummary>(
+    (summary, issue) => ({
+      total: summary.total + 1,
+      danger: summary.danger + (issue.severity === "danger" ? 1 : 0),
+      warning: summary.warning + (issue.severity === "warning" ? 1 : 0),
+    }),
+    { total: 0, danger: 0, warning: 0 },
+  );
+}
+
+function getTeaReviewTone(review: TeaInlineReviewSummary): "gray" | "red" | "yellow" {
+  if (review.danger > 0) {
+    return "red";
+  }
+
+  if (review.warning > 0) {
+    return "yellow";
+  }
+
+  return "gray";
+}
+
+function buildTeaActivitySummaryItems(activity: TeaActivity): string[] {
+  const blockCount =
+    activity.blocks.length +
+    activity.subActivities.reduce((total, subActivity) => total + subActivity.blocks.length, 0);
+  const imageCount =
+    countTeaContentImages(activity.blocks) +
+    activity.subActivities.reduce(
+      (total, subActivity) => total + countTeaContentImages(subActivity.blocks),
+      0,
+    );
+
+  return [
+    formatTeaCount(blockCount, "bloco", "blocos"),
+    formatTeaCount(activity.subActivities.length, "subtopico", "subtopicos"),
+    formatTeaCount(imageCount, "imagem", "imagens"),
+  ];
+}
+
+function buildTeaSubActivitySummaryItems(subActivity: TeaSubActivity): string[] {
+  return [
+    formatTeaCount(subActivity.blocks.length, "bloco", "blocos"),
+    formatTeaCount(countTeaContentImages(subActivity.blocks), "imagem", "imagens"),
+  ];
+}
+
+function buildTeaContentBlockSummaryItem(block: TeaContentBlock): string {
+  if (block.type === "text") {
+    const characterCount = block.text.trim().length;
+    return characterCount > 0
+      ? formatTeaCount(characterCount, "caractere", "caracteres")
+      : "texto vazio";
+  }
+
+  if (block.type === "list") {
+    return formatTeaCount(
+      block.items.filter((item) => item.text.trim()).length,
+      "item",
+      "itens",
+    );
+  }
+
+  return formatTeaCount(block.images.length, "imagem", "imagens");
+}
+
+function formatTeaCount(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function hasTeaActivityRemovalContent(activity: TeaActivity): boolean {
+  return (
+    Boolean(activity.title.trim()) ||
+    activity.blocks.length > 0 ||
+    activity.subActivities.length > 0
+  );
+}
+
+function hasTeaSubActivityRemovalContent(subActivity: TeaSubActivity): boolean {
+  return Boolean(subActivity.title.trim()) || subActivity.blocks.length > 0;
+}
+
+function hasMeaningfulTeaBlockContent(block: TeaContentBlock): boolean {
+  if (block.type === "text") {
+    return Boolean(block.text.trim());
+  }
+
+  if (block.type === "list") {
+    return block.items.some((item) => item.text.trim());
+  }
+
+  return block.images.length > 0;
+}
+
+async function duplicateTeaContentBlock(block: TeaContentBlock): Promise<TeaContentBlock> {
+  if (block.type === "text") {
+    return {
+      ...block,
+      id: createId(),
+    };
+  }
+
+  if (block.type === "list") {
+    return {
+      ...block,
+      id: createId(),
+      items: block.items.map((item) => ({
+        ...item,
+        id: createId(),
+      })),
+    };
+  }
+
+  let failedToPersist = false;
+  const images = await Promise.all(
+    block.images.map(async (image) => {
+      const id = createId();
+
+      if (image.dataUrl) {
+        try {
+          await saveEvidenceImageData(id, image.dataUrl);
+        } catch {
+          failedToPersist = true;
+        }
+      }
+
+      return {
+        ...image,
+        id,
+      };
+    }),
+  );
+
+  if (failedToPersist) {
+    window.alert("Nao foi possivel duplicar uma ou mais imagens no rascunho do navegador.");
+  }
+
+  return {
+    ...block,
+    id: createId(),
+    images,
+  };
+}
+
+function moveItemById<T extends { id: string }>(
+  items: T[],
+  itemId: string,
+  direction: MoveDirection,
+): T[] {
+  const currentIndex = items.findIndex((item) => item.id === itemId);
+
+  if (currentIndex < 0) {
+    return items;
+  }
+
+  const nextIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+
+  if (nextIndex < 0 || nextIndex >= items.length) {
+    return items;
+  }
+
+  const nextItems = [...items];
+  [nextItems[currentIndex], nextItems[nextIndex]] = [
+    nextItems[nextIndex],
+    nextItems[currentIndex],
+  ];
+
+  return nextItems;
+}
+
+function setCollapsedMapValue(
+  current: Record<string, boolean>,
+  itemId: string,
+  collapsed: boolean,
+): Record<string, boolean> {
+  if (collapsed) {
+    return {
+      ...current,
+      [itemId]: true,
+    };
+  }
+
+  const { [itemId]: _removed, ...rest } = current;
+  return rest;
+}
+
+function countTeaContentImages(blocks: TeaContentBlock[]): number {
+  return blocks.reduce(
+    (total, block) => total + (block.type === "images" ? block.images.length : 0),
+    0,
+  );
+}
+
+function hasUsefulTeaContent(blocks: TeaContentBlock[]): boolean {
+  return blocks.some((block) => {
+    if (block.type === "text") {
+      return Boolean(block.text.trim());
+    }
+
+    if (block.type === "list") {
+      return block.items.some((item) => item.text.trim());
+    }
+
+    return block.images.length > 0;
+  });
+}
+
 function blocksByPermissionCode(documentData: OtDocument): Map<string, PermissionBlock> {
   const blocks = new Map<string, PermissionBlock>();
 
@@ -3603,6 +5644,10 @@ function createEmptyBlock(): PermissionBlock {
 
 function createTestReferenceKey(blockKey: string, testId: string): string {
   return `${blockKey}::${testId}`;
+}
+
+function getMacroIdFromBlockKey(blockKey: string): string {
+  return blockKey.split(":")[0] ?? "";
 }
 
 function toDomId(value: string): string {

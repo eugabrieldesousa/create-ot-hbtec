@@ -1,4 +1,11 @@
-import type { EvidenceImage, OtDocument, TeaActivity, TeaDocument, TestResult } from "./types";
+import type {
+  EvidenceImage,
+  OtDocument,
+  TeaActivity,
+  TeaContentBlock,
+  TeaDocument,
+  TestResult,
+} from "./types";
 
 const DB_NAME = "create-ot-images";
 const STORE_NAME = "evidence-images";
@@ -114,13 +121,21 @@ export async function hydrateTeaDocumentImages(documentData: TeaDocument): Promi
       })),
     );
 
+  const hydrateBlock = async (block: TeaContentBlock): Promise<TeaContentBlock> =>
+    block.type === "images"
+      ? {
+          ...block,
+          images: await hydrateImages(block.images),
+        }
+      : block;
+
   const hydrateActivity = async (activity: TeaActivity): Promise<TeaActivity> => ({
     ...activity,
-    images: await hydrateImages(activity.images),
+    blocks: await Promise.all(activity.blocks.map(hydrateBlock)),
     subActivities: await Promise.all(
       activity.subActivities.map(async (subActivity) => ({
         ...subActivity,
-        images: await hydrateImages(subActivity.images),
+        blocks: await Promise.all(subActivity.blocks.map(hydrateBlock)),
       })),
     ),
   });
@@ -145,10 +160,16 @@ function getTeaDocumentImages(documentData: TeaDocument): EvidenceImage[] {
   return [
     ...documentData.activityImages,
     ...documentData.activities.flatMap((activity) => [
-      ...activity.images,
-      ...activity.subActivities.flatMap((subActivity) => subActivity.images),
+      ...activity.blocks.flatMap(getTeaBlockImages),
+      ...activity.subActivities.flatMap((subActivity) =>
+        subActivity.blocks.flatMap(getTeaBlockImages),
+      ),
     ]),
   ];
+}
+
+function getTeaBlockImages(block: TeaContentBlock): EvidenceImage[] {
+  return block.type === "images" ? block.images : [];
 }
 
 function openImageDatabase(): Promise<IDBDatabase> {
@@ -237,12 +258,20 @@ export function stripImageDataFromDocument(documentData: OtDocument): OtDocument
 }
 
 export function stripImageDataFromTeaDocument(documentData: TeaDocument): TeaDocument {
+  const stripBlock = (block: TeaContentBlock): TeaContentBlock =>
+    block.type === "images"
+      ? {
+          ...block,
+          images: block.images.map(stripImageData),
+        }
+      : block;
+
   const stripActivity = (activity: TeaActivity): TeaActivity => ({
     ...activity,
-    images: activity.images.map(stripImageData),
+    blocks: activity.blocks.map(stripBlock),
     subActivities: activity.subActivities.map((subActivity) => ({
       ...subActivity,
-      images: subActivity.images.map(stripImageData),
+      blocks: subActivity.blocks.map(stripBlock),
     })),
   });
 

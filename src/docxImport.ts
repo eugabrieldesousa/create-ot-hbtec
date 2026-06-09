@@ -13,9 +13,16 @@ import type {
   PermissionBlockTest,
   PermissionGroup,
   PermissionItem,
+  TeaActivity,
+  TeaContentBlock,
+  TeaDocument,
+  TeaSubActivity,
 } from "./types";
 
-export type DocxImportSummary = {
+export type DocxImportKind = "ot" | "tea";
+
+export type OtDocxImportSummary = {
+  kind: "ot";
   screen: string;
   accessSteps: number;
   permissionGroups: number;
@@ -24,12 +31,32 @@ export type DocxImportSummary = {
   images: number;
 };
 
-export type DocxImportResult = {
+export type TeaDocxImportSummary = {
+  kind: "tea";
+  subject: string;
+  activities: number;
+  subActivities: number;
+  blocks: number;
+  images: number;
+};
+
+export type OtDocxImportResult = {
+  kind: "ot";
   document: OtDocument;
-  summary: DocxImportSummary;
+  summary: OtDocxImportSummary;
   warnings: string[];
   sourceName: string;
 };
+
+export type TeaDocxImportResult = {
+  kind: "tea";
+  document: TeaDocument;
+  summary: TeaDocxImportSummary;
+  warnings: string[];
+  sourceName: string;
+};
+
+export type DocxImportResult = OtDocxImportResult | TeaDocxImportResult;
 
 type ParseOptions = {
   sourceName?: string;
@@ -41,6 +68,7 @@ type Token = {
   cells?: string[];
   images: EvidenceImage[];
   section: SectionName;
+  tagName?: string;
 };
 
 type SectionName = "document" | "steps" | "permissions" | "tests" | "other";
@@ -58,6 +86,17 @@ type ParserState = {
   imageCount: number;
 };
 
+type TeaParserState = {
+  document: TeaDocument;
+  warnings: string[];
+  currentSection: "document" | "overview" | "activityIntro" | "activities";
+  currentActivity?: TeaActivity;
+  currentSubActivity?: TeaSubActivity;
+  imageCount: number;
+  blockCount: number;
+  itemCount: number;
+};
+
 const metadataFields: Array<{
   field: keyof OtDocument["metadata"];
   aliases: string[];
@@ -69,17 +108,21 @@ const metadataFields: Array<{
   { field: "author", aliases: ["elaborada por", "elaboradora por", "autor"] },
 ];
 
-export async function parseDocxFile(file: File): Promise<DocxImportResult> {
+export async function parseDocxFile(
+  file: File,
+  kind: DocxImportKind = "ot",
+): Promise<DocxImportResult> {
   const arrayBuffer = await file.arrayBuffer();
   const result = await mammoth.convertToHtml({ arrayBuffer });
-
-  return parseOtHtml(result.value, {
+  const options = {
     sourceName: file.name,
     mammothMessages: result.messages,
-  });
+  };
+
+  return kind === "tea" ? parseTeaHtml(result.value, options) : parseOtHtml(result.value, options);
 }
 
-export function parseOtHtml(html: string, options: ParseOptions = {}): DocxImportResult {
+export function parseOtHtml(html: string, options: ParseOptions = {}): OtDocxImportResult {
   const dom = new DOMParser().parseFromString(html, "text/html");
   const tokens = collectTokens(dom.body);
   const state = createParserState();
@@ -92,10 +135,30 @@ export function parseOtHtml(html: string, options: ParseOptions = {}): DocxImpor
   finishDocument(state, options.sourceName ?? "documento-importado.docx");
 
   return {
+    kind: "ot",
     document: state.document,
     summary: buildImportSummary(state.document),
     warnings: state.warnings,
     sourceName: options.sourceName ?? "documento-importado.docx",
+  };
+}
+
+export function parseTeaHtml(html: string, options: ParseOptions = {}): TeaDocxImportResult {
+  const dom = new DOMParser().parseFromString(html, "text/html");
+  const tokens = collectTokens(dom.body);
+  const sourceName = options.sourceName ?? "documento-importado.docx";
+  const state = createTeaParserState();
+
+  applyMammothWarnings(state, options.mammothMessages);
+  parseTeaTokens(tokens, state);
+  finishTeaDocument(state, sourceName);
+
+  return {
+    kind: "tea",
+    document: state.document,
+    summary: buildTeaImportSummary(state.document),
+    warnings: state.warnings,
+    sourceName,
   };
 }
 
@@ -121,6 +184,32 @@ function createParserState(): ParserState {
   };
 }
 
+function createTeaParserState(): TeaParserState {
+  const today = new Date().toISOString().slice(0, 10);
+
+  return {
+    document: {
+      metadata: {
+        serviceOrder: "",
+        phase: "",
+        ticket: "",
+        subject: "",
+        date: today,
+        author: "",
+      },
+      overview: "",
+      activityIntro: "",
+      activityImages: [],
+      activities: [],
+    },
+    warnings: [],
+    currentSection: "document",
+    imageCount: 0,
+    blockCount: 0,
+    itemCount: 0,
+  };
+}
+
 function collectTokens(root: HTMLElement): Token[] {
   const tokens: Token[] = [];
   let section: SectionName = "document";
@@ -136,6 +225,7 @@ function collectTokens(root: HTMLElement): Token[] {
           cells,
           images: collectImages(row),
           section,
+          tagName: "tr",
         });
       });
       return;
@@ -149,6 +239,7 @@ function collectTokens(root: HTMLElement): Token[] {
           text,
           images: collectImages(item),
           section,
+          tagName: "li",
         });
       });
       return;
@@ -161,6 +252,7 @@ function collectTokens(root: HTMLElement): Token[] {
       text,
       images: collectImages(child),
       section,
+      tagName: child.tagName.toLowerCase(),
     });
   });
 
@@ -200,14 +292,18 @@ function sectionFromText(text: string, current: SectionName): SectionName {
 }
 
 function applyMammothWarnings(
-  state: ParserState,
+  state: { warnings: string[] },
   messages: Array<{ message?: string; type?: string }> | undefined,
 ): void {
   messages?.forEach((message) => {
-    if (message.message) {
+    if (message.message && !isIgnorableMammothWarning(message.message)) {
       state.warnings.push(`Conversao DOCX: ${message.message}`);
     }
   });
+}
+
+function isIgnorableMammothWarning(message: string): boolean {
+  return message === "Unrecognised paragraph style: 'Title' (Style ID: Title)";
 }
 
 function parseDocumentFields(tokens: Token[], documentData: OtDocument): void {
@@ -267,6 +363,340 @@ function parseAccessSteps(tokens: Token[], documentData: OtDocument): void {
     id: `step-import-${index + 1}`,
     text,
   }));
+}
+
+function parseTeaTokens(tokens: Token[], state: TeaParserState): void {
+  tokens.forEach((token) => {
+    if (token.cells && token.cells.length >= 2 && assignTeaMetadata(token, state.document)) {
+      return;
+    }
+
+    if (parseTeaMainSection(token, state)) {
+      return;
+    }
+
+    if (parseTeaSubActivityHeading(token, state)) {
+      appendTeaImagesToCurrentTarget(state, token.images);
+      return;
+    }
+
+    if (parseTeaActivityHeading(token, state)) {
+      appendTeaImagesToCurrentTarget(state, token.images);
+      return;
+    }
+
+    appendTeaContentToken(state, token);
+  });
+}
+
+function assignTeaMetadata(token: Token, documentData: TeaDocument): boolean {
+  const [label = "", ...rest] = token.cells ?? [];
+
+  return assignTeaMetadataField(documentData, label, rest.join(" "));
+}
+
+function assignTeaMetadataField(
+  documentData: TeaDocument,
+  label: string,
+  rawValue: string,
+): boolean {
+  const normalizedLabel = normalizeText(label);
+  const value = cleanText(rawValue);
+
+  if (!value) {
+    return false;
+  }
+
+  if (normalizedLabel.includes("ordem de servico")) {
+    documentData.metadata.serviceOrder = value;
+    return true;
+  }
+
+  if (normalizedLabel.includes("fase") || normalizedLabel.includes("etapa")) {
+    documentData.metadata.phase = value;
+    return true;
+  }
+
+  if (normalizedLabel.includes("chamado")) {
+    documentData.metadata.ticket = value;
+    return true;
+  }
+
+  if (normalizedLabel.includes("assunto")) {
+    documentData.metadata.subject = value;
+    return true;
+  }
+
+  if (normalizedLabel.includes("data")) {
+    documentData.metadata.date = normalizeDate(value);
+    return true;
+  }
+
+  if (normalizedLabel.includes("elaborado por")) {
+    documentData.metadata.author = value;
+    return true;
+  }
+
+  return false;
+}
+
+function parseTeaMainSection(token: Token, state: TeaParserState): boolean {
+  const normalized = normalizeText(token.text);
+
+  if (/^1\.?\s+visao geral/.test(normalized)) {
+    state.currentSection = "overview";
+    state.currentActivity = undefined;
+    state.currentSubActivity = undefined;
+    return true;
+  }
+
+  if (/^2\.?\s+atividades realizadas/.test(normalized)) {
+    state.currentSection = "activityIntro";
+    state.currentActivity = undefined;
+    state.currentSubActivity = undefined;
+    return true;
+  }
+
+  return false;
+}
+
+function parseTeaActivityHeading(token: Token, state: TeaParserState): boolean {
+  const heading = parseTeaNumberedHeading(token.text);
+
+  if (!heading || heading.level !== "activity") {
+    return false;
+  }
+
+  const activity: TeaActivity = {
+    id: createImportId(
+      "tea-activity",
+      `${state.document.activities.length + 1}-${heading.title}`,
+    ),
+    title: heading.title,
+    blocks: [],
+    subActivities: [],
+  };
+
+  state.document.activities.push(activity);
+  state.currentSection = "activities";
+  state.currentActivity = activity;
+  state.currentSubActivity = undefined;
+
+  return true;
+}
+
+function parseTeaSubActivityHeading(token: Token, state: TeaParserState): boolean {
+  const heading = parseTeaNumberedHeading(token.text);
+
+  if (!heading || heading.level !== "subActivity") {
+    return false;
+  }
+
+  const activity =
+    state.currentActivity ??
+    ensureTeaActivity(state, `Atividade ${heading.activityIndex}`);
+  const subActivity: TeaSubActivity = {
+    id: createImportId(
+      "tea-subactivity",
+      `${activity.id}-${activity.subActivities.length + 1}-${heading.title}`,
+    ),
+    title: heading.title,
+    blocks: [],
+  };
+
+  activity.subActivities.push(subActivity);
+  state.currentSection = "activities";
+  state.currentActivity = activity;
+  state.currentSubActivity = subActivity;
+
+  return true;
+}
+
+function parseTeaNumberedHeading(
+  text: string,
+):
+  | { level: "activity"; activityIndex: number; title: string }
+  | { level: "subActivity"; activityIndex: number; subIndex: number; title: string }
+  | null {
+  const cleaned = cleanText(text);
+  const subActivity = cleaned.match(/^2\.(\d+)\.(\d+)\s*[-\u2013\u2014]\s*(.+)$/);
+
+  if (subActivity) {
+    return {
+      level: "subActivity",
+      activityIndex: Number(subActivity[1]),
+      subIndex: Number(subActivity[2]),
+      title: cleanTeaHeadingTitle(subActivity[3]),
+    };
+  }
+
+  const activity = cleaned.match(/^2\.(\d+)\s*[-\u2013\u2014]\s*(.+)$/);
+
+  if (activity) {
+    return {
+      level: "activity",
+      activityIndex: Number(activity[1]),
+      title: cleanTeaHeadingTitle(activity[2]),
+    };
+  }
+
+  return null;
+}
+
+function cleanTeaHeadingTitle(value: string): string {
+  return cleanText(value).replace(/:$/, "").trim();
+}
+
+function appendTeaContentToken(state: TeaParserState, token: Token): void {
+  const text = cleanText(token.text);
+
+  if (state.currentSection === "overview") {
+    appendTeaDocumentText(state.document, "overview", text);
+    return;
+  }
+
+  if (state.currentSection === "activityIntro") {
+    appendTeaDocumentText(state.document, "activityIntro", text);
+    state.document.activityImages.push(...createTeaImages(state, token.images));
+    return;
+  }
+
+  if (state.currentSection !== "activities") {
+    return;
+  }
+
+  ensureTeaContentTarget(state);
+
+  if (token.tagName === "li") {
+    appendTeaListItem(state, text);
+  } else {
+    appendTeaTextBlock(state, text);
+  }
+
+  appendTeaImagesToCurrentTarget(state, token.images);
+}
+
+function appendTeaDocumentText(
+  documentData: TeaDocument,
+  field: "overview" | "activityIntro",
+  text: string,
+): void {
+  if (!text) {
+    return;
+  }
+
+  documentData[field] = [documentData[field], text].filter(Boolean).join("\n");
+}
+
+function appendTeaTextBlock(state: TeaParserState, text: string): void {
+  if (!text) {
+    return;
+  }
+
+  const blocks = getTeaCurrentBlocks(state);
+  const lastBlock = blocks[blocks.length - 1];
+
+  if (lastBlock?.type === "text") {
+    lastBlock.text = [lastBlock.text, text].filter(Boolean).join("\n");
+    return;
+  }
+
+  blocks.push({
+    id: createTeaBlockId(state, "text"),
+    type: "text",
+    text,
+  });
+}
+
+function appendTeaListItem(state: TeaParserState, text: string): void {
+  if (!text) {
+    return;
+  }
+
+  const blocks = getTeaCurrentBlocks(state);
+  const lastBlock = blocks[blocks.length - 1];
+  const item = {
+    id: createTeaItemId(state, text),
+    text,
+  };
+
+  if (lastBlock?.type === "list") {
+    lastBlock.items.push(item);
+    return;
+  }
+
+  blocks.push({
+    id: createTeaBlockId(state, "list"),
+    type: "list",
+    items: [item],
+  });
+}
+
+function appendTeaImagesToCurrentTarget(
+  state: TeaParserState,
+  images: EvidenceImage[],
+): void {
+  if (images.length === 0) {
+    return;
+  }
+
+  ensureTeaContentTarget(state);
+
+  getTeaCurrentBlocks(state).push({
+    id: createTeaBlockId(state, "images"),
+    type: "images",
+    images: createTeaImages(state, images),
+  });
+}
+
+function createTeaImages(state: TeaParserState, images: EvidenceImage[]): EvidenceImage[] {
+  return images.map((image) => {
+    state.imageCount += 1;
+
+    return {
+      ...image,
+      id: createImportId("tea-image", `${state.imageCount}-${image.dataUrl ?? image.name}`),
+      name: `imagem-importada-${state.imageCount}`,
+      label: image.label ?? "",
+    };
+  });
+}
+
+function ensureTeaContentTarget(state: TeaParserState): TeaActivity {
+  return state.currentActivity ?? ensureTeaActivity(state, "Atividade importada");
+}
+
+function ensureTeaActivity(state: TeaParserState, title: string): TeaActivity {
+  const activity: TeaActivity = {
+    id: createImportId("tea-activity", `${state.document.activities.length + 1}-${title}`),
+    title,
+    blocks: [],
+    subActivities: [],
+  };
+
+  state.document.activities.push(activity);
+  state.currentSection = "activities";
+  state.currentActivity = activity;
+  state.currentSubActivity = undefined;
+
+  return activity;
+}
+
+function getTeaCurrentBlocks(state: TeaParserState): TeaContentBlock[] {
+  return (state.currentSubActivity ?? state.currentActivity ?? ensureTeaContentTarget(state))
+    .blocks;
+}
+
+function createTeaBlockId(state: TeaParserState, type: TeaContentBlock["type"]): string {
+  state.blockCount += 1;
+
+  return createImportId("tea-block", `${state.blockCount}-${type}`);
+}
+
+function createTeaItemId(state: TeaParserState, text: string): string {
+  state.itemCount += 1;
+
+  return createImportId("tea-item", `${state.itemCount}-${text}`);
 }
 
 function parsePermissionSummary(tokens: Token[], state: ParserState): void {
@@ -535,6 +965,33 @@ function finishDocument(state: ParserState, sourceName: string): void {
   }
 }
 
+function finishTeaDocument(state: TeaParserState, sourceName: string): void {
+  if (!state.document.metadata.subject) {
+    state.document.metadata.subject = teaSubjectFromFile(sourceName);
+    state.warnings.push("Assunto nao encontrado no DOCX; usei o nome do arquivo.");
+  }
+
+  if (!state.document.metadata.serviceOrder) {
+    state.warnings.push("Ordem de servico nao encontrada no DOCX.");
+  }
+
+  if (!state.document.metadata.author) {
+    state.warnings.push("Elaborado por nao encontrado no DOCX.");
+  }
+
+  if (!state.document.overview.trim()) {
+    state.warnings.push("Visao geral nao encontrada no DOCX.");
+  }
+
+  if (!state.document.activityIntro.trim()) {
+    state.warnings.push("Texto inicial de atividades nao encontrado no DOCX.");
+  }
+
+  if (state.document.activities.length === 0) {
+    state.warnings.push("Nenhuma atividade reconhecida.");
+  }
+}
+
 function ensureMacro(state: ParserState, permission: PermissionDraft): PermissionGroup {
   const parsed = normalizePermissionDraft(permission, "MACRO");
   const existing = state.document.permissionGroups.find(
@@ -727,7 +1184,7 @@ function isSectionHeading(text: string): boolean {
   );
 }
 
-function buildImportSummary(documentData: OtDocument): DocxImportSummary {
+function buildImportSummary(documentData: OtDocument): OtDocxImportSummary {
   const blocks = Object.values(documentData.permissionBlocks);
   const tests = blocks.reduce((total, block) => total + block.tests.length, 0);
   const images = blocks.reduce(
@@ -742,6 +1199,7 @@ function buildImportSummary(documentData: OtDocument): DocxImportSummary {
   );
 
   return {
+    kind: "ot",
     screen: documentData.metadata.screen,
     accessSteps: documentData.accessSteps.length,
     permissionGroups: documentData.permissionGroups.length,
@@ -749,6 +1207,34 @@ function buildImportSummary(documentData: OtDocument): DocxImportSummary {
     tests,
     images,
   };
+}
+
+function buildTeaImportSummary(documentData: TeaDocument): TeaDocxImportSummary {
+  const blocks = getTeaContentBlocks(documentData);
+
+  return {
+    kind: "tea",
+    subject: documentData.metadata.subject,
+    activities: documentData.activities.length,
+    subActivities: documentData.activities.reduce(
+      (total, activity) => total + activity.subActivities.length,
+      0,
+    ),
+    blocks: blocks.length,
+    images:
+      documentData.activityImages.length +
+      blocks.reduce(
+        (total, block) => total + (block.type === "images" ? block.images.length : 0),
+        0,
+      ),
+  };
+}
+
+function getTeaContentBlocks(documentData: TeaDocument): TeaContentBlock[] {
+  return documentData.activities.flatMap((activity) => [
+    ...activity.blocks,
+    ...activity.subActivities.flatMap((subActivity) => subActivity.blocks),
+  ]);
 }
 
 function selectedPermissionCount(groups: PermissionGroup[]): number {
@@ -788,6 +1274,13 @@ function screenNameFromFile(fileName: string): string {
   return fileName
     .replace(/\.docx$/i, "")
     .replace(/^OT\s*-\s*/i, "")
+    .trim();
+}
+
+function teaSubjectFromFile(fileName: string): string {
+  return fileName
+    .replace(/\.docx$/i, "")
+    .replace(/^TEA\s*-\s*/i, "")
     .trim();
 }
 

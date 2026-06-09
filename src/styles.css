@@ -120,6 +120,7 @@ body {
 }
 
 .mantine-Popover-dropdown,
+.mantine-Menu-dropdown,
 .mantine-Combobox-dropdown {
   color: var(--app-text);
   background: var(--app-card-bg);
@@ -134,6 +135,9 @@ body {
 .testCard,
 .teaActivityCard,
 .teaSubActivityCard,
+.teaComposer,
+.teaContentBlock,
+.teaComposerEmpty,
 .evidencePanel,
 .softEmpty {
   border-color: var(--app-border);
@@ -148,6 +152,18 @@ body {
 .topBar {
   background: var(--app-card-bg);
   border-color: var(--app-border);
+}
+
+.topBarActions {
+  flex: 0 0 auto;
+}
+
+.topBarDesktopOnly {
+  display: inline-flex;
+}
+
+.topBarCompactMenu {
+  display: none;
 }
 
 .topBarTitle {
@@ -187,14 +203,220 @@ body {
   border-color: var(--app-border);
 }
 
+.blockGroupHeader,
+.permissionBlockHeader {
+  gap: 0.75rem;
+}
+
+.permissionBlockTitle {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+.permissionBlockTitle > div {
+  min-width: 0;
+}
+
+.permissionBlockTitle .mantine-Text-root {
+  overflow-wrap: anywhere;
+}
+
+.summaryHeaderCopy {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.summaryHeaderCopy .mantine-Text-root {
+  overflow-wrap: anywhere;
+}
+
+.summaryChips,
+.statusChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.125rem;
+}
+
+.summaryChip,
+.statusChip {
+  height: 1.35rem;
+  text-transform: none;
+}
+
+.statusChip .mantine-Badge-section {
+  display: inline-flex;
+}
+
+.summaryChip--red {
+  border-color: rgba(220, 38, 38, 0.4);
+}
+
+.summaryChip--yellow {
+  border-color: rgba(217, 119, 6, 0.42);
+}
+
+.actionsMenuTarget {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.actionsMenu {
+  flex: 0 0 auto;
+}
+
+.permissionBlockActions {
+  flex: 1 1 24rem;
+  justify-content: flex-end;
+}
+
 .teaActivityCard {
   background: var(--app-card-bg);
   border-color: var(--app-border);
 }
 
 .teaSubActivityCard {
-  background: var(--app-surface-muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.teaComposer {
+  background: transparent;
+  border: 1px solid var(--app-border-soft);
+  border-left-width: 2px;
+}
+
+.teaActivityHeader,
+.teaSubActivityHeader,
+.teaComposerHeader,
+.teaContentBlockHeader {
+  gap: 0.75rem;
+}
+
+.teaActivityTitle,
+.teaSubActivityTitle,
+.teaComposerTitle,
+.teaContentBlockTitle {
+  min-width: 0;
+  flex: 1 1 18rem;
+}
+
+.teaActivityTitle > div,
+.teaSubActivityTitle > div,
+.teaComposerTitle > div,
+.teaContentBlockTitle > div {
+  min-width: 0;
+}
+
+.teaActivityTitle .mantine-Text-root,
+.teaSubActivityTitle .mantine-Text-root,
+.teaComposerTitle .mantine-Text-root,
+.teaContentBlockTitle .mantine-Text-root {
+  overflow-wrap: anywhere;
+}
+
+.teaHeaderCopy {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.teaSummaryChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.125rem;
+}
+
+.teaSummaryChip {
+  height: 1.35rem;
+  text-transform: none;
+}
+
+.teaSummaryChip--red {
+  border-color: rgba(220, 38, 38, 0.4);
+}
+
+.teaSummaryChip--yellow {
+  border-color: rgba(217, 119, 6, 0.42);
+}
+
+.teaActionsMenu {
+  flex: 0 0 auto;
+}
+
+.teaMenuTarget {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.teaAddBlockButton {
+  flex: 0 0 auto;
+}
+
+.teaLegacyActionsHidden {
+  display: none;
+}
+
+.teaSubActivityDivider {
   border-color: var(--app-border-soft);
+}
+
+.teaSubActivityGroupHeader {
+  gap: 0.75rem;
+}
+
+.teaSubActivityList {
+  padding-left: 0.875rem;
+  border-left: 2px solid var(--app-border-soft);
+}
+
+.teaContentBlock {
+  background: transparent;
+  border: 1px solid var(--app-border-soft);
+}
+
+.teaContentBlockTitle {
+  min-width: 0;
+}
+
+.teaBlockIcon {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 2rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--app-primary);
+  background: var(--app-primary-soft);
+  border: 1px solid var(--app-border-soft);
+}
+
+.teaBlockIcon--list {
+  color: #047857;
+  background: #ecfdf5;
+}
+
+.teaBlockIcon--images {
+  color: #b45309;
+  background: #fffbeb;
+}
+
+[data-mantine-color-scheme="dark"] .teaBlockIcon--list {
+  color: #6ee7b7;
+  background: #10231c;
+}
+
+[data-mantine-color-scheme="dark"] .teaBlockIcon--images {
+  color: #fbbf24;
+  background: #2a2112;
+}
+
+.teaComposerEmpty {
+  background: var(--empty-bg);
+  border-color: var(--empty-border);
 }
 
 .bulkEditor {
@@ -213,6 +435,32 @@ body {
 
 .testCard--expanded {
   border-color: var(--app-border);
+}
+
+.testHeader {
+  gap: 0.75rem;
+}
+
+.testTitle {
+  min-width: 0;
+  flex: 1 1 18rem;
+}
+
+.testTitle > div {
+  min-width: 0;
+}
+
+.quickChecksPanel,
+.detailedChecksPanel {
+  background: var(--app-surface-muted);
+  border-color: var(--app-border-soft);
+}
+
+.evidenceGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: start;
 }
 
 .evidencePanel {
@@ -265,6 +513,27 @@ body {
 .workspaceTabs .mantine-Tabs-tab[data-active] {
   color: var(--app-heading);
   background: var(--app-primary-soft);
+}
+
+.reviewTabLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.reviewTabBadge {
+  display: inline-flex;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.25rem;
+  color: #ffffff;
+  background: #dc2626;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 850;
+  line-height: 1;
 }
 
 .documentFields {
@@ -396,9 +665,13 @@ body {
 }
 
 .quickCheck {
+  display: inline-flex;
   min-width: 3.25rem;
-  min-height: 2rem;
+  min-height: 2.25rem;
   padding: 0 0.625rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
   color: var(--app-muted);
   background: var(--app-control-bg);
   border: 1px solid var(--app-border-soft);
@@ -407,6 +680,10 @@ body {
   font-size: 0.75rem;
   font-weight: 750;
   cursor: pointer;
+}
+
+.quickCheck svg {
+  flex: 0 0 auto;
 }
 
 .quickCheck:hover {
@@ -424,6 +701,30 @@ body {
   color: #bbf7d0;
   background: #12351f;
   border-color: #237341;
+}
+
+.quickCheck--active.quickCheck--warning {
+  color: #713f12;
+  background: #fef3c7;
+  border-color: #facc15;
+}
+
+[data-mantine-color-scheme="dark"] .quickCheck--active.quickCheck--warning {
+  color: #fde68a;
+  background: #3f2e08;
+  border-color: #a16207;
+}
+
+.quickCheck--active.quickCheck--danger {
+  color: #7f1d1d;
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+[data-mantine-color-scheme="dark"] .quickCheck--active.quickCheck--danger {
+  color: #fecaca;
+  background: #441313;
+  border-color: #b91c1c;
 }
 
 .imagePreview {
@@ -472,6 +773,11 @@ body {
 .reviewIssueGroup--warning {
   background: rgba(217, 119, 6, 0.08);
   border-color: rgba(217, 119, 6, 0.28);
+}
+
+.reviewIssueGroup--danger {
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.32);
 }
 
 .reviewIssueButton {
@@ -586,6 +892,27 @@ body {
 }
 
 @media (max-width: 840px) {
+  .permissionBlockHeader,
+  .testHeader,
+  .teaActivityHeader,
+  .teaSubActivityHeader,
+  .teaComposerHeader,
+  .teaContentBlockHeader {
+    align-items: flex-start;
+  }
+
+  .permissionBlockActions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .teaActivityTitle,
+  .teaSubActivityTitle,
+  .teaComposerTitle,
+  .teaContentBlockTitle {
+    flex-basis: min(100%, 20rem);
+  }
+
   .testHeaderGrid {
     grid-template-columns: max-content minmax(0, 1fr);
   }
@@ -598,9 +925,31 @@ body {
   .quickChecks {
     padding-left: 0;
   }
+
+  .evidenceGrid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
+  .topBarTitle {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .topBarActions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .topBarDesktopOnly {
+    display: none;
+  }
+
+  .topBarCompactMenu {
+    display: inline-flex;
+  }
+
   .documentFields,
   .permissionFields,
   .microPermissionRow {
@@ -621,6 +970,10 @@ body {
 
   .testHeaderGrid {
     grid-template-columns: 1fr;
+  }
+
+  .testTitle {
+    flex-basis: calc(100% - 2.75rem);
   }
 
   .testIndexCell,
@@ -655,5 +1008,28 @@ body {
     width: 72px;
     height: 58px;
     flex-basis: 72px;
+  }
+
+  .teaActivityHeader,
+  .teaSubActivityHeader,
+  .teaComposerHeader,
+  .teaContentBlockHeader {
+    align-items: flex-start;
+  }
+
+  .teaActivityTitle,
+  .teaSubActivityTitle,
+  .teaComposerTitle,
+  .teaContentBlockTitle {
+    flex-basis: calc(100% - 2.75rem);
+  }
+
+  .teaSummaryChips {
+    width: 100%;
+  }
+
+  .summaryChips,
+  .statusChips {
+    width: 100%;
   }
 }

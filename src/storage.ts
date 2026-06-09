@@ -14,6 +14,7 @@ import type {
   PermissionGroup,
   PermissionItem,
   TeaActivity,
+  TeaContentBlock,
   TeaDocument,
   TeaSubActivity,
   TeaTextItem,
@@ -329,7 +330,7 @@ function normalizeTeaDraft(value: unknown, fallback: TeaDocument): TeaDocument {
 }
 
 function normalizeTeaActivities(
-  activities: TeaActivity[] | unknown,
+  activities: unknown,
   fallback: TeaActivity[],
 ): TeaActivity[] {
   if (!Array.isArray(activities) || activities.length === 0) {
@@ -337,21 +338,19 @@ function normalizeTeaActivities(
   }
 
   return activities.map((activity, index) => {
-    const candidate = activity as Partial<TeaActivity>;
+    const candidate = activity as Partial<TeaActivity> & LegacyTeaContentFields;
 
     return {
       id: textOrFallback(candidate.id, `tea-activity-${index + 1}`),
       title: textOrFallback(candidate.title, ""),
-      description: textOrFallback(candidate.description, ""),
-      items: normalizeTeaTextItems(candidate.items, "tea-item"),
-      images: normalizeEvidenceImages(candidate.images),
+      blocks: normalizeTeaContentBlocks(candidate.blocks, candidate, `tea-activity-${index + 1}`),
       subActivities: normalizeTeaSubActivities(candidate.subActivities, index),
     };
   });
 }
 
 function normalizeTeaSubActivities(
-  subActivities: TeaSubActivity[] | unknown,
+  subActivities: unknown,
   activityIndex: number,
 ): TeaSubActivity[] {
   if (!Array.isArray(subActivities)) {
@@ -359,16 +358,115 @@ function normalizeTeaSubActivities(
   }
 
   return subActivities.map((subActivity, index) => {
-    const candidate = subActivity as Partial<TeaSubActivity>;
+    const candidate = subActivity as Partial<TeaSubActivity> & LegacyTeaContentFields;
 
     return {
       id: textOrFallback(candidate.id, `tea-sub-${activityIndex + 1}-${index + 1}`),
       title: textOrFallback(candidate.title, ""),
-      description: textOrFallback(candidate.description, ""),
-      items: normalizeTeaTextItems(candidate.items, "tea-sub-item"),
-      images: normalizeEvidenceImages(candidate.images),
+      blocks: normalizeTeaContentBlocks(
+        candidate.blocks,
+        candidate,
+        `tea-sub-${activityIndex + 1}-${index + 1}`,
+      ),
     };
   });
+}
+
+type LegacyTeaContentFields = {
+  description?: unknown;
+  items?: unknown;
+  images?: unknown;
+};
+
+function normalizeTeaContentBlocks(
+  blocks: unknown,
+  legacyFields: LegacyTeaContentFields,
+  prefix: string,
+): TeaContentBlock[] {
+  if (Array.isArray(blocks)) {
+    return blocks.flatMap((block, index) => {
+      const normalized = normalizeTeaContentBlock(block, index, prefix);
+      return normalized ? [normalized] : [];
+    });
+  }
+
+  return normalizeLegacyTeaContentBlocks(legacyFields, prefix);
+}
+
+function normalizeTeaContentBlock(
+  block: unknown,
+  index: number,
+  prefix: string,
+): TeaContentBlock | null {
+  const candidate = block as Partial<TeaContentBlock> & {
+    type?: unknown;
+    text?: unknown;
+    items?: unknown;
+    images?: unknown;
+  };
+  const id = textOrFallback(candidate.id, `${prefix}-block-${index + 1}`);
+
+  if (candidate.type === "text") {
+    return {
+      id,
+      type: "text",
+      text: textOrFallback(candidate.text, ""),
+    };
+  }
+
+  if (candidate.type === "list") {
+    return {
+      id,
+      type: "list",
+      items: normalizeTeaTextItems(candidate.items, `${prefix}-item-${index + 1}`),
+    };
+  }
+
+  if (candidate.type === "images") {
+    return {
+      id,
+      type: "images",
+      images: normalizeEvidenceImages(candidate.images),
+    };
+  }
+
+  return null;
+}
+
+function normalizeLegacyTeaContentBlocks(
+  legacyFields: LegacyTeaContentFields,
+  prefix: string,
+): TeaContentBlock[] {
+  const blocks: TeaContentBlock[] = [];
+  const description = textOrFallback(legacyFields.description, "");
+  const items = normalizeTeaTextItems(legacyFields.items, `${prefix}-item`);
+  const images = normalizeEvidenceImages(legacyFields.images);
+
+  if (description.trim()) {
+    blocks.push({
+      id: `${prefix}-text`,
+      type: "text",
+      text: description,
+    });
+  }
+
+  if (items.some((item) => item.text.trim())) {
+    blocks.push({
+      id: `${prefix}-list`,
+      type: "list",
+      items,
+    });
+  }
+
+  if (images.length > 0) {
+    blocks.push({
+      id: `${prefix}-images`,
+      type: "images",
+      images,
+    });
+  }
+
+  return blocks;
 }
 
 function normalizeTeaTextItems(items: TeaTextItem[] | unknown, prefix: string): TeaTextItem[] {
@@ -415,12 +513,16 @@ function getTeaImageIds(document: TeaDocument): string[] {
   return [
     ...document.activityImages.map((image) => image.id),
     ...document.activities.flatMap((activity) => [
-      ...activity.images.map((image) => image.id),
+      ...activity.blocks.flatMap(getTeaBlockImageIds),
       ...activity.subActivities.flatMap((subActivity) =>
-        subActivity.images.map((image) => image.id),
+        subActivity.blocks.flatMap(getTeaBlockImageIds),
       ),
     ]),
   ];
+}
+
+function getTeaBlockImageIds(block: TeaContentBlock): string[] {
+  return block.type === "images" ? block.images.map((image) => image.id) : [];
 }
 
 function textOrFallback(value: unknown, fallback: string): string {

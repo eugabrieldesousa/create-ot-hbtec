@@ -19,9 +19,7 @@ export function createDefaultTeaDocument(): TeaDocument {
       {
         id: "tea-activity-default",
         title: "",
-        description: "",
-        items: [],
-        images: [],
+        blocks: [],
         subActivities: [],
       },
     ],

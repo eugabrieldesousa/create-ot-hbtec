@@ -12,6 +12,7 @@ import {
   TableLayoutType,
   TableRow,
   TextRun,
+  UnderlineType,
   VerticalAlign,
   WidthType,
 } from "docx";
@@ -26,12 +27,20 @@ import type {
   PermissionGroup,
   PermissionItem,
   TeaActivity,
+  TeaContentBlock,
   TeaDocument,
   TeaSubActivity,
   TestResult,
 } from "./types";
 
 type ExportableEvidenceImage = EvidenceImage & { dataUrl: string };
+type TeaRunOptions = {
+  bold?: boolean;
+  italics?: boolean;
+  font?: string;
+  size?: number;
+  underline?: boolean;
+};
 
 const PAGE_WIDTH_TWIPS = 12240;
 const PAGE_HEIGHT_TWIPS = 15840;
@@ -236,17 +245,29 @@ async function optimizeOtDocumentImages(documentData: OtDocument): Promise<OtDoc
 }
 
 async function optimizeTeaDocumentImages(documentData: TeaDocument): Promise<TeaDocument> {
+  const optimizeTeaContentBlockImages = async (
+    block: TeaContentBlock,
+  ): Promise<TeaContentBlock> =>
+    block.type === "images"
+      ? {
+          ...block,
+          images: await optimizeEvidenceImagesForExport(block.images),
+        }
+      : block;
+
   return {
     ...documentData,
     activityImages: await optimizeEvidenceImagesForExport(documentData.activityImages),
     activities: await Promise.all(
       documentData.activities.map(async (activity) => ({
         ...activity,
-        images: await optimizeEvidenceImagesForExport(activity.images),
+        blocks: await Promise.all(activity.blocks.map(optimizeTeaContentBlockImages)),
         subActivities: await Promise.all(
           activity.subActivities.map(async (subActivity) => ({
             ...subActivity,
-            images: await optimizeEvidenceImagesForExport(subActivity.images),
+            blocks: await Promise.all(
+              subActivity.blocks.map(optimizeTeaContentBlockImages),
+            ),
           })),
         ),
       })),
@@ -302,9 +323,7 @@ function buildTeaDocumentChildren(documentData: TeaDocument) {
 function teaActivitySection(activity: TeaActivity, index: number): (Paragraph | Table)[] {
   const children: (Paragraph | Table)[] = [
     teaHeading2(`2.${index} - ${activity.title || "Atividade"}:`),
-    ...teaParagraphs(activity.description),
-    ...teaBullets(activity.items),
-    ...teaEvidenceSection(activity.images),
+    ...teaContentBlocks(activity.blocks),
   ];
 
   activity.subActivities.forEach((subActivity, subIndex) => {
@@ -321,10 +340,22 @@ function teaSubActivitySection(
 ): (Paragraph | Table)[] {
   return [
     teaSubHeading(`2.${activityIndex}.${subIndex} - ${subActivity.title || "Subatividade"}:`),
-    ...teaParagraphs(subActivity.description),
-    ...teaBullets(subActivity.items),
-    ...teaEvidenceSection(subActivity.images),
+    ...teaContentBlocks(subActivity.blocks),
   ];
+}
+
+function teaContentBlocks(blocks: TeaContentBlock[]): (Paragraph | Table)[] {
+  return blocks.flatMap((block) => {
+    if (block.type === "text") {
+      return teaParagraphs(block.text);
+    }
+
+    if (block.type === "list") {
+      return teaBullets(block.items);
+    }
+
+    return teaEvidenceSection(block.images);
+  });
 }
 
 function teaMetadataTable(documentData: TeaDocument): Table {
@@ -367,7 +398,15 @@ function teaHeading1(text: string): Paragraph {
   return new Paragraph({
     heading: HeadingLevel.HEADING_1,
     spacing: { before: 260, after: 120 },
-    children: [teaRun(text, { bold: true, italics: true, font: "Calibri", size: 28 })],
+    children: [
+      teaRun(text, {
+        bold: true,
+        italics: true,
+        font: "Calibri",
+        size: 28,
+        underline: true,
+      }),
+    ],
   });
 }
 
@@ -401,7 +440,7 @@ function teaParagraphs(value: string): Paragraph[] {
     (text) =>
       new Paragraph({
         spacing: { after: 200, line: 276 },
-        children: [teaRun(text)],
+        children: teaRunsFromMarkdown(text),
       }),
   );
 }
@@ -415,7 +454,7 @@ function teaBullets(items: { text: string }[]): Paragraph[] {
         new Paragraph({
           bullet: { level: 0 },
           spacing: { after: 120, line: 276 },
-          children: [teaRun(text)],
+          children: teaRunsFromMarkdown(text),
         }),
     );
 }
@@ -749,16 +788,19 @@ function simpleTable(rows: CellDefinition[][], columnWidths: number[]): Table {
                 ? { type: ShadingType.CLEAR, fill, color: "auto" }
                 : undefined,
               children: [
-                new Paragraph({
-                  alignment: definition.alignment ?? AlignmentType.LEFT,
-                  spacing: { before: 0, after: 0 },
-                  children: [
-                    run(definition.text || " ", {
-                      bold: definition.bold,
-                      color: definition.bold ? COLORS.title : COLORS.text,
+                ...cellParagraphTexts(definition.text).map(
+                  (paragraphText) =>
+                    new Paragraph({
+                      alignment: definition.alignment ?? AlignmentType.LEFT,
+                      spacing: { before: 0, after: 0 },
+                      children: [
+                        run(paragraphText || " ", {
+                          bold: definition.bold,
+                          color: definition.bold ? COLORS.title : COLORS.text,
+                        }),
+                      ],
                     }),
-                  ],
-                }),
+                ),
               ],
             });
           }),
@@ -766,6 +808,12 @@ function simpleTable(rows: CellDefinition[][], columnWidths: number[]): Table {
       },
     ),
   });
+}
+
+function cellParagraphTexts(text: string): string[] {
+  const paragraphs = (text || " ").replace(/\r\n/g, "\n").split("\n");
+
+  return paragraphs.length > 0 ? paragraphs : [" "];
 }
 
 function toTwipColumnWidths(widths: number[]): number[] {
@@ -829,20 +877,50 @@ function teaCell(text: string, bold: boolean, width: number): TableCell {
 
 function teaRun(
   text: string,
-  options: {
-    bold?: boolean;
-    italics?: boolean;
-    font?: string;
-    size?: number;
-  } = {},
+  options: TeaRunOptions = {},
 ): TextRun {
   return new TextRun({
     text,
     bold: options.bold,
     italics: options.italics,
+    underline: options.underline ? { type: UnderlineType.SINGLE } : undefined,
     font: options.font ?? "Arial",
     size: options.size ?? 22,
   });
+}
+
+function teaRunsFromMarkdown(text: string, options: TeaRunOptions = {}): TextRun[] {
+  const markerMatches = text.match(/\*\*/g) ?? [];
+
+  if (markerMatches.length === 0 || markerMatches.length % 2 !== 0) {
+    return [teaRun(text, options)];
+  }
+
+  const runs: TextRun[] = [];
+  let cursor = 0;
+  let bold = false;
+
+  while (cursor < text.length) {
+    const markerIndex = text.indexOf("**", cursor);
+
+    if (markerIndex === -1) {
+      const value = text.slice(cursor);
+      if (value) {
+        runs.push(teaRun(value, { ...options, bold: options.bold || bold }));
+      }
+      break;
+    }
+
+    const value = text.slice(cursor, markerIndex);
+    if (value) {
+      runs.push(teaRun(value, { ...options, bold: options.bold || bold }));
+    }
+
+    bold = !bold;
+    cursor = markerIndex + 2;
+  }
+
+  return runs.length > 0 ? runs : [teaRun(text.replace(/\*\*/g, ""), options)];
 }
 
 function teaTableBorders() {

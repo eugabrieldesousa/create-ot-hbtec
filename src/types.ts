@@ -69,20 +69,38 @@ export type TeaTextItem = {
   text: string;
 };
 
+export type TeaTextBlock = {
+  id: string;
+  type: "text";
+  text: string;
+};
+
+export type TeaListBlock = {
+  id: string;
+  type: "list";
+  items: TeaTextItem[];
+};
+
+export type TeaImagesBlock = {
+  id: string;
+  type: "images";
+  images: EvidenceImage[];
+};
+
+export type TeaContentBlock = TeaTextBlock | TeaListBlock | TeaImagesBlock;
+
+export type TeaContentBlockType = TeaContentBlock["type"];
+
 export type TeaSubActivity = {
   id: string;
   title: string;
-  description: string;
-  items: TeaTextItem[];
-  images: EvidenceImage[];
+  blocks: TeaContentBlock[];
 };
 
 export type TeaActivity = {
   id: string;
   title: string;
-  description: string;
-  items: TeaTextItem[];
-  images: EvidenceImage[];
+  blocks: TeaContentBlock[];
   subActivities: TeaSubActivity[];
 };
 
