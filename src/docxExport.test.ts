@@ -221,6 +221,7 @@ describe("exportOtDocument", () => {
 
     expect(correctionText).toContain("Corrigido Sim");
     expect(correctionText).toContain("Hotfix hotfix 1.2.2");
+    expect(correctionText).toContain("Corrigido por Gabriel");
     expect(correctionText).toContain("Nuvem Ate dev");
     expect(paragraphTexts).toContain("Antes (com erro):");
     expect(paragraphTexts).toContain("Depois (corrigido):");
@@ -372,6 +373,7 @@ function createOtDocumentForExport(): OtDocument {
             correction: {
               corrected: true,
               hotfixTag: "hotfix 1.2.2",
+              correctedBy: "Gabriel",
               cloudStage: "dev",
               beforeImages: [createExportImage("before-fix", "Antes")],
               afterImages: [createExportImage("after-fix", "Depois")],

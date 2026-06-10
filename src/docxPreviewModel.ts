@@ -335,6 +335,7 @@ function correctionSection(test: PermissionBlockTest): DocxPreviewBlock[] {
       [
         [cell("Corrigido", true), cell(correction.corrected ? "Sim" : "Nao")],
         [cell("Hotfix", true), cell(correction.hotfixTag.trim() || " ")],
+        [cell("Corrigido por", true), cell(correction.correctedBy.trim() || " ")],
         [cell("Nuvem", true), cell(formatCloudStage(correction.cloudStage))],
       ],
       [28, 72],

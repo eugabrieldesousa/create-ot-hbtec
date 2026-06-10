@@ -18,6 +18,7 @@ import type {
   TeaContentBlock,
   TeaDocument,
   TeaSubActivity,
+  TestCorrection,
 } from "./types";
 
 export type DocxImportKind = "ot" | "tea";
@@ -84,6 +85,7 @@ type ParserState = {
   currentMicro?: PermissionItem;
   currentTest?: PermissionBlockTest;
   currentEvidence?: "legacyImages" | "newImages";
+  currentCorrectionEvidence?: "beforeImages" | "afterImages";
   pendingImageLabel?: string;
   imageCount: number;
 };
@@ -811,9 +813,10 @@ function parseTestSection(tokens: Token[], state: ParserState): void {
       const startedTest = parseTestStart(token, state);
       parseChecks(token, state.currentTest);
       parseObservation(token, state.currentTest);
+      const parsedCorrection = parseCorrection(token, state);
       parseEvidence(token, state);
 
-      if (!startedTest) {
+      if (!startedTest && !parsedCorrection && !state.currentCorrectionEvidence) {
         parseFreeObservation(token, state.currentTest, state.currentEvidence);
       }
     });
@@ -879,6 +882,7 @@ function parseTestStart(token: Token, state: ParserState): boolean {
   block.tests.push(test);
   state.currentTest = test;
   state.currentEvidence = undefined;
+  state.currentCorrectionEvidence = undefined;
   state.pendingImageLabel = undefined;
 
   return true;
@@ -925,27 +929,111 @@ function parseObservation(token: Token, test: PermissionBlockTest | undefined): 
   }
 }
 
+function parseCorrection(token: Token, state: ParserState): boolean {
+  if (!state.currentTest) {
+    return false;
+  }
+
+  const normalized = normalizeText(token.text);
+
+  if (normalized === "correcao:" || normalized === "correcao") {
+    state.currentEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+    state.pendingImageLabel = undefined;
+    return true;
+  }
+
+  if (token.cells && token.cells.length >= 2) {
+    const label = normalizeText(token.cells[0]);
+    const value = cleanText(token.cells.slice(1).join(" "));
+    const correction = getImportCorrection(state.currentTest);
+
+    if (label.includes("corrigido por")) {
+      correction.correctedBy = value;
+      return true;
+    }
+
+    if (label.includes("corrigido")) {
+      correction.corrected = parseBooleanAnswer(value);
+      return true;
+    }
+
+    if (label.includes("hotfix")) {
+      correction.hotfixTag = value;
+      return true;
+    }
+
+    if (label.includes("nuvem")) {
+      correction.cloudStage = parseCloudStageText(value);
+      return true;
+    }
+  }
+
+  return isCorrectionEvidenceHeading(token.text);
+}
+
 function parseEvidence(token: Token, state: ParserState): void {
   const normalized = normalizeText(token.text);
 
-  if (normalized.includes("legado")) {
+  if (isCorrectionBeforeHeading(token.text)) {
+    state.currentCorrectionEvidence = "beforeImages";
+    state.currentEvidence = undefined;
+    state.pendingImageLabel = extractCorrectionEvidenceLabel(token.text, "antes");
+  } else if (isCorrectionAfterHeading(token.text)) {
+    state.currentCorrectionEvidence = "afterImages";
+    state.currentEvidence = undefined;
+    state.pendingImageLabel = extractCorrectionEvidenceLabel(token.text, "depois");
+  } else if (normalized.includes("legado")) {
     state.currentEvidence = "legacyImages";
+    state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = extractEvidenceLabel(token.text, "legado");
-  }
-
-  if (normalized.includes("novo")) {
+  } else if (normalized.includes("novo")) {
     state.currentEvidence = "newImages";
+    state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = extractEvidenceLabel(token.text, "novo");
   }
 
-  if (!state.currentTest || !state.currentEvidence || token.images.length === 0) {
-    if (state.currentEvidence && token.text && !isEvidenceHeading(token.text)) {
+  if (!state.currentTest || token.images.length === 0) {
+    if (
+      (state.currentEvidence || state.currentCorrectionEvidence) &&
+      token.text &&
+      !isEvidenceHeading(token.text)
+    ) {
       state.pendingImageLabel = token.text;
     }
     return;
   }
 
-  const label = extractEvidenceLabel(token.text, state.currentEvidence === "legacyImages" ? "legado" : "novo");
+  if (state.currentCorrectionEvidence) {
+    const field = state.currentCorrectionEvidence;
+    const correction = getImportCorrection(state.currentTest);
+    const label = extractCorrectionEvidenceLabel(
+      token.text,
+      field === "beforeImages" ? "antes" : "depois",
+    );
+
+    token.images.forEach((image) => {
+      state.imageCount += 1;
+      correction[field].push({
+        ...image,
+        id: createImportId("image", `${state.imageCount}-${image.dataUrl ?? image.name}`),
+        name: `imagem-importada-${state.imageCount}`,
+        label: label || state.pendingImageLabel || "",
+      });
+    });
+
+    state.pendingImageLabel = undefined;
+    return;
+  }
+
+  if (!state.currentEvidence) {
+    return;
+  }
+
+  const label = extractEvidenceLabel(
+    token.text,
+    state.currentEvidence === "legacyImages" ? "legado" : "novo",
+  );
 
   token.images.forEach((image) => {
     state.imageCount += 1;
@@ -984,6 +1072,70 @@ function parseFreeObservation(
   ) {
     appendObservation(test, text);
   }
+}
+
+function getImportCorrection(test: PermissionBlockTest): TestCorrection {
+  test.correction = {
+    ...createEmptyTestCorrection(),
+    ...test.correction,
+    beforeImages: test.correction?.beforeImages ?? [],
+    afterImages: test.correction?.afterImages ?? [],
+  };
+
+  return test.correction;
+}
+
+function parseBooleanAnswer(value: string): boolean {
+  const normalized = normalizeText(value);
+
+  if (normalized.includes("sim") || hasCheckedMarker(value)) {
+    return true;
+  }
+
+  if (normalized.includes("nao") || normalized.includes("não")) {
+    return false;
+  }
+
+  return false;
+}
+
+function parseCloudStageText(value: string): TestCorrection["cloudStage"] {
+  const normalized = normalizeText(value);
+
+  if (normalized.includes("producao") || normalized.includes("production")) {
+    return "production";
+  }
+
+  if (normalized.includes("homolog")) {
+    return "homolog";
+  }
+
+  if (normalized.includes("dev") || normalized.includes("desenvolvimento")) {
+    return "dev";
+  }
+
+  return "none";
+}
+
+function isCorrectionEvidenceHeading(text: string): boolean {
+  return isCorrectionBeforeHeading(text) || isCorrectionAfterHeading(text);
+}
+
+function isCorrectionBeforeHeading(text: string): boolean {
+  const normalized = normalizeText(text);
+
+  return normalized === "antes" || normalized.startsWith("antes ");
+}
+
+function isCorrectionAfterHeading(text: string): boolean {
+  const normalized = normalizeText(text);
+
+  return (
+    normalized === "depois" ||
+    normalized.startsWith("depois ") ||
+    normalized === "corrigido" ||
+    normalized.startsWith("corrigido ")
+  );
 }
 
 function finishDocument(state: ParserState, sourceName: string): void {
@@ -1210,10 +1362,33 @@ function extractEvidenceLabel(text: string, heading: "legado" | "novo"): string 
   return cleaned;
 }
 
+function extractCorrectionEvidenceLabel(text: string, heading: "antes" | "depois"): string {
+  const normalized = normalizeText(text);
+  const cleaned = cleanText(
+    normalized === heading || normalized.startsWith(`${heading} `)
+      ? text
+          .replace(new RegExp(`^${heading}\\s*(?:\\([^)]*\\))?:?`, "i"), "")
+          .replace(/^corrigido:?/i, "")
+      : text,
+  );
+
+  if (!cleaned || isCorrectionEvidenceHeading(cleaned)) {
+    return "";
+  }
+
+  return cleaned;
+}
+
 function isEvidenceHeading(text: string): boolean {
   const normalized = normalizeText(text);
 
-  return normalized === "legado" || normalized === "legado:" || normalized === "novo" || normalized === "novo:";
+  return (
+    normalized === "legado" ||
+    normalized === "legado:" ||
+    normalized === "novo" ||
+    normalized === "novo:" ||
+    isCorrectionEvidenceHeading(text)
+  );
 }
 
 function isSectionHeading(text: string): boolean {
@@ -1236,7 +1411,11 @@ function buildImportSummary(documentData: OtDocument): OtDocxImportSummary {
       total +
       block.tests.reduce(
         (testTotal, test) =>
-          testTotal + test.result.legacyImages.length + test.result.newImages.length,
+          testTotal +
+          test.result.legacyImages.length +
+          test.result.newImages.length +
+          (test.correction?.beforeImages.length ?? 0) +
+          (test.correction?.afterImages.length ?? 0),
         0,
       ),
     0,

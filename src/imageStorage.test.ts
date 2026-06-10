@@ -250,6 +250,7 @@ function createOtImageDocument(): OtDocument {
             correction: {
               corrected: true,
               hotfixTag: "hotfix 1.2.2",
+              correctedBy: "Gabriel",
               cloudStage: "dev",
               beforeImages: [
                 createImage("before", "data:image/png;base64,YmVmb3Jl"),

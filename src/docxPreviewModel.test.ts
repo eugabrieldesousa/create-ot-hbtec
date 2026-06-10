@@ -39,6 +39,9 @@ describe("buildOtPreviewModel", () => {
     expect(texts.some((text) => text.includes("Hotfix") && text.includes("hotfix 1.2.2"))).toBe(
       true,
     );
+    expect(texts.some((text) => text.includes("Corrigido por") && text.includes("Gabriel"))).toBe(
+      true,
+    );
     expect(texts.some((text) => text.includes("Nuvem") && text.includes("Ate homolog"))).toBe(
       true,
     );
@@ -212,6 +215,7 @@ function createOtPreviewDocument(): OtDocument {
             correction: {
               corrected: true,
               hotfixTag: "hotfix 1.2.2",
+              correctedBy: "Gabriel",
               cloudStage: "homolog",
               beforeImages: [createImage("before-fix", "Antes com erro", 100, 80)],
               afterImages: [createImage("after-fix", "Depois corrigido", 100, 80)],

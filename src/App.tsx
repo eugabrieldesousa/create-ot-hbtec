@@ -219,6 +219,8 @@ type TeaInlineReviewSummary = {
 
 type InlineReviewSummary = TeaInlineReviewSummary;
 
+const emptyInlineReviewSummary: InlineReviewSummary = { total: 0, danger: 0, warning: 0 };
+
 type ConfirmationTone = "danger";
 
 type ConfirmationOptions = {
@@ -3744,9 +3746,10 @@ function SummaryChips({
   review,
 }: {
   items: string[];
-  review: InlineReviewSummary;
+  review?: InlineReviewSummary;
 }) {
-  const issueTone = getInlineReviewTone(review);
+  const summary = review ?? emptyInlineReviewSummary;
+  const issueTone = getInlineReviewTone(summary);
 
   return (
     <div className="summaryChips">
@@ -3757,11 +3760,11 @@ function SummaryChips({
       ))}
       <Badge
         size="xs"
-        variant={review.total > 0 ? "light" : "outline"}
+        variant={summary.total > 0 ? "light" : "outline"}
         color={issueTone}
         className={`summaryChip summaryChip--${issueTone}`}
       >
-        {formatOtCount(review.total, "pendencia", "pendencias")}
+        {formatOtCount(summary.total, "pendencia", "pendencias")}
       </Badge>
     </div>
   );
@@ -5299,11 +5302,24 @@ function CorrectionGroupCard({
   group: CorrectionGroup;
   onChange: (updater: (correction: TestCorrection) => TestCorrection) => void;
 }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const panelId = `correction-details-${toDomId(group.key)}`;
   const legacyImages = group.occurrences.flatMap((occurrence) => occurrence.test.result.legacyImages);
   const newImages = group.occurrences.flatMap((occurrence) => occurrence.test.result.newImages);
   const observations = group.occurrences
     .map((occurrence) => occurrence.test.result.observations.trim())
     .filter(Boolean);
+  const hasBeforeImage = group.correction.beforeImages.length > 0;
+  const hasAfterImage = group.correction.afterImages.length > 0;
+  const canToggleCorrected = hasBeforeImage && hasAfterImage;
+  const correctionSummaryItems = [
+    `Antes ${group.correction.beforeImages.length}`,
+    `Depois ${group.correction.afterImages.length}`,
+    group.correction.hotfixTag.trim() ? group.correction.hotfixTag.trim() : "Sem hotfix",
+    group.correction.correctedBy.trim()
+      ? `Por ${group.correction.correctedBy.trim()}`
+      : "Sem responsavel",
+  ];
 
   function updateImages(
     field: "beforeImages" | "afterImages",
@@ -5316,105 +5332,164 @@ function CorrectionGroupCard({
   }
 
   return (
-    <Paper withBorder p="md" className="correctionCard">
-      <Stack gap="md">
+    <Paper
+      withBorder
+      p="sm"
+      className={`correctionCard ${
+        group.correction.corrected ? "correctionCard--done" : ""
+      } ${isExpanded ? "correctionCard--expanded" : "correctionCard--collapsed"}`}
+    >
+      <Stack gap="sm">
         <Group justify="space-between" align="flex-start" gap="md" className="correctionHeader">
-          <div className="summaryHeaderCopy">
-            <Text fw={850} size="md">
-              {group.title}
-            </Text>
-            <Text c="dimmed" size="xs">
-              {formatOtCount(group.occurrences.length, "ocorrencia", "ocorrencias")}{" "}
-              {group.occurrences.length === 1 ? "agrupada" : "agrupadas"}
-            </Text>
-          </div>
-          {group.correction.corrected ? (
-            <Badge color="green" variant="light">
-              Corrigido
-            </Badge>
-          ) : (
-            <Badge color="yellow" variant="light">
-              Pendente
-            </Badge>
-          )}
+          <Group gap="xs" wrap="nowrap" className="correctionTitle">
+            <Tooltip label={isExpanded ? "Recolher item" : "Abrir item"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => setIsExpanded((current) => !current)}
+                aria-label={isExpanded ? "Recolher item para corrigir" : "Abrir item para corrigir"}
+                aria-expanded={isExpanded}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${
+                    isExpanded ? "testToggleIcon--open" : ""
+                  }`}
+                />
+              </ActionIcon>
+            </Tooltip>
+            <div className="summaryHeaderCopy">
+              <Group gap="xs" align="center">
+                <Text fw={850} size="sm">
+                  {group.title}
+                </Text>
+                {group.correction.corrected ? (
+                  <Badge color="green" variant="light">
+                    Corrigido
+                  </Badge>
+                ) : (
+                  <Badge color="yellow" variant="light">
+                    Pendente
+                  </Badge>
+                )}
+              </Group>
+              <Text c="dimmed" size="xs">
+                {formatOtCount(group.occurrences.length, "ocorrencia", "ocorrencias")}{" "}
+                {group.occurrences.length === 1 ? "agrupada" : "agrupadas"}
+              </Text>
+              <SummaryChips items={correctionSummaryItems} />
+            </div>
+          </Group>
         </Group>
 
-        <div className="correctionSourceGrid">
-          <CorrectionReadonlyField title="Observacoes">
-            {observations.length > 0 ? (
-              <Stack gap={4}>
-                {observations.map((observation, index) => (
-                  <Text key={`${group.key}-observation-${index}`} size="sm">
-                    {observations.length > 1 ? `${index + 1}. ` : ""}
-                    {observation}
-                  </Text>
-                ))}
-              </Stack>
-            ) : (
-              <Text c="dimmed" size="sm">
-                Sem observacoes.
-              </Text>
-            )}
-          </CorrectionReadonlyField>
-          <CorrectionReadonlyField title="Legado">
-            <ReadonlyImageStrip images={legacyImages} emptyLabel="Sem imagens do legado." />
-          </CorrectionReadonlyField>
-          <CorrectionReadonlyField title="Novo">
-            <ReadonlyImageStrip images={newImages} emptyLabel="Sem imagens do novo." />
-          </CorrectionReadonlyField>
-        </div>
+        <Collapse in={isExpanded} transitionDuration={0}>
+          <div id={panelId} className="correctionBody">
+            <Stack gap="sm">
+              <div className="correctionSourceGrid">
+                <CorrectionReadonlyField title="Observacoes">
+                  {observations.length > 0 ? (
+                    <Stack gap={4}>
+                      {observations.map((observation, index) => (
+                        <Text key={`${group.key}-observation-${index}`} size="sm">
+                          {observations.length > 1 ? `${index + 1}. ` : ""}
+                          {observation}
+                        </Text>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Text c="dimmed" size="sm">
+                      Sem observacoes.
+                    </Text>
+                  )}
+                </CorrectionReadonlyField>
+                <CorrectionReadonlyField title="Legado">
+                  <ReadonlyImageStrip images={legacyImages} emptyLabel="Sem imagens do legado." />
+                </CorrectionReadonlyField>
+                <CorrectionReadonlyField title="Novo">
+                  <ReadonlyImageStrip images={newImages} emptyLabel="Sem imagens do novo." />
+                </CorrectionReadonlyField>
+              </div>
 
-        <Paper withBorder p="sm" className="correctionTodoPanel">
-          <Stack gap="sm">
-            <Group gap="md" align="flex-end" className="correctionTodoFields">
-              <Checkbox
-                label="Corrigido"
-                checked={group.correction.corrected}
-                onChange={(event) =>
-                  onChange((current) => ({
-                    ...current,
-                    corrected: event.currentTarget.checked,
-                  }))
-                }
-              />
-              <BufferedTextInput
-                label="Tag da hotfix"
-                value={group.correction.hotfixTag}
-                placeholder="hotfix 1.2.2"
-                onCommit={(value) =>
-                  onChange((current) => ({ ...current, hotfixTag: value }))
-                }
-              />
-              <Select
-                label="Nuvem"
-                data={cloudStageOptions}
-                value={group.correction.cloudStage}
-                allowDeselect={false}
-                onChange={(value) =>
-                  onChange((current) => ({
-                    ...current,
-                    cloudStage: parseCloudStage(value),
-                  }))
-                }
-              />
-            </Group>
+              <Paper withBorder p="sm" className="correctionTodoPanel">
+                <Stack gap="sm">
+                  <div className="correctionTodoFields">
+                    <BufferedTextInput
+                      label="Tag da hotfix"
+                      value={group.correction.hotfixTag}
+                      placeholder="hotfix 1.2.2"
+                      onCommit={(value) =>
+                        onChange((current) => ({ ...current, hotfixTag: value }))
+                      }
+                    />
+                    <BufferedTextInput
+                      label="Corrigido por"
+                      value={group.correction.correctedBy}
+                      placeholder="Nome de quem corrigiu"
+                      onCommit={(value) =>
+                        onChange((current) => ({ ...current, correctedBy: value }))
+                      }
+                    />
+                    <Select
+                      label="Nuvem"
+                      data={cloudStageOptions}
+                      value={group.correction.cloudStage}
+                      allowDeselect={false}
+                      onChange={(value) =>
+                        onChange((current) => ({
+                          ...current,
+                          cloudStage: parseCloudStage(value),
+                        }))
+                      }
+                    />
+                  </div>
 
-            <div className="evidenceGrid">
-              <EvidenceUploader
-                title="Antes (com erro)"
-                tone="legacy"
-                images={group.correction.beforeImages}
-                onChange={(updater) => updateImages("beforeImages", updater)}
-              />
-              <EvidenceUploader
-                title="Depois (corrigido)"
-                tone="new"
-                images={group.correction.afterImages}
-                onChange={(updater) => updateImages("afterImages", updater)}
-              />
-            </div>
-          </Stack>
-        </Paper>
+                  <div className="evidenceGrid">
+                    <EvidenceUploader
+                      title="Antes (com erro)"
+                      tone="legacy"
+                      images={group.correction.beforeImages}
+                      onChange={(updater) => updateImages("beforeImages", updater)}
+                    />
+                    <EvidenceUploader
+                      title="Depois (corrigido)"
+                      tone="new"
+                      images={group.correction.afterImages}
+                      onChange={(updater) => updateImages("afterImages", updater)}
+                    />
+                  </div>
+
+                  <Tooltip
+                    label={
+                      canToggleCorrected
+                        ? group.correction.corrected
+                          ? "Voltar item para pendente"
+                          : "Marcar item como corrigido"
+                        : "Adicione prints de antes e depois para marcar como corrigido"
+                    }
+                  >
+                    <Button
+                      size="md"
+                      fullWidth
+                      color={group.correction.corrected ? "green" : "blue"}
+                      variant={group.correction.corrected ? "light" : "filled"}
+                      leftSection={<CheckCircle2 size={18} />}
+                      className="correctionDoneButton"
+                      disabled={!canToggleCorrected}
+                      onClick={() =>
+                        onChange((current) => ({
+                          ...current,
+                          corrected: !group.correction.corrected,
+                        }))
+                      }
+                    >
+                      {group.correction.corrected ? "Corrigido" : "Marcar como corrigido"}
+                    </Button>
+                  </Tooltip>
+                </Stack>
+              </Paper>
+            </Stack>
+          </div>
+        </Collapse>
       </Stack>
     </Paper>
   );
@@ -5440,6 +5515,10 @@ function CorrectionReadonlyPanel({ correction }: { correction: TestCorrection })
         </Group>
         <div className="correctionReadonlyMeta">
           <CorrectionReadonlyValue label="Hotfix" value={correction.hotfixTag || "Nao informado"} />
+          <CorrectionReadonlyValue
+            label="Corrigido por"
+            value={correction.correctedBy || "Nao informado"}
+          />
           <CorrectionReadonlyValue label="Nuvem" value={formatCloudStage(correction.cloudStage)} />
         </div>
         <div className="correctionReadonlyImages">
@@ -7037,6 +7116,7 @@ function hasCorrectionDetails(correction: TestCorrection): boolean {
   return (
     correction.corrected ||
     Boolean(correction.hotfixTag.trim()) ||
+    Boolean(correction.correctedBy.trim()) ||
     correction.cloudStage !== "none" ||
     correction.beforeImages.length > 0 ||
     correction.afterImages.length > 0

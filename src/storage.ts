@@ -314,6 +314,7 @@ function normalizeTestCorrection(correction: TestCorrection | undefined): TestCo
     beforeImages: normalizeEvidenceImages(correction.beforeImages),
     afterImages: normalizeEvidenceImages(correction.afterImages),
     hotfixTag: textOrFallback(correction.hotfixTag, ""),
+    correctedBy: textOrFallback(correction.correctedBy, ""),
     cloudStage:
       cloudStage === "dev" || cloudStage === "homolog" || cloudStage === "production"
         ? cloudStage

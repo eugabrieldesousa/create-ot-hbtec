@@ -37,6 +37,7 @@ export function createEmptyTestCorrection(): TestCorrection {
     beforeImages: [],
     afterImages: [],
     hotfixTag: "",
+    correctedBy: "",
     cloudStage: "none",
   };
 }

@@ -293,7 +293,17 @@ describe("App OT card UX", () => {
   });
 
   it("groups Novo tests in Para corrigir and reflects corrected state on test cards", async () => {
-    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+    const documentData = createCompleteReviewDraft();
+    const test = documentData.permissionBlocks["macro-a:micro-at"].tests[0];
+    test.correction = {
+      corrected: false,
+      hotfixTag: "hotfix 1.2.2",
+      correctedBy: "Gabriel",
+      cloudStage: "dev",
+      beforeImages: [createImage("before-fix")],
+      afterImages: [createImage("after-fix")],
+    };
+    window.localStorage.setItem(draftKey, JSON.stringify(documentData));
 
     await renderApp();
     await clickButton("Para corrigir");
@@ -301,11 +311,17 @@ describe("App OT card UX", () => {
     const correctionCard = container.querySelector<HTMLElement>(".correctionCard");
 
     expect(correctionCard?.textContent ?? "").toContain("teste com varios status");
-    expect(correctionCard?.textContent ?? "").toContain("Falha validada para revisao.");
+    expect(correctionCard?.textContent ?? "").toContain("Antes 1");
+    expect(correctionCard?.textContent ?? "").toContain("Depois 1");
+    expect(correctionCard?.textContent ?? "").not.toContain("Falha validada para revisao.");
     expect(correctionCard?.textContent ?? "").not.toContain("Status rapido");
     expect(correctionCard?.textContent ?? "").not.toContain("Status detalhado");
 
-    await clickControl("Corrigido");
+    await clickElement(getToggleByControlPrefix("correction-details"));
+    expect(correctionCard?.textContent ?? "").toContain("Falha validada para revisao.");
+    expect(correctionCard?.textContent ?? "").toContain("Corrigido por");
+
+    await clickButton("Marcar como corrigido");
     await clickButton("Testes");
 
     const testCard = container.querySelector<HTMLElement>(".testCard");
@@ -1353,9 +1369,9 @@ async function clickAriaButtonAt(label: string, index = 0): Promise<void> {
 async function clickMenuItem(label: string): Promise<void> {
   let item = getMenuItem(label);
 
-  for (let attempt = 0; !item && attempt < 5; attempt += 1) {
+  for (let attempt = 0; !item && attempt < 10; attempt += 1) {
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
     item = getMenuItem(label);
   }

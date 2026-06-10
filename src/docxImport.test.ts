@@ -129,6 +129,55 @@ describe("parseOtHtml", () => {
     expect(result.summary.images).toBe(0);
     expect(result.warnings).toContain("Nenhum teste reconhecido.");
   });
+
+  it("imports correction details and before/after evidence from OT DOCX", () => {
+    const result = parseOtHtml(
+      `
+        <h2>TESTES</h2>
+        <table>
+          <tr><td>MACRO-PERMISSÃO</td><td>Tipo de usuário: AO (Administrador Geral)</td></tr>
+          <tr><td>MICRO-PERMISSÃO</td><td>Tipo de permissão: AT (Atualização)</td></tr>
+        </table>
+        <table>
+          <tr><td colspan="2">1 - QUESTIONARIO</td></tr>
+          <tr><td>(   )</td><td>Funcionou legado e novo estão com o mesmo comportamento</td></tr>
+          <tr><td>(   )</td><td>Possível problema/Comportamento estranho/Ambiguidade/incoerência</td></tr>
+          <tr><td>(   )</td><td>Problema em AMBOS</td></tr>
+          <tr><td>( X )</td><td>Problema só no NOVO</td></tr>
+          <tr><td>(   )</td><td>Relatório de Erros</td></tr>
+        </table>
+        <p><strong>Correcao:</strong></p>
+        <table>
+          <tr><td>Corrigido</td><td>Sim</td></tr>
+          <tr><td>Hotfix</td><td>hotfix 1.2.2</td></tr>
+          <tr><td>Corrigido por</td><td>Gabriel Sousa</td></tr>
+          <tr><td>Nuvem</td><td>Ate homolog</td></tr>
+        </table>
+        <p><strong>Antes (com erro):</strong></p>
+        <p>Falha antes<img src="${pngDataUrl}" /></p>
+        <p><strong>Depois (corrigido):</strong></p>
+        <p>Ok depois<img src="${pngDataUrl}" /></p>
+      `,
+      { sourceName: "OT - Questionario.docx" },
+    );
+
+    const macro = result.document.permissionGroups[0];
+    const micro = macro.microPermissions[0];
+    const correction = result.document.permissionBlocks[`${macro.id}:${micro.id}`].tests[0]
+      .correction;
+
+    expect(correction).toMatchObject({
+      corrected: true,
+      hotfixTag: "hotfix 1.2.2",
+      correctedBy: "Gabriel Sousa",
+      cloudStage: "homolog",
+    });
+    expect(correction?.beforeImages).toHaveLength(1);
+    expect(correction?.beforeImages[0].label).toBe("Falha antes");
+    expect(correction?.afterImages).toHaveLength(1);
+    expect(correction?.afterImages[0].label).toBe("Ok depois");
+    expect(result.summary.images).toBe(2);
+  });
 });
 
 describe("parseTeaHtml", () => {

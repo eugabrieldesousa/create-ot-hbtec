@@ -47,6 +47,7 @@ export type TestCorrection = {
   beforeImages: EvidenceImage[];
   afterImages: EvidenceImage[];
   hotfixTag: string;
+  correctedBy: string;
   cloudStage: CorrectionCloudStage;
 };
 

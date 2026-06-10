@@ -628,8 +628,35 @@ main:focus {
   border-left: 2px solid #d97706;
 }
 
+.correctionCard--done {
+  border-left-color: #16a34a;
+}
+
+.correctionCard--collapsed {
+  background: var(--app-card-bg);
+}
+
+.correctionCard--expanded {
+  border-color: var(--app-border-soft);
+}
+
 .correctionHeader {
   gap: 0.75rem;
+}
+
+.correctionTitle {
+  min-width: 0;
+  flex: 1 1 18rem;
+}
+
+.correctionTitle > div {
+  min-width: 0;
+}
+
+.correctionBody {
+  margin-top: 0.125rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--app-border-soft);
 }
 
 .correctionSourceGrid,
@@ -653,13 +680,13 @@ main:focus {
 
 .correctionTodoFields {
   display: grid;
-  grid-template-columns: minmax(7rem, max-content) minmax(10rem, 1fr) minmax(10rem, 14rem);
+  grid-template-columns: minmax(10rem, 1fr) minmax(10rem, 1fr) minmax(10rem, 14rem);
   gap: 0.75rem;
 }
 
 .correctionReadonlyMeta {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
 }
 
@@ -673,6 +700,11 @@ main:focus {
 
 .correctionStatusBadge {
   width: fit-content;
+}
+
+.correctionDoneButton {
+  min-height: 2.75rem;
+  font-weight: 800;
 }
 
 .readonlyImageStrip {
@@ -1699,6 +1731,7 @@ main:focus {
 
   .correctionSourceGrid,
   .correctionReadonlyImages,
+  .correctionReadonlyMeta,
   .correctionTodoFields {
     grid-template-columns: 1fr;
   }
