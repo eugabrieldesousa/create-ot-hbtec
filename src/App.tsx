@@ -70,6 +70,7 @@ import type { DocxPreviewModel } from "./docxPreviewModel";
 import { exportOtDocument, exportTeaDocument } from "./docxExport";
 import { parseDocxFile } from "./docxImport";
 import type { DocxImportResult } from "./docxImport";
+import { LoadingFeedback } from "./LoadingFeedback";
 import {
   deleteEvidenceImageData,
   deleteEvidenceImageDataBatch,
@@ -127,6 +128,11 @@ type DraftStatus =
   | "Rascunho salvo"
   | "Rascunho grande demais";
 
+type LoadingTask = {
+  label: string;
+  detail?: string;
+};
+
 type ReviewSummary = {
   selectedPermissions: number;
   testCount: number;
@@ -167,6 +173,21 @@ type TeaReviewIssue = {
   activityId?: string;
   subActivityId?: string;
   blockId?: string;
+};
+
+type ReviewIssueIndex = {
+  byBlockKey: Map<string, ReviewIssue[]>;
+  byTestReferenceKey: Map<string, ReviewIssue[]>;
+};
+
+type TeaReviewIssueIndex = {
+  byTargetId: Map<string, TeaReviewIssue[]>;
+  byActivityId: Map<string, TeaReviewIssue[]>;
+  byActivityRootId: Map<string, TeaReviewIssue[]>;
+  bySubActivityId: Map<string, TeaReviewIssue[]>;
+  byBlockId: Map<string, TeaReviewIssue[]>;
+  activityIssues: TeaReviewIssue[];
+  hasActivityIssues: boolean;
 };
 
 type TeaInlineReviewSummary = {
@@ -263,7 +284,7 @@ type PermissionBlockGroupProps = {
   macro: PermissionGroup;
   entries: FilteredPermissionBlockEntry[];
   expandedTests: Record<string, boolean>;
-  reviewIssues: ReviewIssue[];
+  reviewIssueIndex: ReviewIssueIndex;
   isCollapsed: boolean;
   collapsedBlocks: Record<string, boolean>;
   onMacroCollapseChange: (macroId: string, collapsed: boolean) => void;
@@ -300,7 +321,7 @@ type BlockTestEditorProps = {
   test: PermissionBlockTest;
   selfReferenceKey: string;
   isExpanded: boolean;
-  reviewIssues: ReviewIssue[];
+  reviewIssueIndex: ReviewIssueIndex;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onTestExpansionChange: (referenceKey: string, expanded: boolean) => void;
@@ -315,7 +336,127 @@ type BlockTestEditorProps = {
   ) => void;
 };
 
+type TeaWorkspaceProps = {
+  documentData: TeaDocument;
+  previewModel: DocxPreviewModel | null;
+  isPreviewStale: boolean;
+  activeTab: TeaTab;
+  reviewSummary: TeaReviewSummary;
+  reviewIssueIndex: TeaReviewIssueIndex;
+  collapsedActivities: Record<string, boolean>;
+  collapsedSubActivities: Record<string, boolean>;
+  collapsedComposers: Record<string, boolean>;
+  collapsedContentBlocks: Record<string, boolean>;
+  onTabChange: (tab: TeaTab) => void;
+  onMetadataChange: (field: keyof TeaDocument["metadata"], value: string) => void;
+  onOverviewChange: (value: string) => void;
+  onActivityIntroChange: (value: string) => void;
+  onActivityImagesChange: (updater: (images: EvidenceImage[]) => EvidenceImage[]) => void;
+  onAddActivity: () => void;
+  onActivityChange: (
+    activityId: string,
+    updater: (activity: TeaActivity) => TeaActivity,
+  ) => void;
+  onActivityRemove: (activityId: string) => void;
+  onActivityMove: (activityId: string, direction: MoveDirection) => void;
+  onAddSubActivity: (activityId: string) => void;
+  onSubActivityChange: (
+    activityId: string,
+    subActivityId: string,
+    updater: (subActivity: TeaSubActivity) => TeaSubActivity,
+  ) => void;
+  onSubActivityRemove: (activityId: string, subActivityId: string) => void;
+  onSubActivityMove: (
+    activityId: string,
+    subActivityId: string,
+    direction: MoveDirection,
+  ) => void;
+  onSubActivityCopy: (activityId: string, subActivityId: string) => void;
+  onActivityCollapseChange: (activityId: string, collapsed: boolean) => void;
+  onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
+  onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
+  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
+  onReviewIssueClick: (issue: TeaReviewIssue) => void;
+  onRefreshPreview: () => void;
+};
+
+type TeaActivityEditorProps = {
+  index: number;
+  totalActivities: number;
+  activity: TeaActivity;
+  reviewIssues: TeaReviewIssue[];
+  isCollapsed: boolean;
+  collapsedSubActivities: Record<string, boolean>;
+  collapsedComposers: Record<string, boolean>;
+  collapsedContentBlocks: Record<string, boolean>;
+  onChange: (updater: (activity: TeaActivity) => TeaActivity) => void;
+  onRemove: () => void;
+  onMove: (direction: MoveDirection) => void;
+  onAddSubActivity: () => void;
+  onSubActivityChange: (
+    subActivityId: string,
+    updater: (subActivity: TeaSubActivity) => TeaSubActivity,
+  ) => void;
+  onSubActivityRemove: (subActivityId: string) => void;
+  onSubActivityMove: (subActivityId: string, direction: MoveDirection) => void;
+  onSubActivityCopy: (subActivityId: string) => void;
+  onCollapseChange: (collapsed: boolean) => void;
+  onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
+  onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
+  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
+};
+
+type TeaSubActivityEditorProps = {
+  activityIndex: number;
+  index: number;
+  totalSubActivities: number;
+  subActivity: TeaSubActivity;
+  reviewIssues: TeaReviewIssue[];
+  isCollapsed: boolean;
+  isComposerCollapsed: boolean;
+  collapsedBlocks: Record<string, boolean>;
+  onChange: (updater: (subActivity: TeaSubActivity) => TeaSubActivity) => void;
+  onRemove: () => void;
+  onMove: (direction: MoveDirection) => void;
+  onCopy: () => void;
+  onCollapseChange: (collapsed: boolean) => void;
+  onComposerCollapseChange: (collapsed: boolean) => void;
+  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
+};
+
+type TeaContentComposerProps = {
+  composerId: string;
+  title: string;
+  description: string;
+  emptyMessage: string;
+  emptyActionLabel: string;
+  blocks: TeaContentBlock[];
+  tone: "legacy" | "new";
+  isCollapsed: boolean;
+  collapsedBlocks: Record<string, boolean>;
+  reviewIssues: TeaReviewIssue[];
+  onCollapseChange: (collapsed: boolean) => void;
+  onBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
+  onBlocksChange: (updater: (blocks: TeaContentBlock[]) => TeaContentBlock[]) => void;
+};
+
+type TeaContentBlockEditorProps = {
+  block: TeaContentBlock;
+  index: number;
+  totalBlocks: number;
+  tone: "legacy" | "new";
+  isCollapsed: boolean;
+  reviewIssues: TeaReviewIssue[];
+  onChange: (updater: (block: TeaContentBlock) => TeaContentBlock) => void;
+  onMove: (direction: MoveDirection) => void;
+  onDuplicate: () => Promise<void>;
+  onRemove: () => void;
+  onCollapseChange: (collapsed: boolean) => void;
+};
+
 const problemCheckKeys: CheckKey[] = ["possibleIssue", "bothIssue", "newIssue", "errorReport"];
+const emptyReviewIssues: ReviewIssue[] = [];
+const emptyTeaReviewIssues: TeaReviewIssue[] = [];
 
 function useConfirmAction(): ConfirmAction {
   const confirmAction = useContext(ConfirmationContext);
@@ -500,8 +641,12 @@ export default function App() {
   const [teaActiveTab, setTeaActiveTab] = useState<TeaTab>("document");
   const [testBlockFilter, setTestBlockFilter] = useState<TestBlockFilter>("all");
   const [isFaqOpen, setIsFaqOpen] = useState(false);
+  const [globalLoading, setGlobalLoading] = useState<LoadingTask | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isConfirmingImport, setIsConfirmingImport] = useState(false);
+  const [isConfirmingAction, setIsConfirmingAction] = useState(false);
+  const [isCopyingTeaSubActivity, setIsCopyingTeaSubActivity] = useState(false);
   const [importPreview, setImportPreview] = useState<DocxImportResult | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [teaSubActivityCopyRequest, setTeaSubActivityCopyRequest] =
@@ -513,6 +658,7 @@ export default function App() {
   const documentDataRef = useRef(documentData);
   const teaDataRef = useRef(teaData);
   const documentKindRef = useRef<DocumentKind>(documentKind);
+  const permissionBulkTextRef = useRef(permissionBulkText);
   documentDataRef.current = documentData;
   teaDataRef.current = teaData;
   documentKindRef.current = documentKind;
@@ -522,6 +668,20 @@ export default function App() {
   const isDarkMode = colorScheme === "dark";
   const deferredDocumentData = useDeferredValue(documentData);
   const deferredTeaData = useDeferredValue(teaData);
+  const isGlobalLoading = globalLoading !== null;
+
+  const runWithGlobalLoading = useCallback(
+    async <T,>(task: LoadingTask, work: () => Promise<T>): Promise<T> => {
+      setGlobalLoading(task);
+
+      try {
+        return await work();
+      } finally {
+        setGlobalLoading(null);
+      }
+    },
+    [],
+  );
 
   const selectedGroups = useMemo(
     () => selectedPermissionGroups(documentData.permissionGroups),
@@ -704,7 +864,15 @@ export default function App() {
       }
     }
 
-    void prepareImages();
+    setGlobalLoading({
+      label: "Preparando imagens...",
+      detail: "Carregando imagens salvas no navegador.",
+    });
+    void prepareImages().finally(() => {
+      if (isMounted) {
+        setGlobalLoading(null);
+      }
+    });
 
     return () => {
       isMounted = false;
@@ -724,14 +892,26 @@ export default function App() {
     };
   }, [flushBufferedCommits, flushDraft]);
 
+  useEffect(() => {
+    permissionBulkTextRef.current = permissionBulkText;
+  }, [permissionBulkText]);
+
   const reviewSummary = useMemo(
     () => buildReviewSummary(deferredDocumentData, permissionBlockEntries),
     [deferredDocumentData, permissionBlockEntries],
+  );
+  const reviewIssueIndex = useMemo(
+    () => buildReviewIssueIndex(reviewSummary.issues),
+    [reviewSummary.issues],
   );
 
   const teaReviewSummary = useMemo(
     () => buildTeaReviewSummary(deferredTeaData),
     [deferredTeaData],
+  );
+  const teaReviewIssueIndex = useMemo(
+    () => buildTeaReviewIssueIndex(teaReviewSummary.issues),
+    [teaReviewSummary.issues],
   );
 
   const refreshOtPreview = useCallback((): void => {
@@ -810,12 +990,18 @@ export default function App() {
   async function confirmPendingAction(): Promise<void> {
     const confirmation = pendingConfirmation;
 
-    if (!confirmation) {
+    if (!confirmation || isConfirmingAction) {
       return;
     }
 
-    setPendingConfirmation(null);
-    await confirmation.onConfirm();
+    setIsConfirmingAction(true);
+
+    try {
+      await confirmation.onConfirm();
+      setPendingConfirmation(null);
+    } finally {
+      setIsConfirmingAction(false);
+    }
   }
 
   const setTeaActivityCollapsed = useCallback((activityId: string, collapsed: boolean): void => {
@@ -994,47 +1180,53 @@ export default function App() {
   async function confirmTeaSubActivityCopy(): Promise<void> {
     const request = teaSubActivityCopyRequest;
 
-    if (!request?.targetActivityId) {
+    if (!request?.targetActivityId || isCopyingTeaSubActivity) {
       return;
     }
 
-    const sourceSubActivity = findTeaSubActivity(
-      teaDataRef.current,
-      request.sourceActivityId,
-      request.subActivityId,
-    );
+    setIsCopyingTeaSubActivity(true);
 
-    if (!sourceSubActivity) {
+    try {
+      const sourceSubActivity = findTeaSubActivity(
+        teaDataRef.current,
+        request.sourceActivityId,
+        request.subActivityId,
+      );
+
+      if (!sourceSubActivity) {
+        setTeaSubActivityCopyRequest(null);
+        return;
+      }
+
+      const duplicatedSubActivity = await duplicateTeaSubActivity(sourceSubActivity);
+
       setTeaSubActivityCopyRequest(null);
-      return;
+      setTeaActiveTab("activities");
+      setTeaActivityCollapsed(request.targetActivityId, false);
+      setTeaSubActivityCollapsed(duplicatedSubActivity.id, false);
+      setTeaComposerCollapsed(duplicatedSubActivity.id, false);
+      duplicatedSubActivity.blocks.forEach((block) => {
+        setTeaContentBlockCollapsed(block.id, false);
+      });
+
+      updateTeaDocument((current) => ({
+        ...current,
+        activities: current.activities.map((activity) =>
+          activity.id === request.targetActivityId
+            ? {
+                ...activity,
+                subActivities: [...activity.subActivities, duplicatedSubActivity],
+              }
+            : activity,
+        ),
+      }));
+
+      window.setTimeout(() => {
+        scrollAndFocusReviewTarget(`tea-subactivity-${toDomId(duplicatedSubActivity.id)}`);
+      }, 80);
+    } finally {
+      setIsCopyingTeaSubActivity(false);
     }
-
-    const duplicatedSubActivity = await duplicateTeaSubActivity(sourceSubActivity);
-
-    setTeaSubActivityCopyRequest(null);
-    setTeaActiveTab("activities");
-    setTeaActivityCollapsed(request.targetActivityId, false);
-    setTeaSubActivityCollapsed(duplicatedSubActivity.id, false);
-    setTeaComposerCollapsed(duplicatedSubActivity.id, false);
-    duplicatedSubActivity.blocks.forEach((block) => {
-      setTeaContentBlockCollapsed(block.id, false);
-    });
-
-    updateTeaDocument((current) => ({
-      ...current,
-      activities: current.activities.map((activity) =>
-        activity.id === request.targetActivityId
-          ? {
-              ...activity,
-              subActivities: [...activity.subActivities, duplicatedSubActivity],
-            }
-          : activity,
-      ),
-    }));
-
-    window.setTimeout(() => {
-      scrollAndFocusReviewTarget(`tea-subactivity-${toDomId(duplicatedSubActivity.id)}`);
-    }, 80);
   }
 
   const updateTeaOverview = useCallback((overview: string): void => {
@@ -1235,12 +1427,29 @@ export default function App() {
     );
   }
 
+  const updatePermissionBulkDraft = useCallback((value: string): void => {
+    permissionBulkTextRef.current = value;
+  }, []);
+
+  const commitPermissionBulkDraft = useCallback((): void => {
+    setPermissionBulkText(permissionBulkTextRef.current);
+  }, []);
+
+  const loadCurrentPermissionBulk = useCallback((): void => {
+    const value = formatPermissionBulk(documentDataRef.current.permissionGroups);
+
+    permissionBulkTextRef.current = value;
+    setPermissionBulkText(value);
+  }, []);
+
   function applyPermissionBulk(): void {
-    const parsedGroups = parsePermissionBulk(permissionBulkText);
+    const parsedGroups = parsePermissionBulk(permissionBulkTextRef.current);
 
     if (parsedGroups.length === 0) {
       return;
     }
+
+    commitPermissionBulkDraft();
 
     updateDocument((current) => {
       const existingBlocks = blocksByPermissionCode(current);
@@ -1662,7 +1871,7 @@ export default function App() {
     }
   }
 
-  function handleTeaReviewIssueClick(issue: TeaReviewIssue): void {
+  const handleTeaReviewIssueClick = useCallback((issue: TeaReviewIssue): void => {
     setTeaActiveTab(issue.tab);
 
     if (issue.activityId) {
@@ -1682,7 +1891,12 @@ export default function App() {
     window.setTimeout(() => {
       scrollAndFocusReviewTarget(issue.targetId);
     }, 40);
-  }
+  }, [
+    setTeaActivityCollapsed,
+    setTeaComposerCollapsed,
+    setTeaContentBlockCollapsed,
+    setTeaSubActivityCollapsed,
+  ]);
 
   function handleTeaOutlineItemClick(item: DocumentOutlineItem): void {
     setActiveOutlineTargetId(item.targetId);
@@ -1697,7 +1911,7 @@ export default function App() {
   }
 
   async function handleImportFile(file: File | null): Promise<void> {
-    if (!file) {
+    if (!file || isGlobalLoading) {
       return;
     }
 
@@ -1706,7 +1920,15 @@ export default function App() {
     setIsImporting(true);
 
     try {
-      setImportPreview(await parseDocxFile(file, documentKindRef.current));
+      await runWithGlobalLoading(
+        {
+          label: "Importando DOCX...",
+          detail: "Lendo o arquivo e preparando a previa.",
+        },
+        async () => {
+          setImportPreview(await parseDocxFile(file, documentKindRef.current));
+        },
+      );
     } catch {
       window.alert("Nao foi possivel importar este DOCX.");
     } finally {
@@ -1715,51 +1937,70 @@ export default function App() {
   }
 
   async function confirmImport(): Promise<void> {
-    if (!importPreview) {
+    if (!importPreview || isConfirmingImport) {
       return;
     }
 
-    if (importPreview.kind === "tea") {
-      try {
-        await persistEmbeddedTeaImages(importPreview.document);
-      } catch {
-        window.alert("O TEA foi importado, mas algumas imagens podem nao ficar salvas no rascunho.");
-      }
-
-      setTeaData(importPreview.document);
-      setCollapsedTeaActivities({});
-      setCollapsedTeaSubActivities({});
-      setCollapsedTeaComposers({});
-      setCollapsedTeaContentBlocks({});
-      setTeaActiveTab("review");
-      setImportPreview(null);
-      return;
-    }
+    const preview = importPreview;
+    setIsConfirmingImport(true);
 
     try {
-      await persistEmbeddedEvidenceImages(importPreview.document);
-    } catch {
-      window.alert("A OT foi importada, mas algumas imagens podem nao ficar salvas no rascunho.");
-    }
+      if (preview.kind === "tea") {
+        try {
+          await persistEmbeddedTeaImages(preview.document);
+        } catch {
+          window.alert("O TEA foi importado, mas algumas imagens podem nao ficar salvas no rascunho.");
+        }
 
-    setDocumentData(importPreview.document);
-    setPermissionBulkText(formatPermissionBulk(importPreview.document.permissionGroups));
-    setExpandedTests({});
-    setActiveTab("review");
-    setImportPreview(null);
+        setTeaData(preview.document);
+        setCollapsedTeaActivities({});
+        setCollapsedTeaSubActivities({});
+        setCollapsedTeaComposers({});
+        setCollapsedTeaContentBlocks({});
+        setTeaActiveTab("review");
+        setImportPreview(null);
+        return;
+      }
+
+      try {
+        await persistEmbeddedEvidenceImages(preview.document);
+      } catch {
+        window.alert("A OT foi importada, mas algumas imagens podem nao ficar salvas no rascunho.");
+      }
+
+      setDocumentData(preview.document);
+      setPermissionBulkText(formatPermissionBulk(preview.document.permissionGroups));
+      setExpandedTests({});
+      setActiveTab("review");
+      setImportPreview(null);
+    } finally {
+      setIsConfirmingImport(false);
+    }
   }
 
   async function handleExport(): Promise<void> {
+    if (isGlobalLoading) {
+      return;
+    }
+
     flushBufferedCommits();
     flushDraft();
     setIsExporting(true);
 
     try {
-      if (documentKindRef.current === "tea") {
-        await exportTeaDocument(teaDataRef.current);
-      } else {
-        await exportOtDocument(documentDataRef.current);
-      }
+      await runWithGlobalLoading(
+        {
+          label: "Exportando DOCX...",
+          detail: "Otimizando imagens e gerando o arquivo.",
+        },
+        async () => {
+          if (documentKindRef.current === "tea") {
+            await exportTeaDocument(teaDataRef.current);
+          } else {
+            await exportOtDocument(documentDataRef.current);
+          }
+        },
+      );
     } finally {
       setIsExporting(false);
     }
@@ -1799,12 +2040,17 @@ export default function App() {
     );
   }
 
-  const topBarStatusText = isImporting
-    ? "Importando DOCX..."
-    : isExporting
-      ? "Exportando DOCX..."
-      : draftStatus;
-  const topBarStatusColor = isImporting || isExporting ? "blue" : draftStatusColor(draftStatus);
+  const topBarStatusText = globalLoading?.label ?? draftStatus;
+  const topBarStatusColor = globalLoading ? "blue" : draftStatusColor(draftStatus);
+  const topBarStatusIcon = isImporting ? (
+    <FileUp size={14} />
+  ) : isExporting ? (
+    <Download size={14} />
+  ) : globalLoading ? (
+    <FileSearch size={14} />
+  ) : (
+    <Save size={14} />
+  );
 
   return (
     <ConfirmationContext.Provider value={requestConfirmation}>
@@ -1846,15 +2092,7 @@ export default function App() {
               <Badge
                 variant="light"
                 color={topBarStatusColor}
-                leftSection={
-                  isImporting ? (
-                    <FileUp size={14} />
-                  ) : isExporting ? (
-                    <Download size={14} />
-                  ) : (
-                    <Save size={14} />
-                  )
-                }
+                leftSection={topBarStatusIcon}
                 h={30}
                 role="status"
                 aria-live="polite"
@@ -1875,6 +2113,7 @@ export default function App() {
                       variant="light"
                       leftSection={<FileUp size={17} />}
                       loading={isImporting}
+                      disabled={isGlobalLoading && !isImporting}
                     >
                       Importar DOCX
                     </Button>
@@ -1910,6 +2149,7 @@ export default function App() {
                 leftSection={<RotateCcw size={17} />}
                 className="topBarDesktopOnly"
                 onClick={handleClearDraft}
+                disabled={isGlobalLoading}
               >
                 Limpar documento
               </Button>
@@ -1917,6 +2157,7 @@ export default function App() {
                 leftSection={<Download size={17} />}
                 onClick={handleExport}
                 loading={isExporting}
+                disabled={isGlobalLoading && !isExporting}
               >
                 Exportar DOCX
               </Button>
@@ -1942,7 +2183,7 @@ export default function App() {
                     {(props) => (
                       <Menu.Item
                         leftSection={<FileUp size={15} />}
-                        disabled={isImporting}
+                        disabled={isGlobalLoading}
                         onClick={props.onClick}
                       >
                         Importar DOCX
@@ -1967,6 +2208,7 @@ export default function App() {
                     color="red"
                     leftSection={<RotateCcw size={15} />}
                     onClick={handleClearDraft}
+                    disabled={isGlobalLoading}
                   >
                     Limpar documento
                   </Menu.Item>
@@ -1975,6 +2217,14 @@ export default function App() {
             </Group>
           </Group>
         </Paper>
+
+        {globalLoading ? (
+          <LoadingFeedback
+            variant="global"
+            label={globalLoading.label}
+            detail={globalLoading.detail}
+          />
+        ) : null}
 
         <div
           className={`workspaceLayout ${showDocumentOutline ? "" : "workspaceLayout--noOutline"}`}
@@ -2152,9 +2402,7 @@ export default function App() {
                     <Button
                       variant="subtle"
                       size="xs"
-                      onClick={() =>
-                        setPermissionBulkText(formatPermissionBulk(documentData.permissionGroups))
-                      }
+                      onClick={loadCurrentPermissionBulk}
                     >
                       Carregar atual
                     </Button>
@@ -2164,13 +2412,15 @@ export default function App() {
                   </Group>
                 </Group>
                 <Textarea
+                  key={permissionBulkText}
                   label="Permissões em lote"
                   description="Use uma macro por linha e micros indentadas abaixo dela."
                   minRows={4}
                   autosize
-                  value={permissionBulkText}
+                  defaultValue={permissionBulkText}
                   placeholder={"AO - Administrador Geral\n  AT - Atualização\n  SC - Somente Consulta"}
-                  onChange={(event) => setPermissionBulkText(event.currentTarget.value)}
+                  onBlur={commitPermissionBulkDraft}
+                  onChange={(event) => updatePermissionBulkDraft(event.currentTarget.value)}
                 />
               </Stack>
             </Paper>
@@ -2243,7 +2493,7 @@ export default function App() {
                 macro={macro}
                 entries={entries}
                 expandedTests={expandedTests}
-                reviewIssues={reviewSummary.issues}
+                reviewIssueIndex={reviewIssueIndex}
                 isCollapsed={collapsedMacros[macro.id] ?? false}
                 collapsedBlocks={collapsedPermissionBlocks}
                 onMacroCollapseChange={setMacroCollapsed}
@@ -2304,6 +2554,7 @@ export default function App() {
             isPreviewStale={isTeaPreviewStale}
             activeTab={teaActiveTab}
             reviewSummary={teaReviewSummary}
+            reviewIssueIndex={teaReviewIssueIndex}
             collapsedActivities={collapsedTeaActivities}
             collapsedSubActivities={collapsedTeaSubActivities}
             collapsedComposers={collapsedTeaComposers}
@@ -2352,7 +2603,12 @@ export default function App() {
     </main>
     <ImportPreviewModal
       result={importPreview}
-      onClose={() => setImportPreview(null)}
+      isConfirming={isConfirmingImport}
+      onClose={() => {
+        if (!isConfirmingImport) {
+          setImportPreview(null);
+        }
+      }}
       onConfirm={() => {
         void confirmImport();
       }}
@@ -2369,7 +2625,12 @@ export default function App() {
     ) : null}
     <ConfirmationModal
       confirmation={pendingConfirmation}
-      onCancel={() => setPendingConfirmation(null)}
+      isConfirming={isConfirmingAction}
+      onCancel={() => {
+        if (!isConfirmingAction) {
+          setPendingConfirmation(null);
+        }
+      }}
       onConfirm={() => {
         void confirmPendingAction();
       }}
@@ -2377,8 +2638,13 @@ export default function App() {
     <TeaSubActivityCopyModal
       documentData={teaData}
       request={teaSubActivityCopyRequest}
+      isCopying={isCopyingTeaSubActivity}
       onTargetActivityChange={updateTeaSubActivityCopyTarget}
-      onClose={() => setTeaSubActivityCopyRequest(null)}
+      onClose={() => {
+        if (!isCopyingTeaSubActivity) {
+          setTeaSubActivityCopyRequest(null);
+        }
+      }}
       onConfirm={() => {
         void confirmTeaSubActivityCopy();
       }}
@@ -2394,6 +2660,7 @@ const TeaWorkspace = memo(function TeaWorkspace({
   isPreviewStale,
   activeTab,
   reviewSummary,
+  reviewIssueIndex,
   collapsedActivities,
   collapsedSubActivities,
   collapsedComposers,
@@ -2418,56 +2685,19 @@ const TeaWorkspace = memo(function TeaWorkspace({
   onContentBlockCollapseChange,
   onReviewIssueClick,
   onRefreshPreview,
-}: {
-  documentData: TeaDocument;
-  previewModel: DocxPreviewModel | null;
-  isPreviewStale: boolean;
-  activeTab: TeaTab;
-  reviewSummary: TeaReviewSummary;
-  collapsedActivities: Record<string, boolean>;
-  collapsedSubActivities: Record<string, boolean>;
-  collapsedComposers: Record<string, boolean>;
-  collapsedContentBlocks: Record<string, boolean>;
-  onTabChange: (tab: TeaTab) => void;
-  onMetadataChange: (field: keyof TeaDocument["metadata"], value: string) => void;
-  onOverviewChange: (value: string) => void;
-  onActivityIntroChange: (value: string) => void;
-  onActivityImagesChange: (updater: (images: EvidenceImage[]) => EvidenceImage[]) => void;
-  onAddActivity: () => void;
-  onActivityChange: (
-    activityId: string,
-    updater: (activity: TeaActivity) => TeaActivity,
-  ) => void;
-  onActivityRemove: (activityId: string) => void;
-  onActivityMove: (activityId: string, direction: MoveDirection) => void;
-  onAddSubActivity: (activityId: string) => void;
-  onSubActivityChange: (
-    activityId: string,
-    subActivityId: string,
-    updater: (subActivity: TeaSubActivity) => TeaSubActivity,
-  ) => void;
-  onSubActivityRemove: (activityId: string, subActivityId: string) => void;
-  onSubActivityMove: (
-    activityId: string,
-    subActivityId: string,
-    direction: MoveDirection,
-  ) => void;
-  onSubActivityCopy: (activityId: string, subActivityId: string) => void;
-  onActivityCollapseChange: (activityId: string, collapsed: boolean) => void;
-  onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
-  onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
-  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
-  onReviewIssueClick: (issue: TeaReviewIssue) => void;
-  onRefreshPreview: () => void;
-}) {
+}: TeaWorkspaceProps) {
   const overview = useBufferedText(documentData.overview, onOverviewChange, 180);
   const activityIntro = useBufferedText(documentData.activityIntro, onActivityIntroChange, 180);
   const activityCount = documentData.activities.length;
-  const hasActivityReviewIssues = reviewSummary.issues.some(
-    (issue) => issue.tab === "activities" && issue.activityId,
+  const hasActivityReviewIssues = reviewIssueIndex.hasActivityIssues;
+  const inlineError = useCallback(
+    (targetId: string): string | undefined =>
+      getTeaInlineReviewError(
+        getTeaReviewIssuesByKey(reviewIssueIndex.byTargetId, targetId),
+        targetId,
+      ),
+    [reviewIssueIndex],
   );
-  const inlineError = (targetId: string): string | undefined =>
-    getTeaInlineReviewError(reviewSummary.issues, targetId);
 
   function setAllActivityPanelsCollapsed(collapsed: boolean): void {
     documentData.activities.forEach((activity) => {
@@ -2486,8 +2716,7 @@ const TeaWorkspace = memo(function TeaWorkspace({
   function expandTeaPendingPanels(): void {
     setAllActivityPanelsCollapsed(true);
 
-    reviewSummary.issues
-      .filter((issue) => issue.tab === "activities" && issue.activityId)
+    reviewIssueIndex.activityIssues
       .forEach((issue) => {
         if (!issue.activityId) {
           return;
@@ -2674,8 +2903,9 @@ const TeaWorkspace = memo(function TeaWorkspace({
                 index={index}
                 totalActivities={documentData.activities.length}
                 activity={activity}
-                reviewIssues={reviewSummary.issues.filter(
-                  (issue) => issue.activityId === activity.id,
+                reviewIssues={getTeaReviewIssuesByKey(
+                  reviewIssueIndex.byActivityId,
+                  activity.id,
                 )}
                 isCollapsed={collapsedActivities[activity.id] ?? false}
                 collapsedSubActivities={collapsedSubActivities}
@@ -2755,31 +2985,7 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
   onSubActivityCollapseChange,
   onComposerCollapseChange,
   onContentBlockCollapseChange,
-}: {
-  index: number;
-  totalActivities: number;
-  activity: TeaActivity;
-  reviewIssues: TeaReviewIssue[];
-  isCollapsed: boolean;
-  collapsedSubActivities: Record<string, boolean>;
-  collapsedComposers: Record<string, boolean>;
-  collapsedContentBlocks: Record<string, boolean>;
-  onChange: (updater: (activity: TeaActivity) => TeaActivity) => void;
-  onRemove: () => void;
-  onMove: (direction: MoveDirection) => void;
-  onAddSubActivity: () => void;
-  onSubActivityChange: (
-    subActivityId: string,
-    updater: (subActivity: TeaSubActivity) => TeaSubActivity,
-  ) => void;
-  onSubActivityRemove: (subActivityId: string) => void;
-  onSubActivityMove: (subActivityId: string, direction: MoveDirection) => void;
-  onSubActivityCopy: (subActivityId: string) => void;
-  onCollapseChange: (collapsed: boolean) => void;
-  onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
-  onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
-  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
-}) {
+}: TeaActivityEditorProps) {
   const activityId = `tea-activity-${toDomId(activity.id)}`;
   const titleInputId = `tea-activity-title-${toDomId(activity.id)}`;
   const panelId = `${activityId}-panel`;
@@ -2805,6 +3011,13 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
   const updateBlocks = useCallback((updater: (blocks: TeaContentBlock[]) => TeaContentBlock[]): void => {
     onChange((current) => ({ ...current, blocks: updater(current.blocks) }));
   }, [onChange]);
+  const {
+    rootIssues: activityRootReviewIssues,
+    bySubActivityId: subActivityReviewIssuesById,
+  } = useMemo(
+    () => splitTeaActivityReviewIssues(reviewIssues),
+    [reviewIssues],
+  );
 
   function confirmAndRemove(): void {
     if (!hasTeaActivityRemovalContent(activity)) {
@@ -2866,8 +3079,8 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
           />
         </Group>
 
-        <Collapse in={isExpanded}>
-          <div id={panelId}>
+        <LazyCollapse in={isExpanded}>
+          <div id={panelId} className="collapseBody">
             <Stack gap="sm">
         <TextInput
           label="Título"
@@ -2890,7 +3103,7 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
           tone="new"
           isCollapsed={collapsedComposers[activity.id] ?? false}
           collapsedBlocks={collapsedContentBlocks}
-          reviewIssues={reviewIssues.filter((issue) => !issue.subActivityId)}
+          reviewIssues={activityRootReviewIssues}
           onCollapseChange={(collapsed) => onComposerCollapseChange(activity.id, collapsed)}
           onBlockCollapseChange={onContentBlockCollapseChange}
           onBlocksChange={updateBlocks}
@@ -2920,8 +3133,9 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
               index={subIndex}
               totalSubActivities={activity.subActivities.length}
               subActivity={subActivity}
-              reviewIssues={reviewIssues.filter(
-                (issue) => issue.subActivityId === subActivity.id,
+              reviewIssues={getTeaReviewIssuesByKey(
+                subActivityReviewIssuesById,
+                subActivity.id,
               )}
               isCollapsed={collapsedSubActivities[subActivity.id] ?? false}
               isComposerCollapsed={collapsedComposers[subActivity.id] ?? false}
@@ -2942,11 +3156,11 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
         </Stack>
             </Stack>
           </div>
-        </Collapse>
+        </LazyCollapse>
       </Stack>
     </Paper>
   );
-});
+}, areTeaActivityEditorPropsEqual);
 
 const TeaSubActivityEditor = memo(function TeaSubActivityEditor({
   activityIndex,
@@ -2964,23 +3178,7 @@ const TeaSubActivityEditor = memo(function TeaSubActivityEditor({
   onCollapseChange,
   onComposerCollapseChange,
   onContentBlockCollapseChange,
-}: {
-  activityIndex: number;
-  index: number;
-  totalSubActivities: number;
-  subActivity: TeaSubActivity;
-  reviewIssues: TeaReviewIssue[];
-  isCollapsed: boolean;
-  isComposerCollapsed: boolean;
-  collapsedBlocks: Record<string, boolean>;
-  onChange: (updater: (subActivity: TeaSubActivity) => TeaSubActivity) => void;
-  onRemove: () => void;
-  onMove: (direction: MoveDirection) => void;
-  onCopy: () => void;
-  onCollapseChange: (collapsed: boolean) => void;
-  onComposerCollapseChange: (collapsed: boolean) => void;
-  onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
-}) {
+}: TeaSubActivityEditorProps) {
   const subActivityId = `tea-subactivity-${toDomId(subActivity.id)}`;
   const titleInputId = `tea-subactivity-title-${toDomId(subActivity.id)}`;
   const panelId = `${subActivityId}-panel`;
@@ -3095,8 +3293,8 @@ const TeaSubActivityEditor = memo(function TeaSubActivityEditor({
           </Group>
         </Group>
 
-        <Collapse in={isExpanded}>
-          <div id={panelId}>
+        <LazyCollapse in={isExpanded}>
+          <div id={panelId} className="collapseBody">
             <Stack gap="sm">
         <TextInput
           label="Título"
@@ -3126,11 +3324,11 @@ const TeaSubActivityEditor = memo(function TeaSubActivityEditor({
         />
             </Stack>
           </div>
-        </Collapse>
+        </LazyCollapse>
       </Stack>
     </Paper>
   );
-});
+}, areTeaSubActivityEditorPropsEqual);
 
 const TeaContentComposer = memo(function TeaContentComposer({
   composerId,
@@ -3146,24 +3344,14 @@ const TeaContentComposer = memo(function TeaContentComposer({
   onCollapseChange,
   onBlockCollapseChange,
   onBlocksChange,
-}: {
-  composerId: string;
-  title: string;
-  description: string;
-  emptyMessage: string;
-  emptyActionLabel: string;
-  blocks: TeaContentBlock[];
-  tone: "legacy" | "new";
-  isCollapsed: boolean;
-  collapsedBlocks: Record<string, boolean>;
-  reviewIssues: TeaReviewIssue[];
-  onCollapseChange: (collapsed: boolean) => void;
-  onBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
-  onBlocksChange: (updater: (blocks: TeaContentBlock[]) => TeaContentBlock[]) => void;
-}) {
+}: TeaContentComposerProps) {
   const panelId = `tea-composer-${toDomId(composerId)}-panel`;
   const isExpanded = !isCollapsed;
   const confirmAction = useConfirmAction();
+  const blockReviewIssuesById = useMemo(
+    () => groupTeaReviewIssuesByBlock(reviewIssues),
+    [reviewIssues],
+  );
 
   function addBlock(type: TeaContentBlockType): void {
     onCollapseChange(false);
@@ -3253,8 +3441,8 @@ const TeaContentComposer = memo(function TeaContentComposer({
           <TeaAddBlockMenu onAddBlock={addBlock} />
         </Group>
 
-        <Collapse in={isExpanded}>
-          <div id={panelId}>
+        <LazyCollapse in={isExpanded}>
+          <div id={panelId} className="collapseBody">
         {blocks.length > 0 ? (
           <Stack gap="xs">
             {blocks.map((block, blockIndex) => (
@@ -3265,12 +3453,10 @@ const TeaContentComposer = memo(function TeaContentComposer({
                 totalBlocks={blocks.length}
                 tone={tone}
                 isCollapsed={collapsedBlocks[block.id] ?? false}
-                reviewIssues={reviewIssues.filter((issue) => issue.blockId === block.id)}
+                reviewIssues={getTeaReviewIssuesByKey(blockReviewIssuesById, block.id)}
                 onChange={(updater) => updateBlock(block.id, updater)}
                 onMove={(direction) => moveBlock(block.id, direction)}
-                onDuplicate={() => {
-                  void duplicateBlock(block);
-                }}
+                onDuplicate={() => duplicateBlock(block)}
                 onRemove={() => removeBlock(block)}
                 onCollapseChange={(collapsed) => onBlockCollapseChange(block.id, collapsed)}
               />
@@ -3285,11 +3471,11 @@ const TeaContentComposer = memo(function TeaContentComposer({
           </Paper>
         )}
           </div>
-        </Collapse>
+        </LazyCollapse>
       </Stack>
     </Paper>
   );
-});
+}, areTeaContentComposerPropsEqual);
 
 const TeaContentBlockEditor = memo(function TeaContentBlockEditor({
   block,
@@ -3303,19 +3489,7 @@ const TeaContentBlockEditor = memo(function TeaContentBlockEditor({
   onDuplicate,
   onRemove,
   onCollapseChange,
-}: {
-  block: TeaContentBlock;
-  index: number;
-  totalBlocks: number;
-  tone: "legacy" | "new";
-  isCollapsed: boolean;
-  reviewIssues: TeaReviewIssue[];
-  onChange: (updater: (block: TeaContentBlock) => TeaContentBlock) => void;
-  onMove: (direction: MoveDirection) => void;
-  onDuplicate: () => void;
-  onRemove: () => void;
-  onCollapseChange: (collapsed: boolean) => void;
-}) {
+}: TeaContentBlockEditorProps) {
   const blockId = `tea-content-block-${toDomId(block.id)}`;
   const blockInputId = getTeaContentBlockInputId(block);
   const panelId = `${blockId}-panel`;
@@ -3325,6 +3499,7 @@ const TeaContentBlockEditor = memo(function TeaContentBlockEditor({
   const blockInputError = blockInputId
     ? getTeaInlineReviewError(reviewIssues, blockInputId)
     : undefined;
+  const [isDuplicating, setIsDuplicating] = useState(false);
   const commitText = useCallback(
     (text: string) =>
       onChange((current) => (current.type === "text" ? { ...current, text } : current)),
@@ -3343,6 +3518,20 @@ const TeaContentBlockEditor = memo(function TeaContentBlockEditor({
   );
   const list = useBufferedText(listValue, commitList);
 
+  async function duplicateCurrentBlock(): Promise<void> {
+    if (isDuplicating) {
+      return;
+    }
+
+    setIsDuplicating(true);
+
+    try {
+      await onDuplicate();
+    } finally {
+      setIsDuplicating(false);
+    }
+  }
+
   return (
     <Paper id={blockId} p="sm" className="teaContentBlock" tabIndex={-1}>
       <Stack gap="sm">
@@ -3352,6 +3541,7 @@ const TeaContentBlockEditor = memo(function TeaContentBlockEditor({
               <ActionIcon
                 variant="subtle"
                 onClick={() => onCollapseChange(!isCollapsed)}
+                disabled={isDuplicating}
                 aria-label={isCollapsed ? "Abrir bloco" : "Recolher bloco"}
                 aria-expanded={!isCollapsed}
                 aria-controls={panelId}
@@ -3379,15 +3569,25 @@ const TeaContentBlockEditor = memo(function TeaContentBlockEditor({
           <TeaBlockActionsMenu
             canMoveUp={index > 0}
             canMoveDown={index < totalBlocks - 1}
-            onDuplicate={onDuplicate}
+            isBusy={isDuplicating}
+            onDuplicate={() => {
+              void duplicateCurrentBlock();
+            }}
             onMove={onMove}
             onRemove={onRemove}
           />
         </Group>
 
-        <Collapse in={!isCollapsed}>
-          {!isCollapsed ? (
-          <div id={panelId}>
+        {isDuplicating ? (
+          <LoadingFeedback
+            variant="compact"
+            label="Duplicando bloco..."
+            detail={block.type === "images" ? "Copiando imagens no rascunho." : undefined}
+          />
+        ) : null}
+
+        <LazyCollapse in={!isCollapsed}>
+          <div id={panelId} className="collapseBody">
             {block.type === "text" ? (
               <Textarea
                 label="Texto"
@@ -3436,12 +3636,11 @@ const TeaContentBlockEditor = memo(function TeaContentBlockEditor({
               />
             ) : null}
           </div>
-          ) : null}
-        </Collapse>
+        </LazyCollapse>
       </Stack>
     </Paper>
   );
-});
+}, areTeaContentBlockEditorPropsEqual);
 
 function SummaryChips({
   items,
@@ -3740,12 +3939,14 @@ function TeaMoveRemoveMenu({
 function TeaBlockActionsMenu({
   canMoveUp,
   canMoveDown,
+  isBusy,
   onDuplicate,
   onMove,
   onRemove,
 }: {
   canMoveUp: boolean;
   canMoveDown: boolean;
+  isBusy: boolean;
   onDuplicate: () => void;
   onMove: (direction: MoveDirection) => void;
   onRemove: () => void;
@@ -3753,16 +3954,28 @@ function TeaBlockActionsMenu({
   const [opened, setOpened] = useState(false);
 
   function duplicate(): void {
+    if (isBusy) {
+      return;
+    }
+
     onDuplicate();
     setOpened(false);
   }
 
   function move(direction: MoveDirection): void {
+    if (isBusy) {
+      return;
+    }
+
     onMove(direction);
     setOpened(false);
   }
 
   function remove(): void {
+    if (isBusy) {
+      return;
+    }
+
     onRemove();
     setOpened(false);
   }
@@ -3775,8 +3988,12 @@ function TeaBlockActionsMenu({
             variant="subtle"
             aria-label="Mais ações do bloco"
             className="teaActionsMenu"
+            disabled={isBusy}
             onClick={(event) => {
               event.stopPropagation();
+              if (isBusy) {
+                return;
+              }
               setOpened(true);
             }}
           >
@@ -3785,25 +4002,30 @@ function TeaBlockActionsMenu({
         </span>
       </Menu.Target>
       <Menu.Dropdown>
-        <Menu.Item leftSection={<Copy size={15} />} onClick={duplicate}>
+        <Menu.Item leftSection={<Copy size={15} />} disabled={isBusy} onClick={duplicate}>
           Duplicar bloco
         </Menu.Item>
         <Menu.Item
           leftSection={<ArrowUp size={15} />}
-          disabled={!canMoveUp}
+          disabled={isBusy || !canMoveUp}
           onClick={() => move("up")}
         >
           Mover bloco para cima
         </Menu.Item>
         <Menu.Item
           leftSection={<ArrowDown size={15} />}
-          disabled={!canMoveDown}
+          disabled={isBusy || !canMoveDown}
           onClick={() => move("down")}
         >
           Mover bloco para baixo
         </Menu.Item>
         <Menu.Divider />
-        <Menu.Item color="red" leftSection={<Trash2 size={15} />} onClick={remove}>
+        <Menu.Item
+          color="red"
+          leftSection={<Trash2 size={15} />}
+          disabled={isBusy}
+          onClick={remove}
+        >
           Remover bloco
         </Menu.Item>
       </Menu.Dropdown>
@@ -4077,6 +4299,53 @@ function DocumentOutline({
         </Collapse>
       </Paper>
     </aside>
+  );
+}
+
+type LazyCollapseProps = Omit<ComponentProps<typeof Collapse>, "children"> & {
+  children: ReactNode;
+};
+
+function LazyCollapse({
+  in: isOpen,
+  children,
+  transitionDuration = 200,
+  animateOpacity = false,
+  onTransitionEnd,
+  ...props
+}: LazyCollapseProps) {
+  const [shouldRender, setShouldRender] = useState(isOpen);
+
+  useEffect(() => {
+    if (isOpen) {
+      setShouldRender(true);
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setShouldRender(false);
+    }, transitionDuration + 40);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isOpen, transitionDuration]);
+
+  return (
+    <Collapse
+      {...props}
+      in={isOpen}
+      animateOpacity={animateOpacity}
+      transitionDuration={transitionDuration}
+      onTransitionEnd={() => {
+        onTransitionEnd?.();
+        if (!isOpen) {
+          setShouldRender(false);
+        }
+      }}
+    >
+      {shouldRender ? children : null}
+    </Collapse>
   );
 }
 
@@ -4357,7 +4626,7 @@ const PermissionBlockGroup = memo(function PermissionBlockGroup({
   macro,
   entries,
   expandedTests,
-  reviewIssues,
+  reviewIssueIndex,
   isCollapsed,
   collapsedBlocks,
   onMacroCollapseChange,
@@ -4421,7 +4690,7 @@ const PermissionBlockGroup = memo(function PermissionBlockGroup({
                 block={entry.block}
                 sourceBlock={entry.sourceBlock}
                 expandedTests={expandedTests}
-                reviewIssues={reviewIssues}
+                reviewIssueIndex={reviewIssueIndex}
                 isCollapsed={collapsedBlocks[entry.key] ?? false}
                 onBlockCollapseChange={onBlockCollapseChange}
                 onAddTest={onAddTest}
@@ -4449,7 +4718,7 @@ const PermissionBlockEditor = memo(function PermissionBlockEditor({
   block,
   sourceBlock,
   expandedTests,
-  reviewIssues,
+  reviewIssueIndex,
   isCollapsed,
   onBlockCollapseChange,
   onAddTest,
@@ -4464,7 +4733,7 @@ const PermissionBlockEditor = memo(function PermissionBlockEditor({
 }: PermissionBlockEditorProps) {
   const isExpanded = !isCollapsed;
   const panelId = `micro-tests-${toDomId(blockKey)}`;
-  const blockReviewIssues = reviewIssues.filter((issue) => issue.blockKey === blockKey);
+  const blockReviewIssues = getReviewIssuesByKey(reviewIssueIndex.byBlockKey, blockKey);
   const blockReview = summarizeReviewIssues(blockReviewIssues);
   const summaryItems = buildPermissionBlockSummaryItems(sourceBlock);
 
@@ -4534,7 +4803,7 @@ const PermissionBlockEditor = memo(function PermissionBlockEditor({
                   test={test}
                   selfReferenceKey={selfReferenceKey}
                   isExpanded={expandedTests[selfReferenceKey] ?? false}
-                  reviewIssues={reviewIssues}
+                  reviewIssueIndex={reviewIssueIndex}
                   canMoveUp={testIndex > 0}
                   canMoveDown={testIndex < sourceBlock.tests.length - 1}
                   onTestExpansionChange={onTestExpansionChange}
@@ -4703,7 +4972,7 @@ const BlockTestEditor = memo(function BlockTestEditor({
   test,
   selfReferenceKey,
   isExpanded,
-  reviewIssues,
+  reviewIssueIndex,
   canMoveUp,
   canMoveDown,
   onTestExpansionChange,
@@ -4714,8 +4983,9 @@ const BlockTestEditor = memo(function BlockTestEditor({
   onResultChange,
 }: BlockTestEditorProps) {
   const testPanelId = `test-details-${toDomId(selfReferenceKey)}`;
-  const testReviewIssues = reviewIssues.filter(
-    (issue) => issue.blockKey === blockKey && issue.testId === test.id,
+  const testReviewIssues = getReviewIssuesByKey(
+    reviewIssueIndex.byTestReferenceKey,
+    selfReferenceKey,
   );
   const testReview = summarizeReviewIssues(testReviewIssues);
   const summaryItems = buildTestSummaryItems(test);
@@ -4942,6 +5212,7 @@ const EvidenceUploader = memo(function EvidenceUploader({
 }) {
   const confirmAction = useConfirmAction();
   const descriptionId = useId();
+  const [isProcessingFiles, setIsProcessingFiles] = useState(false);
 
   async function handlePaste(event: ClipboardEvent<HTMLDivElement>): Promise<void> {
     const files = getPastedImageFiles(event.clipboardData);
@@ -4961,14 +5232,17 @@ const EvidenceUploader = memo(function EvidenceUploader({
 
   async function addFiles(files: File[] | File | null): Promise<void> {
     const fileList = Array.isArray(files) ? files : files ? [files] : [];
-    if (!fileList.length) {
+    const imageFiles = fileList.filter(isImageFile);
+
+    if (!imageFiles.length || isProcessingFiles) {
       return;
     }
 
-    const evidence = await Promise.all(
-      fileList
-        .filter(isImageFile)
-        .map(async (file) => {
+    setIsProcessingFiles(true);
+
+    try {
+      const evidence = await Promise.all(
+        imageFiles.map(async (file) => {
           const optimized = await optimizeImageFile(file);
           const id = createId();
 
@@ -4984,17 +5258,20 @@ const EvidenceUploader = memo(function EvidenceUploader({
             optimized: optimized.optimized,
           };
         }),
-    );
-
-    try {
-      await saveEvidenceImageDataBatch(
-        evidence.map((image) => ({ id: image.id, dataUrl: image.dataUrl })),
       );
-    } catch {
-      window.alert("Nao foi possivel salvar a imagem no rascunho do navegador.");
-    }
 
-    onChange((current) => [...current, ...evidence]);
+      try {
+        await saveEvidenceImageDataBatch(
+          evidence.map((image) => ({ id: image.id, dataUrl: image.dataUrl })),
+        );
+      } catch {
+        window.alert("Nao foi possivel salvar a imagem no rascunho do navegador.");
+      }
+
+      onChange((current) => [...current, ...evidence]);
+    } finally {
+      setIsProcessingFiles(false);
+    }
   }
 
   function updateImageLabel(imageId: string, label: string): void {
@@ -5038,6 +5315,7 @@ const EvidenceUploader = memo(function EvidenceUploader({
       }}
       tabIndex={0}
       role="group"
+      aria-busy={isProcessingFiles}
       aria-label={`${title}: cole ou arraste uma imagem`}
       aria-describedby={descriptionId}
     >
@@ -5062,12 +5340,26 @@ const EvidenceUploader = memo(function EvidenceUploader({
             multiple
           >
             {(props) => (
-              <Button {...props} variant="light" leftSection={<ImagePlus size={17} />}>
+              <Button
+                {...props}
+                variant="light"
+                leftSection={<ImagePlus size={17} />}
+                loading={isProcessingFiles}
+                disabled={isProcessingFiles}
+              >
                 Adicionar imagem
               </Button>
             )}
           </FileButton>
         </Group>
+
+        {isProcessingFiles ? (
+          <LoadingFeedback
+            variant="inline"
+            label="Processando imagens..."
+            detail="Otimizando e salvando no rascunho."
+          />
+        ) : null}
 
         {images.length > 0 ? (
           <Stack gap="xs">
@@ -5142,19 +5434,23 @@ function EmptyState({
 
 function ConfirmationModal({
   confirmation,
+  isConfirming,
   onCancel,
   onConfirm,
 }: {
   confirmation: PendingConfirmation | null;
+  isConfirming: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   return (
     <Modal
       opened={confirmation !== null}
-      onClose={onCancel}
+      onClose={isConfirming ? () => undefined : onCancel}
       title={confirmation?.title ?? "Confirmar ação"}
       centered
+      closeOnClickOutside={!isConfirming}
+      closeOnEscape={!isConfirming}
     >
       {confirmation ? (
         <Stack gap="md">
@@ -5163,13 +5459,14 @@ function ConfirmationModal({
             <Text size="sm">{confirmation.description}</Text>
           </Group>
           <Group justify="flex-end" gap="xs">
-            <Button variant="light" color="gray" onClick={onCancel}>
+            <Button variant="light" color="gray" onClick={onCancel} disabled={isConfirming}>
               Cancelar
             </Button>
             <Button
               color={confirmation.tone === "danger" ? "red" : undefined}
               leftSection={<Trash2 size={17} />}
               onClick={onConfirm}
+              loading={isConfirming}
             >
               {confirmation.confirmLabel}
             </Button>
@@ -5183,12 +5480,14 @@ function ConfirmationModal({
 function TeaSubActivityCopyModal({
   documentData,
   request,
+  isCopying,
   onTargetActivityChange,
   onClose,
   onConfirm,
 }: {
   documentData: TeaDocument;
   request: TeaSubActivityCopyRequest | null;
+  isCopying: boolean;
   onTargetActivityChange: (targetActivityId: string | null) => void;
   onClose: () => void;
   onConfirm: () => void;
@@ -5208,9 +5507,11 @@ function TeaSubActivityCopyModal({
   return (
     <Modal
       opened={request !== null}
-      onClose={onClose}
+      onClose={isCopying ? () => undefined : onClose}
       title="Copiar subtópico"
       centered
+      closeOnClickOutside={!isCopying}
+      closeOnEscape={!isCopying}
     >
       {request ? (
         <Stack gap="md">
@@ -5234,7 +5535,7 @@ function TeaSubActivityCopyModal({
             data={targetOptions}
             value={request.targetActivityId}
             onChange={onTargetActivityChange}
-            disabled={targetOptions.length === 0}
+            disabled={isCopying || targetOptions.length === 0}
             allowDeselect={false}
             searchable
           />
@@ -5248,10 +5549,15 @@ function TeaSubActivityCopyModal({
           ) : null}
 
           <Group justify="flex-end" gap="xs">
-            <Button variant="light" color="gray" onClick={onClose}>
+            <Button variant="light" color="gray" onClick={onClose} disabled={isCopying}>
               Cancelar
             </Button>
-            <Button leftSection={<Copy size={17} />} disabled={!canConfirm} onClick={onConfirm}>
+            <Button
+              leftSection={<Copy size={17} />}
+              disabled={!canConfirm}
+              loading={isCopying}
+              onClick={onConfirm}
+            >
               Copiar subtópico
             </Button>
           </Group>
@@ -5263,20 +5569,24 @@ function TeaSubActivityCopyModal({
 
 function ImportPreviewModal({
   result,
+  isConfirming,
   onClose,
   onConfirm,
 }: {
   result: DocxImportResult | null;
+  isConfirming: boolean;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   return (
     <Modal
       opened={result !== null}
-      onClose={onClose}
+      onClose={isConfirming ? () => undefined : onClose}
       title="Prévia da importação"
       size="lg"
       centered
+      closeOnClickOutside={!isConfirming}
+      closeOnEscape={!isConfirming}
     >
       {result ? (
         <Stack gap="md">
@@ -5325,10 +5635,14 @@ function ImportPreviewModal({
           ) : null}
 
           <Group justify="flex-end" gap="xs">
-            <Button variant="light" color="gray" onClick={onClose}>
+            <Button variant="light" color="gray" onClick={onClose} disabled={isConfirming}>
               Cancelar
             </Button>
-            <Button leftSection={<FileUp size={17} />} onClick={onConfirm}>
+            <Button
+              leftSection={<FileUp size={17} />}
+              loading={isConfirming}
+              onClick={onConfirm}
+            >
               Substituir rascunho por importação
             </Button>
           </Group>
@@ -5634,7 +5948,7 @@ function useActiveOutlineTargetId(
         window.cancelAnimationFrame(animationFrame);
       }
     };
-  }, [scopeKey, targetIds, targetSignature]);
+  }, [scopeKey, targetSignature]);
 
   return [activeTargetId, setActiveTargetId];
 }
@@ -5749,7 +6063,7 @@ function arePermissionBlockGroupPropsEqual(
   if (
     previous.macro !== next.macro ||
     previous.entries !== next.entries ||
-    previous.reviewIssues !== next.reviewIssues ||
+    previous.reviewIssueIndex !== next.reviewIssueIndex ||
     previous.isCollapsed !== next.isCollapsed ||
     previous.onMacroCollapseChange !== next.onMacroCollapseChange ||
     previous.onBlockCollapseChange !== next.onBlockCollapseChange ||
@@ -5800,7 +6114,7 @@ function arePermissionBlockEditorPropsEqual(
     previous.entry !== next.entry ||
     previous.block !== next.block ||
     previous.sourceBlock !== next.sourceBlock ||
-    previous.reviewIssues !== next.reviewIssues ||
+    previous.reviewIssueIndex !== next.reviewIssueIndex ||
     previous.isCollapsed !== next.isCollapsed ||
     previous.onBlockCollapseChange !== next.onBlockCollapseChange ||
     previous.onAddTest !== next.onAddTest ||
@@ -5832,6 +6146,132 @@ function areExpandedStatesEqual(
     const referenceKey = createTestReferenceKey(blockKey, test.id);
     return (previousExpandedTests[referenceKey] ?? false) === (nextExpandedTests[referenceKey] ?? false);
   });
+}
+
+function areTeaActivityEditorPropsEqual(
+  previous: TeaActivityEditorProps,
+  next: TeaActivityEditorProps,
+): boolean {
+  if (
+    previous.index !== next.index ||
+    previous.totalActivities !== next.totalActivities ||
+    previous.activity !== next.activity ||
+    previous.reviewIssues !== next.reviewIssues ||
+    previous.isCollapsed !== next.isCollapsed
+  ) {
+    return false;
+  }
+
+  if (next.isCollapsed) {
+    return true;
+  }
+
+  if (
+    (previous.collapsedComposers[next.activity.id] ?? false) !==
+    (next.collapsedComposers[next.activity.id] ?? false)
+  ) {
+    return false;
+  }
+
+  if (
+    !areTeaBlockCollapseStatesEqual(
+      next.activity.blocks,
+      previous.collapsedContentBlocks,
+      next.collapsedContentBlocks,
+    )
+  ) {
+    return false;
+  }
+
+  return next.activity.subActivities.every((subActivity) => {
+    if (
+      (previous.collapsedSubActivities[subActivity.id] ?? false) !==
+      (next.collapsedSubActivities[subActivity.id] ?? false)
+    ) {
+      return false;
+    }
+
+    if (
+      (previous.collapsedComposers[subActivity.id] ?? false) !==
+      (next.collapsedComposers[subActivity.id] ?? false)
+    ) {
+      return false;
+    }
+
+    return areTeaBlockCollapseStatesEqual(
+      subActivity.blocks,
+      previous.collapsedContentBlocks,
+      next.collapsedContentBlocks,
+    );
+  });
+}
+
+function areTeaSubActivityEditorPropsEqual(
+  previous: TeaSubActivityEditorProps,
+  next: TeaSubActivityEditorProps,
+): boolean {
+  if (
+    previous.activityIndex !== next.activityIndex ||
+    previous.index !== next.index ||
+    previous.totalSubActivities !== next.totalSubActivities ||
+    previous.subActivity !== next.subActivity ||
+    previous.reviewIssues !== next.reviewIssues ||
+    previous.isCollapsed !== next.isCollapsed ||
+    previous.isComposerCollapsed !== next.isComposerCollapsed
+  ) {
+    return false;
+  }
+
+  return next.isCollapsed ||
+    areTeaBlockCollapseStatesEqual(next.subActivity.blocks, previous.collapsedBlocks, next.collapsedBlocks);
+}
+
+function areTeaContentComposerPropsEqual(
+  previous: TeaContentComposerProps,
+  next: TeaContentComposerProps,
+): boolean {
+  if (
+    previous.composerId !== next.composerId ||
+    previous.title !== next.title ||
+    previous.description !== next.description ||
+    previous.emptyMessage !== next.emptyMessage ||
+    previous.emptyActionLabel !== next.emptyActionLabel ||
+    previous.blocks !== next.blocks ||
+    previous.tone !== next.tone ||
+    previous.isCollapsed !== next.isCollapsed ||
+    previous.reviewIssues !== next.reviewIssues
+  ) {
+    return false;
+  }
+
+  return next.isCollapsed ||
+    areTeaBlockCollapseStatesEqual(next.blocks, previous.collapsedBlocks, next.collapsedBlocks);
+}
+
+function areTeaContentBlockEditorPropsEqual(
+  previous: TeaContentBlockEditorProps,
+  next: TeaContentBlockEditorProps,
+): boolean {
+  return (
+    previous.block === next.block &&
+    previous.index === next.index &&
+    previous.totalBlocks === next.totalBlocks &&
+    previous.tone === next.tone &&
+    previous.isCollapsed === next.isCollapsed &&
+    previous.reviewIssues === next.reviewIssues
+  );
+}
+
+function areTeaBlockCollapseStatesEqual(
+  blocks: TeaContentBlock[],
+  previousCollapsedBlocks: Record<string, boolean>,
+  nextCollapsedBlocks: Record<string, boolean>,
+): boolean {
+  return blocks.every(
+    (block) =>
+      (previousCollapsedBlocks[block.id] ?? false) ===
+      (nextCollapsedBlocks[block.id] ?? false),
+  );
 }
 
 function buildTestBlockFilterCounts(
@@ -5956,6 +6396,135 @@ function getInlineReviewTone(review: InlineReviewSummary): "gray" | "red" | "yel
   }
 
   return "gray";
+}
+
+function buildReviewIssueIndex(issues: ReviewIssue[]): ReviewIssueIndex {
+  const byBlockKey = new Map<string, ReviewIssue[]>();
+  const byTestReferenceKey = new Map<string, ReviewIssue[]>();
+
+  issues.forEach((issue) => {
+    if (issue.blockKey) {
+      addIssueToMap(byBlockKey, issue.blockKey, issue);
+    }
+
+    if (issue.blockKey && issue.testId) {
+      addIssueToMap(
+        byTestReferenceKey,
+        createTestReferenceKey(issue.blockKey, issue.testId),
+        issue,
+      );
+    }
+  });
+
+  return { byBlockKey, byTestReferenceKey };
+}
+
+function buildTeaReviewIssueIndex(issues: TeaReviewIssue[]): TeaReviewIssueIndex {
+  const byTargetId = new Map<string, TeaReviewIssue[]>();
+  const byActivityId = new Map<string, TeaReviewIssue[]>();
+  const byActivityRootId = new Map<string, TeaReviewIssue[]>();
+  const bySubActivityId = new Map<string, TeaReviewIssue[]>();
+  const byBlockId = new Map<string, TeaReviewIssue[]>();
+  const activityIssues: TeaReviewIssue[] = [];
+
+  issues.forEach((issue) => {
+    if (issue.targetId) {
+      addIssueToMap(byTargetId, issue.targetId, issue);
+    }
+
+    if (issue.activityId) {
+      addIssueToMap(byActivityId, issue.activityId, issue);
+    }
+
+    if (issue.subActivityId) {
+      addIssueToMap(bySubActivityId, issue.subActivityId, issue);
+    } else if (issue.activityId) {
+      addIssueToMap(byActivityRootId, issue.activityId, issue);
+    }
+
+    if (issue.blockId) {
+      addIssueToMap(byBlockId, issue.blockId, issue);
+    }
+
+    if (issue.tab === "activities" && issue.activityId) {
+      activityIssues.push(issue);
+    }
+  });
+
+  return {
+    byTargetId,
+    byActivityId,
+    byActivityRootId,
+    bySubActivityId,
+    byBlockId,
+    activityIssues,
+    hasActivityIssues: activityIssues.length > 0,
+  };
+}
+
+function splitTeaActivityReviewIssues(issues: TeaReviewIssue[]): {
+  rootIssues: TeaReviewIssue[];
+  bySubActivityId: Map<string, TeaReviewIssue[]>;
+} {
+  const rootIssues: TeaReviewIssue[] = [];
+  const bySubActivityId = new Map<string, TeaReviewIssue[]>();
+
+  issues.forEach((issue) => {
+    if (issue.subActivityId) {
+      addIssueToMap(bySubActivityId, issue.subActivityId, issue);
+      return;
+    }
+
+    rootIssues.push(issue);
+  });
+
+  return {
+    rootIssues: rootIssues.length > 0 ? rootIssues : emptyTeaReviewIssues,
+    bySubActivityId,
+  };
+}
+
+function groupTeaReviewIssuesByBlock(
+  issues: TeaReviewIssue[],
+): Map<string, TeaReviewIssue[]> {
+  const byBlockId = new Map<string, TeaReviewIssue[]>();
+
+  issues.forEach((issue) => {
+    if (issue.blockId) {
+      addIssueToMap(byBlockId, issue.blockId, issue);
+    }
+  });
+
+  return byBlockId;
+}
+
+function getReviewIssuesByKey(
+  map: Map<string, ReviewIssue[]>,
+  key: string,
+): ReviewIssue[] {
+  return map.get(key) ?? emptyReviewIssues;
+}
+
+function getTeaReviewIssuesByKey(
+  map: Map<string, TeaReviewIssue[]>,
+  key: string,
+): TeaReviewIssue[] {
+  return map.get(key) ?? emptyTeaReviewIssues;
+}
+
+function addIssueToMap<TIssue>(
+  map: Map<string, TIssue[]>,
+  key: string,
+  issue: TIssue,
+): void {
+  const current = map.get(key);
+
+  if (current) {
+    current.push(issue);
+    return;
+  }
+
+  map.set(key, [issue]);
 }
 
 function buildPermissionBlockSummaryItems(block: PermissionBlock): string[] {

@@ -3,7 +3,45 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MantineProvider, createTheme } from "@mantine/core";
 import App from "./App";
+import type { OtDocxImportResult } from "./docxImport";
 import type { CheckKey, EvidenceImage, OtDocument, TeaDocument, TestResult } from "./types";
+
+const appMocks = vi.hoisted(() => ({
+  deleteEvidenceImageData: vi.fn(),
+  deleteEvidenceImageDataBatch: vi.fn(),
+  exportOtDocument: vi.fn(),
+  exportTeaDocument: vi.fn(),
+  hydrateDocumentImages: vi.fn(),
+  hydrateTeaDocumentImages: vi.fn(),
+  optimizeImageFile: vi.fn(),
+  parseDocxFile: vi.fn(),
+  persistEmbeddedEvidenceImages: vi.fn(),
+  persistEmbeddedTeaImages: vi.fn(),
+  saveEvidenceImageDataBatch: vi.fn(),
+}));
+
+vi.mock("./docxExport", () => ({
+  exportOtDocument: appMocks.exportOtDocument,
+  exportTeaDocument: appMocks.exportTeaDocument,
+}));
+
+vi.mock("./docxImport", () => ({
+  parseDocxFile: appMocks.parseDocxFile,
+}));
+
+vi.mock("./imageOptimizer", () => ({
+  optimizeImageFile: appMocks.optimizeImageFile,
+}));
+
+vi.mock("./imageStorage", () => ({
+  deleteEvidenceImageData: appMocks.deleteEvidenceImageData,
+  deleteEvidenceImageDataBatch: appMocks.deleteEvidenceImageDataBatch,
+  hydrateDocumentImages: appMocks.hydrateDocumentImages,
+  hydrateTeaDocumentImages: appMocks.hydrateTeaDocumentImages,
+  persistEmbeddedEvidenceImages: appMocks.persistEmbeddedEvidenceImages,
+  persistEmbeddedTeaImages: appMocks.persistEmbeddedTeaImages,
+  saveEvidenceImageDataBatch: appMocks.saveEvidenceImageDataBatch,
+}));
 
 const theme = createTheme({
   fontFamily: "Inter, sans-serif",
@@ -21,6 +59,39 @@ beforeEach(() => {
   (
     globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
   ).IS_REACT_ACT_ENVIRONMENT = true;
+
+  appMocks.deleteEvidenceImageData.mockReset();
+  appMocks.deleteEvidenceImageData.mockResolvedValue(undefined);
+  appMocks.deleteEvidenceImageDataBatch.mockReset();
+  appMocks.deleteEvidenceImageDataBatch.mockResolvedValue(undefined);
+  appMocks.exportOtDocument.mockReset();
+  appMocks.exportOtDocument.mockResolvedValue(undefined);
+  appMocks.exportTeaDocument.mockReset();
+  appMocks.exportTeaDocument.mockResolvedValue(undefined);
+  appMocks.hydrateDocumentImages.mockReset();
+  appMocks.hydrateDocumentImages.mockImplementation(async (documentData: OtDocument) => documentData);
+  appMocks.hydrateTeaDocumentImages.mockReset();
+  appMocks.hydrateTeaDocumentImages.mockImplementation(async (documentData: TeaDocument) => documentData);
+  appMocks.optimizeImageFile.mockReset();
+  appMocks.optimizeImageFile.mockResolvedValue({
+    dataUrl: "data:image/png;base64,T1BUSU1JWkVE",
+    width: 10,
+    height: 10,
+    originalBytes: 12,
+    savedBytes: 10,
+    optimized: true,
+  });
+  appMocks.parseDocxFile.mockReset();
+  appMocks.persistEmbeddedEvidenceImages.mockReset();
+  appMocks.persistEmbeddedEvidenceImages.mockImplementation(
+    async (documentData: OtDocument) => documentData,
+  );
+  appMocks.persistEmbeddedTeaImages.mockReset();
+  appMocks.persistEmbeddedTeaImages.mockImplementation(
+    async (documentData: TeaDocument) => documentData,
+  );
+  appMocks.saveEvidenceImageDataBatch.mockReset();
+  appMocks.saveEvidenceImageDataBatch.mockResolvedValue(undefined);
 
   class TestResizeObserver {
     observe(): void {}
@@ -897,6 +968,165 @@ describe("App TEA content blocks", () => {
   });
 });
 
+describe("App loading feedback", () => {
+  it("shows global loading while exporting a DOCX", async () => {
+    const exportTask = createDeferred<void>();
+    appMocks.exportOtDocument.mockReturnValue(exportTask.promise);
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+
+    await clickElement(getButton("Exportar DOCX"));
+    await waitForBodyText("Exportando DOCX...");
+
+    expect(appMocks.exportOtDocument).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".loadingFeedback--global")?.textContent ?? "").toContain(
+      "Exportando DOCX...",
+    );
+    expect(getButton("Exportar DOCX")?.disabled).toBe(true);
+
+    await act(async () => {
+      exportTask.resolve();
+      await exportTask.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitForNoBodyText("Exportando DOCX...");
+  });
+
+  it("shows local loading while processing evidence images", async () => {
+    const optimizeTask = createDeferred<{
+      dataUrl: string;
+      width: number;
+      height: number;
+      originalBytes: number;
+      savedBytes: number;
+      optimized: boolean;
+    }>();
+    appMocks.optimizeImageFile.mockReturnValue(optimizeTask.promise);
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickButton("Testes");
+    await clickElement(getToggleByControlPrefix("test-details"));
+    await uploadFile('input[accept="image/*"]', "evidencia.png", "image/png");
+
+    await waitForBodyText("Processando imagens...");
+    expect(container.querySelector<HTMLElement>(".evidencePanel")?.getAttribute("aria-busy")).toBe(
+      "true",
+    );
+
+    await act(async () => {
+      optimizeTask.resolve({
+        dataUrl: "data:image/png;base64,Tk9WQQ==",
+        width: 12,
+        height: 12,
+        originalBytes: 20,
+        savedBytes: 10,
+        optimized: true,
+      });
+      await optimizeTask.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitForNoBodyText("Processando imagens...");
+    expect(container.textContent ?? "").toContain("evidencia.png");
+  });
+
+  it("keeps the import confirmation modal loading until images are persisted", async () => {
+    const persistTask = createDeferred<OtDocument>();
+    const importResult = createOtImportResult();
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    appMocks.persistEmbeddedEvidenceImages.mockReturnValue(persistTask.promise);
+    await uploadFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "importado.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Substituir rascunho");
+
+    await clickDialogButton("Substituir rascunho");
+    const confirmButton = getDialogButton("Substituir rascunho");
+
+    expect(confirmButton?.disabled).toBe(true);
+    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy();
+
+    await act(async () => {
+      persistTask.resolve(importResult.document);
+      await persistTask.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitForNoDialog();
+    expect(appMocks.persistEmbeddedEvidenceImages).toHaveBeenCalledWith(importResult.document);
+  });
+
+  it("shows loading while copying a TEA subtopic with images", async () => {
+    const copyTask = createDeferred<void>();
+    appMocks.saveEvidenceImageDataBatch.mockReturnValue(copyTask.promise);
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftForSubActivityCopy()));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    await clickAriaButtonAt("Mais ações do subtópico");
+    await clickMenuItem("Copiar subtópico");
+    await waitForDialogText("Atividade destino");
+    await clickDialogButton("Copiar subtópico");
+
+    expect(getDialogButton("Copiar subtópico")?.disabled).toBe(true);
+
+    await act(async () => {
+      copyTask.resolve();
+      await copyTask.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitForNoDialog();
+    expect(container.querySelectorAll(".teaSubActivityCard")).toHaveLength(2);
+  });
+
+  it("shows compact loading and prevents duplicate TEA block clicks", async () => {
+    const duplicateTask = createDeferred<void>();
+    appMocks.saveEvidenceImageDataBatch.mockReturnValue(duplicateTask.promise);
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftWithBlockImages()));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    await clickAriaButtonAt("Mais ações do bloco", 1);
+    await clickMenuItem("Duplicar bloco");
+    await waitForBodyText("Duplicando bloco...");
+
+    const blockActions = container.querySelectorAll<HTMLButtonElement>(
+      'button[aria-label="Mais ações do bloco"]',
+    );
+    expect(blockActions[1]?.disabled).toBe(true);
+    expect(container.querySelector(".loadingFeedback--compact")?.textContent ?? "").toContain(
+      "Duplicando bloco...",
+    );
+
+    await act(async () => {
+      duplicateTask.resolve();
+      await duplicateTask.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitForNoBodyText("Duplicando bloco...");
+    expect(getTeaBlockTexts()).toHaveLength(4);
+    expect(appMocks.saveEvidenceImageDataBatch).toHaveBeenCalledTimes(1);
+  });
+});
+
 async function renderApp(): Promise<void> {
   await act(async () => {
     root.render(
@@ -904,6 +1134,7 @@ async function renderApp(): Promise<void> {
         <App />
       </MantineProvider>,
     );
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -963,6 +1194,64 @@ async function waitForDialogText(text: string): Promise<void> {
   const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
 
   expect(dialog?.textContent ?? "").toContain(text);
+}
+
+async function waitForNoBodyText(text: string): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (!(document.body.textContent ?? "").includes(text)) {
+      return;
+    }
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  expect(document.body.textContent ?? "").not.toContain(text);
+}
+
+async function waitForNoDialog(): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (!document.body.querySelector('[role="dialog"]')) {
+      return;
+    }
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+}
+
+function getDialogButton(label: string): HTMLButtonElement | undefined {
+  const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+
+  return Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
+    (element) => element.textContent?.includes(label),
+  );
+}
+
+async function uploadFile(selector: string, fileName: string, type: string): Promise<void> {
+  const input = document.body.querySelector<HTMLInputElement>(selector);
+
+  expect(input).toBeTruthy();
+
+  const file = new File(["conteudo"], fileName, { type });
+  const files = [file] as unknown as FileList;
+  Object.defineProperty(files, "item", {
+    configurable: true,
+    value: (index: number) => files[index] ?? null,
+  });
+  Object.defineProperty(input, "files", {
+    configurable: true,
+    value: files,
+  });
+
+  await act(async () => {
+    input?.dispatchEvent(new Event("change", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 async function clickDocumentButton(label: string): Promise<void> {
@@ -1232,6 +1521,43 @@ function getReviewMetricValue(label: string): string | undefined {
   );
 
   return metric?.querySelectorAll("p")[1]?.textContent ?? undefined;
+}
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value?: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve: Deferred<T>["resolve"] = () => undefined;
+  let reject: Deferred<T>["reject"] = () => undefined;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve as Deferred<T>["resolve"];
+    reject = promiseReject;
+  });
+
+  return { promise, resolve, reject };
+}
+
+function createOtImportResult(): OtDocxImportResult {
+  const documentData = createCompleteReviewDraft();
+
+  return {
+    kind: "ot",
+    document: documentData,
+    summary: {
+      kind: "ot",
+      screen: documentData.metadata.screen,
+      accessSteps: documentData.accessSteps.length,
+      permissionGroups: documentData.permissionGroups.length,
+      selectedPermissions: 1,
+      tests: 1,
+      images: 2,
+    },
+    warnings: [],
+    sourceName: "importado.docx",
+  };
 }
 
 function createFilterDraft(): OtDocument {

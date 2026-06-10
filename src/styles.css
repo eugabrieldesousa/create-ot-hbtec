@@ -185,6 +185,49 @@ main:focus {
   border-color: var(--app-border);
 }
 
+.loadingFeedback {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--app-text);
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: 8px;
+}
+
+.loadingFeedbackCopy {
+  display: grid;
+  min-width: 0;
+  gap: 0.0625rem;
+}
+
+.loadingFeedbackLabel,
+.loadingFeedbackDetail {
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.loadingFeedback--global {
+  padding: 0.75rem 0.875rem;
+  background: var(--app-primary-soft);
+  border-color: color-mix(in srgb, var(--app-primary) 32%, var(--app-border-soft));
+  box-shadow: inset 3px 0 0 var(--app-primary);
+}
+
+.loadingFeedback--inline {
+  padding: 0.625rem 0.75rem;
+  background: var(--app-surface-muted);
+}
+
+.loadingFeedback--compact {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 2rem;
+  padding: 0.375rem 0.5rem;
+  background: var(--app-surface-muted);
+}
+
 .topBarActions {
   flex: 0 0 auto;
 }
@@ -922,11 +965,19 @@ main:focus {
 }
 
 .testToggleIcon {
+  transform: translateZ(0);
   transition: transform 160ms ease;
+  will-change: transform;
 }
 
 .testToggleIcon--open {
-  transform: rotate(180deg);
+  transform: translateZ(0) rotate(180deg);
+}
+
+.collapseBody {
+  contain: layout paint;
+  transform: translateZ(0);
+  will-change: transform, opacity;
 }
 
 .testActions {
@@ -1709,5 +1760,6 @@ main:focus {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+    will-change: auto !important;
   }
 }
