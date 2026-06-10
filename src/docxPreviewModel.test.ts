@@ -34,7 +34,21 @@ describe("buildOtPreviewModel", () => {
     expect(texts.some((text) => text.includes("1 - Filtro") && text.includes("( X )"))).toBe(
       true,
     );
+    expect(texts.some((text) => text.includes("Correcao:"))).toBe(true);
+    expect(texts.some((text) => text.includes("Corrigido") && text.includes("Sim"))).toBe(true);
+    expect(texts.some((text) => text.includes("Hotfix") && text.includes("hotfix 1.2.2"))).toBe(
+      true,
+    );
+    expect(texts.some((text) => text.includes("Nuvem") && text.includes("Ate homolog"))).toBe(
+      true,
+    );
     expect(texts.some((text) => text.includes("legado.png nao encontrada"))).toBe(true);
+
+    const testTable = model.blocks.find(
+      (block): block is Extract<DocxPreviewBlock, { type: "table" }> =>
+        block.type === "table" && blockText(block).includes("1 - Filtro"),
+    );
+    expect(testTable?.anchorId).toBe("ot-preview-test-macro-micro--test");
 
     const observationsTable = model.blocks.find(
       (block): block is Extract<DocxPreviewBlock, { type: "table" }> =>
@@ -145,7 +159,7 @@ function createOtPreviewDocument(): OtDocument {
     sameBehavior: true,
     possibleIssue: false,
     bothIssue: false,
-    newIssue: false,
+    newIssue: true,
     errorReport: false,
   } satisfies Record<CheckKey, boolean>;
 
@@ -194,6 +208,13 @@ function createOtPreviewDocument(): OtDocument {
                 },
               ],
               newImages: [createImage("new", "Novo ok", 1000, 500)],
+            },
+            correction: {
+              corrected: true,
+              hotfixTag: "hotfix 1.2.2",
+              cloudStage: "homolog",
+              beforeImages: [createImage("before-fix", "Antes com erro", 100, 80)],
+              afterImages: [createImage("after-fix", "Depois corrigido", 100, 80)],
             },
           },
         ],

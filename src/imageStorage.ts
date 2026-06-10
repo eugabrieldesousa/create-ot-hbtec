@@ -1,3 +1,4 @@
+import { createEmptyTestCorrection } from "./defaultDocument";
 import type {
   EvidenceImage,
   OtDocument,
@@ -149,6 +150,12 @@ export async function hydrateDocumentImages(documentData: OtDocument): Promise<O
             legacyImages: hydrateImages(test.result.legacyImages),
             newImages: hydrateImages(test.result.newImages),
           },
+          correction: {
+            ...createEmptyTestCorrection(),
+            ...test.correction,
+            beforeImages: hydrateImages(test.correction?.beforeImages ?? []),
+            afterImages: hydrateImages(test.correction?.afterImages ?? []),
+          },
         })),
       },
     ]),
@@ -200,6 +207,8 @@ function getDocumentImages(documentData: OtDocument): EvidenceImage[] {
     block.tests.flatMap((test) => [
       ...test.result.legacyImages,
       ...test.result.newImages,
+      ...(test.correction?.beforeImages ?? []),
+      ...(test.correction?.afterImages ?? []),
     ]),
   );
 }
@@ -298,6 +307,12 @@ export function stripImageDataFromDocument(documentData: OtDocument): OtDocument
           tests: block.tests.map((test) => ({
             ...test,
             result: stripResult(test.result),
+            correction: {
+              ...createEmptyTestCorrection(),
+              ...test.correction,
+              beforeImages: (test.correction?.beforeImages ?? []).map(stripImageData),
+              afterImages: (test.correction?.afterImages ?? []).map(stripImageData),
+            },
           })),
         },
       ]),

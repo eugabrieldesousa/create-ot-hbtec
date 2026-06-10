@@ -1,4 +1,9 @@
-import { createDefaultDocument, createEmptyTestResult, createPermissionKey } from "./defaultDocument";
+import {
+  createDefaultDocument,
+  createEmptyTestCorrection,
+  createEmptyTestResult,
+  createPermissionKey,
+} from "./defaultDocument";
 import { createDefaultTeaDocument } from "./defaultTeaDocument";
 import {
   deleteEvidenceImageDataBatch,
@@ -18,6 +23,7 @@ import type {
   TeaDocument,
   TeaSubActivity,
   TeaTextItem,
+  TestCorrection,
   TestResult,
 } from "./types";
 
@@ -256,6 +262,7 @@ function normalizeBlockTests(tests: PermissionBlockTest[]): PermissionBlockTest[
     id: textOrFallback(test.id, `test-${index + 1}`),
     title: textOrFallback(test.title, ""),
     result: normalizeTestResult(test.result),
+    correction: normalizeTestCorrection(test.correction),
   }));
 }
 
@@ -271,6 +278,7 @@ function normalizeLegacyTests(
     id: textOrFallback(test.id, `test-${index + 1}`),
     title: textOrFallback(test.title, ""),
     result: normalizeTestResult(results[test.id]),
+    correction: createEmptyTestCorrection(),
   }));
 }
 
@@ -289,6 +297,27 @@ function normalizeTestResult(result: TestResult | undefined): TestResult {
     observations: textOrFallback(result.observations, ""),
     legacyImages: normalizeEvidenceImages(result.legacyImages),
     newImages: normalizeEvidenceImages(result.newImages),
+  };
+}
+
+function normalizeTestCorrection(correction: TestCorrection | undefined): TestCorrection {
+  const fallback = createEmptyTestCorrection();
+
+  if (!correction) {
+    return fallback;
+  }
+
+  const cloudStage = correction.cloudStage;
+
+  return {
+    corrected: typeof correction.corrected === "boolean" ? correction.corrected : false,
+    beforeImages: normalizeEvidenceImages(correction.beforeImages),
+    afterImages: normalizeEvidenceImages(correction.afterImages),
+    hotfixTag: textOrFallback(correction.hotfixTag, ""),
+    cloudStage:
+      cloudStage === "dev" || cloudStage === "homolog" || cloudStage === "production"
+        ? cloudStage
+        : "none",
   };
 }
 
@@ -501,6 +530,8 @@ function getOtImageIds(document: OtDocument): string[] {
     block.tests.flatMap((test) => [
       ...test.result.legacyImages.map((image) => image.id),
       ...test.result.newImages.map((image) => image.id),
+      ...(test.correction?.beforeImages ?? []).map((image) => image.id),
+      ...(test.correction?.afterImages ?? []).map((image) => image.id),
     ]),
   );
 }

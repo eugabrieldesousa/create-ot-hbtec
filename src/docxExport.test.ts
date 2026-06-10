@@ -208,6 +208,23 @@ describe("exportOtDocument", () => {
       "Terceira linha",
     ]);
   });
+
+  it("exports correction details for Novo tests", async () => {
+    await exportOtDocument(createOtDocumentForExport());
+
+    const children = docxState.documents[0].options.sections[0].children;
+    const correctionTable = children.find((child) =>
+      readTableText(child).includes("Corrigido"),
+    );
+    const paragraphTexts = children.map(readParagraphText).filter(Boolean);
+    const correctionText = readFullTableText(correctionTable);
+
+    expect(correctionText).toContain("Corrigido Sim");
+    expect(correctionText).toContain("Hotfix hotfix 1.2.2");
+    expect(correctionText).toContain("Nuvem Ate dev");
+    expect(paragraphTexts).toContain("Antes (com erro):");
+    expect(paragraphTexts).toContain("Depois (corrigido):");
+  });
 });
 
 function readParagraphText(node: unknown): string {
@@ -229,6 +246,16 @@ function readParagraphRuns(
 
 function readTableText(node: unknown): string {
   return readTableCells(node)
+    .flatMap((cell) => readCellParagraphs(cell).map(readParagraphText))
+    .join(" ");
+}
+
+function readFullTableText(node: unknown): string {
+  const rows = (node as { options?: { rows?: Array<{ options?: { children?: unknown[] } }> } })
+    .options?.rows ?? [];
+
+  return rows
+    .flatMap((row) => row.options?.children ?? [])
     .flatMap((cell) => readCellParagraphs(cell).map(readParagraphText))
     .join(" ");
 }
@@ -300,7 +327,7 @@ function createOtDocumentForExport(): OtDocument {
     sameBehavior: true,
     possibleIssue: false,
     bothIssue: false,
-    newIssue: false,
+    newIssue: true,
     errorReport: false,
   } satisfies Record<CheckKey, boolean>;
 
@@ -341,6 +368,13 @@ function createOtDocumentForExport(): OtDocument {
               observations: "Primeira linha\nSegunda linha\nTerceira linha",
               legacyImages: [],
               newImages: [],
+            },
+            correction: {
+              corrected: true,
+              hotfixTag: "hotfix 1.2.2",
+              cloudStage: "dev",
+              beforeImages: [createExportImage("before-fix", "Antes")],
+              afterImages: [createExportImage("after-fix", "Depois")],
             },
           },
         ],

@@ -1,6 +1,8 @@
 import {
   createContext,
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useContext,
   useDeferredValue,
@@ -10,7 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ClipboardEvent, ComponentProps, DragEvent, ReactNode } from "react";
+import type { ChangeEvent, ClipboardEvent, ComponentProps, DragEvent, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import {
   ActionIcon,
@@ -62,13 +64,17 @@ import {
   Save,
   Sun,
   Trash2,
+  Wrench,
 } from "lucide-react";
-import { checkLabels, checkOrder, createEmptyTestResult, createPermissionKey } from "./defaultDocument";
-import { DocxPreview } from "./docxPreview";
+import {
+  checkLabels,
+  checkOrder,
+  createEmptyTestCorrection,
+  createEmptyTestResult,
+  createPermissionKey,
+} from "./defaultDocument";
 import { buildOtPreviewModel, buildTeaPreviewModel } from "./docxPreviewModel";
 import type { DocxPreviewModel } from "./docxPreviewModel";
-import { exportOtDocument, exportTeaDocument } from "./docxExport";
-import { parseDocxFile } from "./docxImport";
 import type { DocxImportResult } from "./docxImport";
 import { LoadingFeedback } from "./LoadingFeedback";
 import {
@@ -102,6 +108,7 @@ import type {
   TeaContentBlockType,
   TeaDocument,
   TeaSubActivity,
+  TestCorrection,
   TestResult,
 } from "./types";
 
@@ -116,7 +123,21 @@ type FilteredPermissionBlockEntry = PermissionBlockEntry & {
   sourceBlock: PermissionBlock;
 };
 
-type ActiveTab = "document" | "permissions" | "tests" | "review" | "preview";
+type PermissionGroupEditorProps = {
+  index: number;
+  macro: PermissionGroup;
+  onMacroChange: (macroId: string, updates: Partial<PermissionItem>) => void;
+  onRemoveMacro: (macroId: string) => void;
+  onAddMicro: (macroId: string) => void;
+  onMicroChange: (
+    macroId: string,
+    microId: string,
+    updates: Partial<PermissionItem>,
+  ) => void;
+  onRemoveMicro: (macroId: string, microId: string) => void;
+};
+
+type ActiveTab = "document" | "permissions" | "tests" | "corrections" | "review" | "preview";
 type TeaTab = "document" | "activities" | "review" | "preview";
 type DocumentKind = "ot" | "tea";
 type MoveDirection = "up" | "down";
@@ -246,6 +267,19 @@ type DocumentOutlineGroup = {
   id: string;
   title: string;
   items: DocumentOutlineItem[];
+};
+
+type CorrectionOccurrence = PermissionBlockEntry & {
+  test: PermissionBlockTest;
+  testIndex: number;
+  referenceKey: string;
+};
+
+type CorrectionGroup = {
+  key: string;
+  title: string;
+  occurrences: CorrectionOccurrence[];
+  correction: TestCorrection;
 };
 
 type FaqSection = {
@@ -458,6 +492,12 @@ const problemCheckKeys: CheckKey[] = ["possibleIssue", "bothIssue", "newIssue", 
 const emptyReviewIssues: ReviewIssue[] = [];
 const emptyTeaReviewIssues: TeaReviewIssue[] = [];
 
+const DocxPreview = lazy(async () => {
+  const { DocxPreview } = await import("./docxPreview");
+
+  return { default: DocxPreview };
+});
+
 function useConfirmAction(): ConfirmAction {
   const confirmAction = useContext(ConfirmationContext);
 
@@ -504,6 +544,13 @@ const testBlockFilterOrder: TestBlockFilter[] = [
   "withoutImages",
   "withPending",
   "withProblem",
+];
+
+const cloudStageOptions: Array<{ value: TestCorrection["cloudStage"]; label: string }> = [
+  { value: "none", label: "Nao enviado" },
+  { value: "dev", label: "Ate dev" },
+  { value: "homolog", label: "Ate homolog" },
+  { value: "production", label: "Ate producao" },
 ];
 
 const emptyPermissionBlock: PermissionBlock = { tests: [] };
@@ -747,6 +794,13 @@ export default function App() {
     [filteredPermissionBlockGroups],
   );
   const totalTestCount = testBlockFilterCounts.all;
+  const correctionGroups = useMemo(
+    () => buildCorrectionGroups(documentData, permissionBlockEntries),
+    [documentData, permissionBlockEntries],
+  );
+  const correctionPendingCount = correctionGroups.filter(
+    (group) => !group.correction.corrected,
+  ).length;
 
   const registerBufferedCommit = useCallback((commit: () => void): (() => void) => {
     bufferedCommittersRef.current.add(commit);
@@ -877,6 +931,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
+  // intencional: executa apenas na montagem
   }, []);
 
   useEffect(() => {
@@ -943,9 +998,14 @@ export default function App() {
     [documentKind, teaActiveTab, teaPreviewDocumentData],
   );
 
+  const otOutlineContext: ActiveTab | null =
+    activeTab === "tests" || activeTab === "preview" ? activeTab : null;
   const otOutlineGroups = useMemo(
-    () => buildOtOutlineItems(documentData, permissionBlockEntries, reviewSummary),
-    [documentData, permissionBlockEntries, reviewSummary],
+    () =>
+      otOutlineContext
+        ? buildOtOutlineItems(documentData, permissionBlockEntries, reviewSummary, otOutlineContext)
+        : [],
+    [documentData, otOutlineContext, permissionBlockEntries, reviewSummary],
   );
 
   const teaOutlineContext: TeaOutlineContext | null =
@@ -957,7 +1017,8 @@ export default function App() {
         : [],
     [teaData, teaOutlineContext, teaReviewSummary],
   );
-  const showDocumentOutline = documentKind === "ot" || teaOutlineContext !== null;
+  const showDocumentOutline =
+    (documentKind === "ot" && otOutlineContext !== null) || teaOutlineContext !== null;
   const isTeaActivitiesOutlineNavigable =
     documentKind !== "tea" ||
     teaActiveTab !== "activities" ||
@@ -1302,7 +1363,7 @@ export default function App() {
     }));
   }
 
-  function addMacroGroup(): void {
+  const addMacroGroup = useCallback((): void => {
     updateDocument((current) => ({
       ...current,
       permissionGroups: [
@@ -1316,18 +1377,18 @@ export default function App() {
         },
       ],
     }));
-  }
+  }, [updateDocument]);
 
-  function updateMacroGroup(macroId: string, updates: Partial<PermissionItem>): void {
+  const updateMacroGroup = useCallback((macroId: string, updates: Partial<PermissionItem>): void => {
     updateDocument((current) => ({
       ...current,
       permissionGroups: current.permissionGroups.map((macro) =>
         macro.id === macroId ? { ...macro, ...updates } : macro,
       ),
     }));
-  }
+  }, [updateDocument]);
 
-  function removeMacroGroup(macroId: string): void {
+  const removeMacroGroup = useCallback((macroId: string): void => {
     const macro = documentDataRef.current.permissionGroups.find(
       (candidate) => candidate.id === macroId,
     );
@@ -1348,9 +1409,9 @@ export default function App() {
         }));
       },
     );
-  }
+  }, [requestConfirmation, updateDocument]);
 
-  function addMicroPermission(macroId: string): void {
+  const addMicroPermission = useCallback((macroId: string): void => {
     updateDocument((current) => ({
       ...current,
       permissionGroups: current.permissionGroups.map((macro) =>
@@ -1370,13 +1431,13 @@ export default function App() {
           : macro,
       ),
     }));
-  }
+  }, [updateDocument]);
 
-  function updateMicroPermission(
+  const updateMicroPermission = useCallback((
     macroId: string,
     microId: string,
     updates: Partial<PermissionItem>,
-  ): void {
+  ): void => {
     updateDocument((current) => ({
       ...current,
       permissionGroups: current.permissionGroups.map((macro) =>
@@ -1390,9 +1451,9 @@ export default function App() {
           : macro,
       ),
     }));
-  }
+  }, [updateDocument]);
 
-  function removeMicroPermission(macroId: string, microId: string): void {
+  const removeMicroPermission = useCallback((macroId: string, microId: string): void => {
     const blockKey = createPermissionKey(macroId, microId);
     const macro = documentDataRef.current.permissionGroups.find(
       (candidate) => candidate.id === macroId,
@@ -1425,7 +1486,7 @@ export default function App() {
         }));
       },
     );
-  }
+  }, [requestConfirmation, updateDocument]);
 
   const updatePermissionBulkDraft = useCallback((value: string): void => {
     permissionBulkTextRef.current = value;
@@ -1616,6 +1677,7 @@ export default function App() {
                     legacyImages: [],
                     newImages: [],
                   },
+                  correction: createEmptyTestCorrection(),
                 })),
               },
             ]),
@@ -1647,6 +1709,7 @@ export default function App() {
           legacyImages: [],
           newImages: [],
         },
+        correction: createEmptyTestCorrection(),
       };
       const tests = [...block.tests];
       tests.splice(index + 1, 0, duplicated);
@@ -1726,6 +1789,28 @@ export default function App() {
       ),
     }));
   }, [updateBlock]);
+
+  const updateCorrectionGroup = useCallback((
+    groupKey: string,
+    updater: (correction: TestCorrection) => TestCorrection,
+  ): void => {
+    updateDocument((current) => ({
+      ...current,
+      permissionBlocks: Object.fromEntries(
+        Object.entries(current.permissionBlocks).map(([blockKey, block]) => [
+          blockKey,
+          {
+            ...block,
+            tests: block.tests.map((test) =>
+              test.result.checks.newIssue && getCorrectionGroupKey(blockKey, test) === groupKey
+                ? { ...test, correction: updater(getTestCorrection(test)) }
+                : test,
+            ),
+          },
+        ]),
+      ),
+    }));
+  }, [updateDocument]);
 
   function handleStepPaste(stepId: string, event: ClipboardEvent<HTMLInputElement>): void {
     const lines = event.clipboardData
@@ -1926,6 +2011,8 @@ export default function App() {
           detail: "Lendo o arquivo e preparando a previa.",
         },
         async () => {
+          const { parseDocxFile } = await import("./docxImport");
+
           setImportPreview(await parseDocxFile(file, documentKindRef.current));
         },
       );
@@ -1994,6 +2081,8 @@ export default function App() {
           detail: "Otimizando imagens e gerando o arquivo.",
         },
         async () => {
+          const { exportOtDocument, exportTeaDocument } = await import("./docxExport");
+
           if (documentKindRef.current === "tea") {
             await exportTeaDocument(teaDataRef.current);
           } else {
@@ -2268,6 +2357,9 @@ export default function App() {
             <Tabs.Tab value="tests" leftSection={<CheckCircle2 size={16} />}>
               Testes
             </Tabs.Tab>
+            <Tabs.Tab value="corrections" leftSection={<Wrench size={16} />}>
+              <CorrectionTabLabel count={correctionPendingCount} />
+            </Tabs.Tab>
             <Tabs.Tab value="review" leftSection={<AlertCircle size={16} />}>
               <ReviewTabLabel count={reviewSummary.issues.length} />
             </Tabs.Tab>
@@ -2429,13 +2521,11 @@ export default function App() {
                 key={macro.id}
                 index={index}
                 macro={macro}
-                onMacroChange={(updates) => updateMacroGroup(macro.id, updates)}
-                onRemoveMacro={() => removeMacroGroup(macro.id)}
-                onAddMicro={() => addMicroPermission(macro.id)}
-                onMicroChange={(microId, updates) =>
-                  updateMicroPermission(macro.id, microId, updates)
-                }
-                onRemoveMicro={(microId) => removeMicroPermission(macro.id, microId)}
+                onMacroChange={updateMacroGroup}
+                onRemoveMacro={removeMacroGroup}
+                onAddMicro={addMicroPermission}
+                onMicroChange={updateMicroPermission}
+                onRemoveMicro={removeMicroPermission}
               />
             ))}
             {documentData.permissionGroups.length === 0 ? (
@@ -2531,6 +2621,13 @@ export default function App() {
           </Stack>
         </Section>
 
+          </Tabs.Panel>
+
+          <Tabs.Panel value="corrections" pt="md">
+            <CorrectionPanel
+              groups={correctionGroups}
+              onChangeGroup={updateCorrectionGroup}
+            />
           </Tabs.Panel>
 
           <Tabs.Panel value="review" pt="md" id="ot-section-review">
@@ -4100,6 +4197,19 @@ function ReviewTabLabel({ count }: { count: number }) {
   );
 }
 
+function CorrectionTabLabel({ count }: { count: number }) {
+  return (
+    <span className="reviewTabLabel">
+      <span>Para corrigir</span>
+      {count > 0 ? (
+        <span className="reviewTabBadge" aria-label={`${count} correcoes pendentes`}>
+          {count > 99 ? "99+" : count}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function PreviewPanel({
   model,
   isStale,
@@ -4131,8 +4241,20 @@ function PreviewPanel({
           </Button>
         </Group>
       </Paper>
-      <DocxPreview model={model} />
+      <Suspense fallback={<PreviewSkeleton />}>
+        <DocxPreview model={model} />
+      </Suspense>
     </Stack>
+  );
+}
+
+function PreviewSkeleton() {
+  return (
+    <section className="docxPreviewSection docxPreviewSkeleton" aria-hidden="true">
+      <div className="docxPreviewShell">
+        <div className="docxPreviewSkeletonPage" />
+      </div>
+    </section>
   );
 }
 
@@ -4504,7 +4626,7 @@ function TestBlockFilterBar({
   );
 }
 
-function PermissionGroupEditor({
+const PermissionGroupEditor = memo(function PermissionGroupEditor({
   index,
   macro,
   onMacroChange,
@@ -4512,15 +4634,24 @@ function PermissionGroupEditor({
   onAddMicro,
   onMicroChange,
   onRemoveMicro,
-}: {
-  index: number;
-  macro: PermissionGroup;
-  onMacroChange: (updates: Partial<PermissionItem>) => void;
-  onRemoveMacro: () => void;
-  onAddMicro: () => void;
-  onMicroChange: (microId: string, updates: Partial<PermissionItem>) => void;
-  onRemoveMicro: (microId: string) => void;
-}) {
+}: PermissionGroupEditorProps) {
+  const macroId = macro.id;
+  const handleMacroSelectedChange = useCallback((event: ChangeEvent<HTMLInputElement>): void => {
+    onMacroChange(macroId, { selected: event.currentTarget.checked });
+  }, [macroId, onMacroChange]);
+  const handleMacroCodeCommit = useCallback((value: string): void => {
+    onMacroChange(macroId, { code: value });
+  }, [macroId, onMacroChange]);
+  const handleMacroLabelCommit = useCallback((value: string): void => {
+    onMacroChange(macroId, { label: value });
+  }, [macroId, onMacroChange]);
+  const handleRemoveMacro = useCallback((): void => {
+    onRemoveMacro(macroId);
+  }, [macroId, onRemoveMacro]);
+  const handleAddMicro = useCallback((): void => {
+    onAddMicro(macroId);
+  }, [macroId, onAddMicro]);
+
   return (
     <Paper id={`permission-macro-${toDomId(macro.id)}`} withBorder p="md" className="permissionGroup">
       <Stack gap="sm">
@@ -4532,14 +4663,14 @@ function PermissionGroupEditor({
             <Checkbox
               label="Usar"
               checked={macro.selected}
-              onChange={(event) => onMacroChange({ selected: event.currentTarget.checked })}
+              onChange={handleMacroSelectedChange}
             />
           </Group>
           <Tooltip label="Remover macro">
             <ActionIcon
               variant="subtle"
               color="red"
-              onClick={onRemoveMacro}
+              onClick={handleRemoveMacro}
               aria-label="Remover macro"
             >
               <Trash2 size={17} />
@@ -4552,13 +4683,13 @@ function PermissionGroupEditor({
             label="Código"
             value={macro.code}
             placeholder="AO"
-            onCommit={(value) => onMacroChange({ code: value })}
+            onCommit={handleMacroCodeCommit}
           />
           <BufferedTextInput
             label="Descrição"
             value={macro.label}
             placeholder="Administrador Geral"
-            onCommit={(value) => onMacroChange({ label: value })}
+            onCommit={handleMacroLabelCommit}
           />
         </div>
 
@@ -4568,7 +4699,7 @@ function PermissionGroupEditor({
           <Text fw={700} size="sm">
             Micro-permissões
           </Text>
-          <Button variant="subtle" size="xs" leftSection={<Plus size={15} />} onClick={onAddMicro}>
+          <Button variant="subtle" size="xs" leftSection={<Plus size={15} />} onClick={handleAddMicro}>
             Adicionar micro-permissão
           </Button>
         </Group>
@@ -4580,26 +4711,26 @@ function PermissionGroupEditor({
                 label="Usar"
                 checked={micro.selected}
                 onChange={(event) =>
-                  onMicroChange(micro.id, { selected: event.currentTarget.checked })
+                  onMicroChange(macroId, micro.id, { selected: event.currentTarget.checked })
                 }
               />
               <BufferedTextInput
                 label="Código"
                 value={micro.code}
                 placeholder="AT"
-                onCommit={(value) => onMicroChange(micro.id, { code: value })}
+                onCommit={(value) => onMicroChange(macroId, micro.id, { code: value })}
               />
               <BufferedTextInput
                 label="Descrição"
                 value={micro.label}
                 placeholder="Atualização"
-                onCommit={(value) => onMicroChange(micro.id, { label: value })}
+                onCommit={(value) => onMicroChange(macroId, micro.id, { label: value })}
               />
               <Tooltip label="Remover micro">
                 <ActionIcon
                   variant="subtle"
                   color="red"
-                  onClick={() => onRemoveMicro(micro.id)}
+                  onClick={() => onRemoveMicro(macroId, micro.id)}
                   aria-label="Remover micro"
                   mt={24}
                 >
@@ -4620,7 +4751,7 @@ function PermissionGroupEditor({
       </Stack>
     </Paper>
   );
-}
+}, arePermissionGroupEditorPropsEqual);
 
 const PermissionBlockGroup = memo(function PermissionBlockGroup({
   macro,
@@ -4989,6 +5120,7 @@ const BlockTestEditor = memo(function BlockTestEditor({
   );
   const testReview = summarizeReviewIssues(testReviewIssues);
   const summaryItems = buildTestSummaryItems(test);
+  const correction = getTestCorrection(test);
   const displayTitle = test.title.trim() || `Teste ${index + 1} sem nome`;
   const commitTitle = useCallback(
     (value: string) => onTestTitleChange(blockKey, test.id, value),
@@ -5044,6 +5176,11 @@ const BlockTestEditor = memo(function BlockTestEditor({
                 {displayTitle}
               </Text>
               <CheckStatusChips result={test.result} />
+              {correction.corrected ? (
+                <Badge size="xs" color="green" variant="light" className="correctionStatusBadge">
+                  Corrigido
+                </Badge>
+              ) : null}
               <SummaryChips items={summaryItems} review={testReview} />
             </div>
           </Group>
@@ -5103,6 +5240,7 @@ const BlockTestEditor = memo(function BlockTestEditor({
                 result={test.result}
                 onChange={(updater) => onResultChange(blockKey, test.id, updater)}
               />
+              <CorrectionReadonlyPanel correction={correction} />
             </Stack>
           </div>
         </Collapse>
@@ -5111,6 +5249,279 @@ const BlockTestEditor = memo(function BlockTestEditor({
     </Paper>
   );
 });
+
+function CorrectionPanel({
+  groups,
+  onChangeGroup,
+}: {
+  groups: CorrectionGroup[];
+  onChangeGroup: (
+    groupKey: string,
+    updater: (correction: TestCorrection) => TestCorrection,
+  ) => void;
+}) {
+  const correctedCount = groups.filter((group) => group.correction.corrected).length;
+
+  return (
+    <Section
+      title="Para corrigir"
+      sectionId="ot-section-corrections"
+      tone="blocks"
+      action={
+        <Badge variant="light" color={groups.length === correctedCount ? "green" : "yellow"}>
+          {correctedCount}/{groups.length} corrigidos
+        </Badge>
+      }
+    >
+      {groups.length > 0 ? (
+        <Stack gap="md">
+          {groups.map((group) => (
+            <CorrectionGroupCard
+              key={group.key}
+              group={group}
+              onChange={(updater) => onChangeGroup(group.key, updater)}
+            />
+          ))}
+        </Stack>
+      ) : (
+        <Paper withBorder p="md" ta="center" className="softEmpty">
+          <Text c="dimmed">Nenhum teste marcado como Novo.</Text>
+        </Paper>
+      )}
+    </Section>
+  );
+}
+
+function CorrectionGroupCard({
+  group,
+  onChange,
+}: {
+  group: CorrectionGroup;
+  onChange: (updater: (correction: TestCorrection) => TestCorrection) => void;
+}) {
+  const legacyImages = group.occurrences.flatMap((occurrence) => occurrence.test.result.legacyImages);
+  const newImages = group.occurrences.flatMap((occurrence) => occurrence.test.result.newImages);
+  const observations = group.occurrences
+    .map((occurrence) => occurrence.test.result.observations.trim())
+    .filter(Boolean);
+
+  function updateImages(
+    field: "beforeImages" | "afterImages",
+    updater: (images: EvidenceImage[]) => EvidenceImage[],
+  ): void {
+    onChange((current) => ({
+      ...current,
+      [field]: updater(current[field]),
+    }));
+  }
+
+  return (
+    <Paper withBorder p="md" className="correctionCard">
+      <Stack gap="md">
+        <Group justify="space-between" align="flex-start" gap="md" className="correctionHeader">
+          <div className="summaryHeaderCopy">
+            <Text fw={850} size="md">
+              {group.title}
+            </Text>
+            <Text c="dimmed" size="xs">
+              {formatOtCount(group.occurrences.length, "ocorrencia", "ocorrencias")}{" "}
+              {group.occurrences.length === 1 ? "agrupada" : "agrupadas"}
+            </Text>
+          </div>
+          {group.correction.corrected ? (
+            <Badge color="green" variant="light">
+              Corrigido
+            </Badge>
+          ) : (
+            <Badge color="yellow" variant="light">
+              Pendente
+            </Badge>
+          )}
+        </Group>
+
+        <div className="correctionSourceGrid">
+          <CorrectionReadonlyField title="Observacoes">
+            {observations.length > 0 ? (
+              <Stack gap={4}>
+                {observations.map((observation, index) => (
+                  <Text key={`${group.key}-observation-${index}`} size="sm">
+                    {observations.length > 1 ? `${index + 1}. ` : ""}
+                    {observation}
+                  </Text>
+                ))}
+              </Stack>
+            ) : (
+              <Text c="dimmed" size="sm">
+                Sem observacoes.
+              </Text>
+            )}
+          </CorrectionReadonlyField>
+          <CorrectionReadonlyField title="Legado">
+            <ReadonlyImageStrip images={legacyImages} emptyLabel="Sem imagens do legado." />
+          </CorrectionReadonlyField>
+          <CorrectionReadonlyField title="Novo">
+            <ReadonlyImageStrip images={newImages} emptyLabel="Sem imagens do novo." />
+          </CorrectionReadonlyField>
+        </div>
+
+        <Paper withBorder p="sm" className="correctionTodoPanel">
+          <Stack gap="sm">
+            <Group gap="md" align="flex-end" className="correctionTodoFields">
+              <Checkbox
+                label="Corrigido"
+                checked={group.correction.corrected}
+                onChange={(event) =>
+                  onChange((current) => ({
+                    ...current,
+                    corrected: event.currentTarget.checked,
+                  }))
+                }
+              />
+              <BufferedTextInput
+                label="Tag da hotfix"
+                value={group.correction.hotfixTag}
+                placeholder="hotfix 1.2.2"
+                onCommit={(value) =>
+                  onChange((current) => ({ ...current, hotfixTag: value }))
+                }
+              />
+              <Select
+                label="Nuvem"
+                data={cloudStageOptions}
+                value={group.correction.cloudStage}
+                allowDeselect={false}
+                onChange={(value) =>
+                  onChange((current) => ({
+                    ...current,
+                    cloudStage: parseCloudStage(value),
+                  }))
+                }
+              />
+            </Group>
+
+            <div className="evidenceGrid">
+              <EvidenceUploader
+                title="Antes (com erro)"
+                tone="legacy"
+                images={group.correction.beforeImages}
+                onChange={(updater) => updateImages("beforeImages", updater)}
+              />
+              <EvidenceUploader
+                title="Depois (corrigido)"
+                tone="new"
+                images={group.correction.afterImages}
+                onChange={(updater) => updateImages("afterImages", updater)}
+              />
+            </div>
+          </Stack>
+        </Paper>
+      </Stack>
+    </Paper>
+  );
+}
+
+function CorrectionReadonlyPanel({ correction }: { correction: TestCorrection }) {
+  if (!hasCorrectionDetails(correction)) {
+    return null;
+  }
+
+  return (
+    <Paper withBorder p="sm" className="correctionReadonlyPanel">
+      <Stack gap="sm">
+        <Group justify="space-between" gap="sm">
+          <Text fw={750} size="sm">
+            Correcao
+          </Text>
+          {correction.corrected ? (
+            <Badge color="green" variant="light">
+              Corrigido
+            </Badge>
+          ) : null}
+        </Group>
+        <div className="correctionReadonlyMeta">
+          <CorrectionReadonlyValue label="Hotfix" value={correction.hotfixTag || "Nao informado"} />
+          <CorrectionReadonlyValue label="Nuvem" value={formatCloudStage(correction.cloudStage)} />
+        </div>
+        <div className="correctionReadonlyImages">
+          <CorrectionReadonlyField title="Antes (com erro)">
+            <ReadonlyImageStrip images={correction.beforeImages} emptyLabel="Sem print antes." />
+          </CorrectionReadonlyField>
+          <CorrectionReadonlyField title="Depois (corrigido)">
+            <ReadonlyImageStrip images={correction.afterImages} emptyLabel="Sem print depois." />
+          </CorrectionReadonlyField>
+        </div>
+      </Stack>
+    </Paper>
+  );
+}
+
+function CorrectionReadonlyField({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <Paper withBorder p="sm" className="correctionReadonlyField">
+      <Stack gap="xs">
+        <Text fw={750} size="xs" tt="uppercase" c="dimmed">
+          {title}
+        </Text>
+        {children}
+      </Stack>
+    </Paper>
+  );
+}
+
+function CorrectionReadonlyValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="correctionReadonlyValue">
+      <Text c="dimmed" size="xs">
+        {label}
+      </Text>
+      <Text fw={750} size="sm">
+        {value}
+      </Text>
+    </div>
+  );
+}
+
+function ReadonlyImageStrip({
+  images,
+  emptyLabel,
+}: {
+  images: EvidenceImage[];
+  emptyLabel: string;
+}) {
+  if (images.length === 0) {
+    return (
+      <Text c="dimmed" size="sm">
+        {emptyLabel}
+      </Text>
+    );
+  }
+
+  return (
+    <div className="readonlyImageStrip">
+      {images.map((image) =>
+        image.dataUrl ? (
+          <img
+            key={image.id}
+            className="imagePreview"
+            src={image.dataUrl}
+            alt={image.label || image.name || "Imagem anexada"}
+            title={image.label || image.name}
+          />
+        ) : (
+          <div key={image.id} className="imagePreview imagePreview--missing">
+            Sem preview
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
 
 const TestResultEditor = memo(function TestResultEditor({
   result,
@@ -5126,16 +5537,6 @@ const TestResultEditor = memo(function TestResultEditor({
   const observations = useBufferedText(result.observations, commitObservations);
   const needsProblemObservation = hasProblemStatus(result) && !observations.value.trim();
 
-  function updateCheck(key: CheckKey): void {
-    onChange((current) => ({
-      ...current,
-      checks: {
-        ...current.checks,
-        [key]: !current.checks[key],
-      },
-    }));
-  }
-
   function updateImages(
     field: "legacyImages" | "newImages",
     updater: (images: EvidenceImage[]) => EvidenceImage[],
@@ -5148,22 +5549,6 @@ const TestResultEditor = memo(function TestResultEditor({
 
   return (
     <Stack gap="md">
-      <Paper withBorder p="sm" className="detailedChecksPanel">
-        <Stack gap="xs">
-          <Text fw={750} size="sm">
-            Status detalhado
-          </Text>
-          {checkOrder.map((key) => (
-            <Checkbox
-              key={key}
-              checked={result.checks[key]}
-              onChange={() => updateCheck(key)}
-              label={checkLabels[key]}
-            />
-          ))}
-        </Stack>
-      </Paper>
-
       <Textarea
         label="Observações"
         error={
@@ -5866,9 +6251,10 @@ function useActiveOutlineTargetId(
 
   useEffect(() => {
     let animationFrame: number | undefined;
+    const scopedTargetIds = targetSignature ? targetSignature.split("|") : [];
 
     function getMountedTargets(): HTMLElement[] {
-      return targetIds
+      return scopedTargetIds
         .map((targetId) => window.document.getElementById(targetId))
         .filter((element): element is HTMLElement => Boolean(element));
     }
@@ -6054,6 +6440,46 @@ function useBufferedText(
   );
 
   return { value, setValue, commit };
+}
+
+function arePermissionGroupEditorPropsEqual(
+  previous: PermissionGroupEditorProps,
+  next: PermissionGroupEditorProps,
+): boolean {
+  return (
+    previous.index === next.index &&
+    arePermissionGroupsEqual(previous.macro, next.macro) &&
+    previous.onMacroChange === next.onMacroChange &&
+    previous.onRemoveMacro === next.onRemoveMacro &&
+    previous.onAddMicro === next.onAddMicro &&
+    previous.onMicroChange === next.onMicroChange &&
+    previous.onRemoveMicro === next.onRemoveMicro
+  );
+}
+
+function arePermissionGroupsEqual(
+  previous: PermissionGroup,
+  next: PermissionGroup,
+): boolean {
+  if (
+    !arePermissionItemsEqual(previous, next) ||
+    previous.microPermissions.length !== next.microPermissions.length
+  ) {
+    return false;
+  }
+
+  return previous.microPermissions.every((micro, index) =>
+    arePermissionItemsEqual(micro, next.microPermissions[index]),
+  );
+}
+
+function arePermissionItemsEqual(previous: PermissionItem, next: PermissionItem): boolean {
+  return (
+    previous.id === next.id &&
+    previous.code === next.code &&
+    previous.label === next.label &&
+    previous.selected === next.selected
+  );
 }
 
 function arePermissionBlockGroupPropsEqual(
@@ -6539,20 +6965,137 @@ function buildPermissionBlockSummaryItems(block: PermissionBlock): string[] {
 }
 
 function buildTestSummaryItems(test: PermissionBlockTest): string[] {
-  return [
+  const items = [
     `${getSelectedCheckKeys(test.result).length}/${checkOrder.length} checks`,
     `Legado ${test.result.legacyImages.length}`,
     `Novo ${test.result.newImages.length}`,
   ];
+
+  if (getTestCorrection(test).corrected) {
+    items.push("Corrigido");
+  }
+
+  return items;
+}
+
+function buildCorrectionGroups(
+  documentData: OtDocument,
+  entries: PermissionBlockEntry[],
+): CorrectionGroup[] {
+  const groups = new Map<string, CorrectionGroup>();
+
+  entries.forEach((entry) => {
+    const block = documentData.permissionBlocks[entry.key] ?? emptyPermissionBlock;
+
+    block.tests.forEach((test, testIndex) => {
+      if (!test.result.checks.newIssue) {
+        return;
+      }
+
+      const key = getCorrectionGroupKey(entry.key, test);
+      const referenceKey = createTestReferenceKey(entry.key, test.id);
+      const occurrence: CorrectionOccurrence = {
+        ...entry,
+        test,
+        testIndex,
+        referenceKey,
+      };
+      const existing = groups.get(key);
+
+      if (existing) {
+        existing.occurrences.push(occurrence);
+        return;
+      }
+
+      groups.set(key, {
+        key,
+        title: test.title.trim() || `Teste ${testIndex + 1} sem nome`,
+        occurrences: [occurrence],
+        correction: getTestCorrection(test),
+      });
+    });
+  });
+
+  return Array.from(groups.values());
+}
+
+function getCorrectionGroupKey(blockKey: string, test: PermissionBlockTest): string {
+  const normalizedTitle = normalizeTextKey(test.title);
+  return normalizedTitle ? `title:${normalizedTitle}` : `single:${blockKey}:${test.id}`;
+}
+
+function getTestCorrection(test: PermissionBlockTest): TestCorrection {
+  return {
+    ...createEmptyTestCorrection(),
+    ...test.correction,
+    beforeImages: test.correction?.beforeImages ?? [],
+    afterImages: test.correction?.afterImages ?? [],
+  };
+}
+
+function hasCorrectionDetails(correction: TestCorrection): boolean {
+  return (
+    correction.corrected ||
+    Boolean(correction.hotfixTag.trim()) ||
+    correction.cloudStage !== "none" ||
+    correction.beforeImages.length > 0 ||
+    correction.afterImages.length > 0
+  );
+}
+
+function parseCloudStage(value: string | null): TestCorrection["cloudStage"] {
+  return value === "dev" || value === "homolog" || value === "production"
+    ? value
+    : "none";
+}
+
+function formatCloudStage(value: TestCorrection["cloudStage"]): string {
+  return cloudStageOptions.find((option) => option.value === value)?.label ?? "Nao enviado";
 }
 
 function buildOtOutlineItems(
   documentData: OtDocument,
   entries: PermissionBlockEntry[],
   reviewSummary: ReviewSummary,
+  context: ActiveTab,
 ): DocumentOutlineGroup[] {
   const issues = reviewSummary.issues;
   const issueCounts = buildOtOutlineIssueCounts(issues);
+  const tab = context === "preview" ? "preview" : "tests";
+
+  return [
+    {
+      id: `ot-${tab}-tests`,
+      title: "Testes",
+      items: entries.flatMap((entry) => {
+        const block = documentData.permissionBlocks[entry.key] ?? emptyPermissionBlock;
+
+        return block.tests.map<DocumentOutlineItem>((test, index) => {
+          const referenceKey = createTestReferenceKey(entry.key, test.id);
+          const testIssueCount = issueCounts.byTestReferenceKey.get(referenceKey) ?? 0;
+
+          return {
+            id: `ot-${tab}-test-${referenceKey}`,
+            title: test.title.trim() || `Teste ${index + 1} sem nome`,
+            meta: `${getSelectedCheckKeys(test.result).length}/${checkOrder.length} checks - ${formatOtCount(
+              getTestImageCount(test),
+              "imagem",
+              "imagens",
+            )}`,
+            tab,
+            targetId:
+              tab === "preview"
+                ? `ot-preview-test-${toDomId(referenceKey)}`
+                : `test-card-${toDomId(referenceKey)}`,
+            blockKey: entry.key,
+            testId: test.id,
+            status: outlineStatus(testIssueCount),
+          };
+        });
+      }),
+    },
+  ];
+
   const documentIssues = issueCounts.byTab.document;
   const permissionIssues = issueCounts.byTab.permissions;
   const testIssues = issueCounts.byTab.tests;
@@ -6764,6 +7307,7 @@ function buildOtOutlineIssueCounts(issues: ReviewIssue[]): {
       document: 0,
       permissions: 0,
       tests: 0,
+      corrections: 0,
       review: 0,
       preview: 0,
     },
@@ -7384,6 +7928,7 @@ function createBlockTest(id: string, title = ""): PermissionBlockTest {
     id,
     title,
     result: createEmptyTestResult(),
+    correction: createEmptyTestCorrection(),
   };
 }
 

@@ -1,4 +1,4 @@
-import type { CheckKey, OtDocument, TestResult } from "./types";
+import type { CheckKey, OtDocument, TestCorrection, TestResult } from "./types";
 
 export const checkLabels: Record<CheckKey, string> = {
   sameBehavior: "Funcionou legado e novo estão com o mesmo comportamento",
@@ -28,6 +28,16 @@ export function createEmptyTestResult(): TestResult {
     observations: "",
     legacyImages: [],
     newImages: [],
+  };
+}
+
+export function createEmptyTestCorrection(): TestCorrection {
+  return {
+    corrected: false,
+    beforeImages: [],
+    afterImages: [],
+    hotfixTag: "",
+    cloudStage: "none",
   };
 }
 

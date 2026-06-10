@@ -16,7 +16,12 @@ import {
   VerticalAlign,
   WidthType,
 } from "docx";
-import { checkLabels, checkOrder, createPermissionKey } from "./defaultDocument";
+import {
+  checkLabels,
+  checkOrder,
+  createEmptyTestCorrection,
+  createPermissionKey,
+} from "./defaultDocument";
 import { hydrateDocumentImages, hydrateTeaDocumentImages } from "./imageStorage";
 import { optimizeImageDataUrl } from "./imageOptimizer";
 import type {
@@ -608,6 +613,10 @@ function buildPermissionBlock(
 
     children.push(...evidenceSection("Legado:", test.result.legacyImages));
     children.push(...evidenceSection("Novo:", test.result.newImages));
+
+    if (test.result.checks.newIssue) {
+      children.push(...correctionSection(test));
+    }
   });
 
   return children;
@@ -639,6 +648,32 @@ function testResultTable(index: number, test: PermissionBlockTest): Table {
     ],
     [14, 86],
   );
+}
+
+function correctionSection(test: PermissionBlockTest) {
+  const correction = {
+    ...createEmptyTestCorrection(),
+    ...test.correction,
+    beforeImages: test.correction?.beforeImages ?? [],
+    afterImages: test.correction?.afterImages ?? [],
+  };
+
+  return [
+    new Paragraph({
+      spacing: { before: 120, after: 60 },
+      children: [run("Correcao:", { bold: true, color: COLORS.title })],
+    }),
+    simpleTable(
+      [
+        [cell("Corrigido", true), cell(correction.corrected ? "Sim" : "Nao")],
+        [cell("Hotfix", true), cell(correction.hotfixTag.trim() || " ")],
+        [cell("Nuvem", true), cell(formatCloudStage(correction.cloudStage))],
+      ],
+      [28, 72],
+    ),
+    ...evidenceSection("Antes (com erro):", correction.beforeImages),
+    ...evidenceSection("Depois (corrigido):", correction.afterImages),
+  ];
 }
 
 function evidenceSection(label: string, images: EvidenceImage[]) {
@@ -984,6 +1019,22 @@ function formatPermission(permission: PermissionItem): string {
   }
 
   return code || label || "Sem código";
+}
+
+function formatCloudStage(value: string): string {
+  if (value === "dev") {
+    return "Ate dev";
+  }
+
+  if (value === "homolog") {
+    return "Ate homolog";
+  }
+
+  if (value === "production") {
+    return "Ate producao";
+  }
+
+  return "Nao enviado";
 }
 
 function createEmptyBlock(): PermissionBlock {

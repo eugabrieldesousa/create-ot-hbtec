@@ -40,10 +40,21 @@ export type TestResult = {
   newImages: EvidenceImage[];
 };
 
+export type CorrectionCloudStage = "none" | "dev" | "homolog" | "production";
+
+export type TestCorrection = {
+  corrected: boolean;
+  beforeImages: EvidenceImage[];
+  afterImages: EvidenceImage[];
+  hotfixTag: string;
+  cloudStage: CorrectionCloudStage;
+};
+
 export type PermissionBlockTest = {
   id: string;
   title: string;
   result: TestResult;
+  correction?: TestCorrection;
 };
 
 export type PermissionBlock = {

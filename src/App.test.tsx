@@ -221,7 +221,11 @@ describe("App review validations", () => {
 
     expect(text).not.toContain("Mais de um status marcado");
     expect(text).not.toContain("Status do teste vazio");
-    expect(container.querySelector(".reviewTabBadge")).toBeNull();
+    expect(
+      Array.from(container.querySelectorAll(".reviewTabBadge")).some((badge) =>
+        badge.getAttribute("aria-label")?.includes("revis"),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -284,8 +288,28 @@ describe("App OT card UX", () => {
 
     expect(hasInputValue("teste com varios status")).toBe(true);
     expect(container.textContent ?? "").toContain("Status rapido");
-    expect(container.textContent ?? "").toContain("Status detalhado");
+    expect(container.textContent ?? "").not.toContain("Status detalhado");
     expect(container.querySelector(".evidenceGrid")).toBeTruthy();
+  });
+
+  it("groups Novo tests in Para corrigir and reflects corrected state on test cards", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await clickButton("Para corrigir");
+
+    const correctionCard = container.querySelector<HTMLElement>(".correctionCard");
+
+    expect(correctionCard?.textContent ?? "").toContain("teste com varios status");
+    expect(correctionCard?.textContent ?? "").toContain("Falha validada para revisao.");
+    expect(correctionCard?.textContent ?? "").not.toContain("Status rapido");
+    expect(correctionCard?.textContent ?? "").not.toContain("Status detalhado");
+
+    await clickControl("Corrigido");
+    await clickButton("Testes");
+
+    const testCard = container.querySelector<HTMLElement>(".testCard");
+    expect(testCard?.textContent ?? "").toContain("Corrigido");
   });
 
   it("moves secondary OT actions into menus and keeps them working", async () => {
@@ -379,23 +403,28 @@ describe("App OT card UX", () => {
 });
 
 describe("App document outline", () => {
-  it("shows an app-wide OT outline with groups and pending indicators", async () => {
+  it("shows a contextual OT outline with only test items", async () => {
     window.localStorage.setItem(draftKey, JSON.stringify(createReviewDraft()));
 
     await renderApp();
 
+    expect(container.querySelector<HTMLElement>(".documentOutline")).toBeNull();
+
+    await clickButton("Testes");
+
     const outline = container.querySelector<HTMLElement>(".documentOutline");
 
+    const outlineText = outline?.textContent ?? "";
+
     expect(outline).toBeTruthy();
-    expect(outline?.textContent ?? "").toContain("Índice");
-    expect(outline?.textContent ?? "").toContain("Documento");
-    expect(outline?.textContent ?? "").toContain("Passo a passo");
-    expect(outline?.textContent ?? "").toContain("Permissões");
-    expect(outline?.textContent ?? "").toContain("Testes");
-    expect(outline?.textContent ?? "").toContain("Revisão");
-    expect(outline?.textContent ?? "").toContain("MA (Macro A)");
-    expect(outline?.textContent ?? "").toContain("teste sem status");
-    expect(outline?.textContent ?? "").toContain("Pendente");
+    expect(outlineText).toContain("ndice");
+    expect(outlineText).toContain("Testes");
+    expect(outlineText).not.toContain("Passo a passo");
+    expect(outlineText).not.toContain("Permiss");
+    expect(outlineText).not.toContain("Revis");
+    expect(outlineText).not.toContain("MA (Macro A)");
+    expect(outlineText).toContain("teste sem status");
+    expect(outlineText).toContain("Pendente");
   });
 
   it("opens the OT test path from the outline", async () => {
@@ -405,6 +434,7 @@ describe("App document outline", () => {
 
     expect(container.querySelector("#test-card-macro-a-micro-at-test-missing-status")).toBeNull();
 
+    await clickButton("Testes");
     await clickOutlineItem("teste sem status");
 
     await act(async () => {
@@ -439,13 +469,15 @@ describe("App document outline", () => {
     expect(previewText).toContain("Tela performatica");
     expect(container.textContent ?? "").toContain("Atualizada");
 
-    await clickOutlineItem("Prévia DOCX");
+    await clickOutlineItem("teste com varios status");
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 80));
     });
 
-    expect(document.activeElement?.id).toBe("ot-section-preview");
+    expect(document.activeElement?.id).toBe(
+      "ot-preview-test-macro-a-micro-at--test-multiple-status",
+    );
   });
 
   it("shows and navigates the TEA outline with activity and subtopic targets", async () => {

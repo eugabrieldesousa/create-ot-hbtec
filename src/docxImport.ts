@@ -2,6 +2,7 @@ import mammoth from "mammoth";
 import {
   checkLabels,
   checkOrder,
+  createEmptyTestCorrection,
   createEmptyTestResult,
   createPermissionKey,
 } from "./defaultDocument";
@@ -872,6 +873,7 @@ function parseTestStart(token: Token, state: ParserState): boolean {
     id: createImportId("test", `${macro.id}-${micro.id}-${block.tests.length + 1}-${title}`),
     title,
     result: createEmptyTestResult(),
+    correction: createEmptyTestCorrection(),
   };
 
   block.tests.push(test);

@@ -1,4 +1,9 @@
-import { checkLabels, checkOrder, createPermissionKey } from "./defaultDocument";
+import {
+  checkLabels,
+  checkOrder,
+  createEmptyTestCorrection,
+  createPermissionKey,
+} from "./defaultDocument";
 import type {
   EvidenceImage,
   OtDocument,
@@ -57,6 +62,7 @@ export type DocxPreviewTable = {
   variant: "ot" | "tea";
   columnWidths: number[];
   rows: DocxPreviewCell[][];
+  anchorId?: string;
 };
 
 export type DocxPreviewList = {
@@ -202,7 +208,9 @@ function buildPermissionBlock(
   }
 
   block.tests.forEach((test, index) => {
-    blocks.push(testResultTable(index + 1, test));
+    const referenceKey = createPermissionTestReferenceKey(key, test.id);
+
+    blocks.push(testResultTable(index + 1, test, referenceKey));
 
     if (test.result.observations.trim()) {
       blocks.push(labeledBox("Observações", test.result.observations.trim()));
@@ -210,6 +218,10 @@ function buildPermissionBlock(
 
     blocks.push(...evidenceSection("Legado:", test.result.legacyImages));
     blocks.push(...evidenceSection("Novo:", test.result.newImages));
+
+    if (test.result.checks.newIssue) {
+      blocks.push(...correctionSection(test));
+    }
   });
 
   return blocks;
@@ -279,7 +291,11 @@ function permissionContextTable(
   );
 }
 
-function testResultTable(index: number, test: PermissionBlockTest): DocxPreviewTable {
+function testResultTable(
+  index: number,
+  test: PermissionBlockTest,
+  referenceKey: string,
+): DocxPreviewTable {
   return simpleTable(
     [
       [
@@ -299,7 +315,33 @@ function testResultTable(index: number, test: PermissionBlockTest): DocxPreviewT
       ]),
     ],
     [14, 86],
+    { anchorId: `ot-preview-test-${toPreviewDomId(referenceKey)}` },
   );
+}
+
+function correctionSection(test: PermissionBlockTest): DocxPreviewBlock[] {
+  const correction = {
+    ...createEmptyTestCorrection(),
+    ...test.correction,
+    beforeImages: test.correction?.beforeImages ?? [],
+    afterImages: test.correction?.afterImages ?? [],
+  };
+
+  return [
+    paragraph("ot-label", "Correcao:", {
+      runs: [{ text: "Correcao:", bold: true }],
+    }),
+    simpleTable(
+      [
+        [cell("Corrigido", true), cell(correction.corrected ? "Sim" : "Nao")],
+        [cell("Hotfix", true), cell(correction.hotfixTag.trim() || " ")],
+        [cell("Nuvem", true), cell(formatCloudStage(correction.cloudStage))],
+      ],
+      [28, 72],
+    ),
+    ...evidenceSection("Antes (com erro):", correction.beforeImages),
+    ...evidenceSection("Depois (corrigido):", correction.afterImages),
+  ];
 }
 
 function evidenceSection(label: string, images: EvidenceImage[]): DocxPreviewBlock[] {
@@ -492,6 +534,7 @@ function labeledBox(label: string, value: string): DocxPreviewTable {
 function simpleTable(
   rows: DocxPreviewCell[][],
   columnWidths: number[],
+  options: Pick<DocxPreviewTable, "anchorId"> = {},
 ): DocxPreviewTable {
   return {
     id: createPreviewId(
@@ -505,6 +548,7 @@ function simpleTable(
     variant: "ot",
     columnWidths,
     rows,
+    ...options,
   };
 }
 
@@ -606,6 +650,26 @@ function formatPermission(permission: PermissionItem): string {
   }
 
   return code || label || "Sem código";
+}
+
+function createPermissionTestReferenceKey(blockKey: string, testId: string): string {
+  return `${blockKey}--${testId}`;
+}
+
+function formatCloudStage(value: string): string {
+  if (value === "dev") {
+    return "Ate dev";
+  }
+
+  if (value === "homolog") {
+    return "Ate homolog";
+  }
+
+  if (value === "production") {
+    return "Ate producao";
+  }
+
+  return "Nao enviado";
 }
 
 function createEmptyBlock(): PermissionBlock {

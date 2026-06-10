@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deleteEvidenceImageData,
   deleteEvidenceImageDataBatch,
+  hydrateDocumentImages,
   loadEvidenceImageData,
   loadEvidenceImageDataBatch,
+  persistEmbeddedEvidenceImages,
   saveEvidenceImageData,
   saveEvidenceImageDataBatch,
+  stripImageDataFromDocument,
 } from "./imageStorage";
+import type { EvidenceImage, OtDocument } from "./types";
 
 type TestRequest<T> = {
   result?: T;
@@ -93,6 +97,26 @@ describe("imageStorage batch APIs", () => {
     });
     expect(databases.every((database) => database.close.mock.calls.length === 1)).toBe(true);
   });
+
+  it("persists, hydrates and strips OT correction images", async () => {
+    const documentData = createOtImageDocument();
+
+    await persistEmbeddedEvidenceImages(documentData);
+
+    const stripped = stripImageDataFromDocument(documentData);
+    const strippedCorrection =
+      stripped.permissionBlocks["macro:micro"].tests[0].correction;
+
+    expect(strippedCorrection?.beforeImages[0].dataUrl).toBeUndefined();
+    expect(strippedCorrection?.afterImages[0].dataUrl).toBeUndefined();
+
+    const hydrated = await hydrateDocumentImages(stripped);
+    const hydratedCorrection =
+      hydrated.permissionBlocks["macro:micro"].tests[0].correction;
+
+    expect(hydratedCorrection?.beforeImages[0].dataUrl).toBe("data:image/png;base64,YmVmb3Jl");
+    expect(hydratedCorrection?.afterImages[0].dataUrl).toBe("data:image/png;base64,YWZ0ZXI=");
+  });
 });
 
 function createTestDatabase(): TestDatabase {
@@ -176,4 +200,78 @@ function completeRequest<T>(
   }, 0);
 
   return request;
+}
+
+function createOtImageDocument(): OtDocument {
+  return {
+    metadata: {
+      screen: "Tela",
+      responsible: "GABRIEL",
+      date: "2026-06-10",
+      environment: "LOCAL",
+      author: "GABRIEL",
+    },
+    objective: "Validar imagens.",
+    accessSteps: [{ id: "step", text: "Acessar" }],
+    permissionGroups: [
+      {
+        id: "macro",
+        code: "AO",
+        label: "Administrador",
+        selected: true,
+        microPermissions: [
+          {
+            id: "micro",
+            code: "AT",
+            label: "Atualizacao",
+            selected: true,
+          },
+        ],
+      },
+    ],
+    permissionBlocks: {
+      "macro:micro": {
+        tests: [
+          {
+            id: "test",
+            title: "Teste",
+            result: {
+              checks: {
+                sameBehavior: false,
+                possibleIssue: false,
+                bothIssue: false,
+                newIssue: true,
+                errorReport: false,
+              },
+              observations: "",
+              legacyImages: [],
+              newImages: [],
+            },
+            correction: {
+              corrected: true,
+              hotfixTag: "hotfix 1.2.2",
+              cloudStage: "dev",
+              beforeImages: [
+                createImage("before", "data:image/png;base64,YmVmb3Jl"),
+              ],
+              afterImages: [
+                createImage("after", "data:image/png;base64,YWZ0ZXI="),
+              ],
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+function createImage(id: string, dataUrl: string): EvidenceImage {
+  return {
+    id,
+    label: id,
+    name: `${id}.png`,
+    dataUrl,
+    width: 100,
+    height: 80,
+  };
 }
