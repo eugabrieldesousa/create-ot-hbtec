@@ -10,7 +10,8 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ClipboardEvent, DragEvent, ReactNode } from "react";
+import type { ClipboardEvent, ComponentProps, DragEvent, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import {
   ActionIcon,
   Badge,
@@ -71,11 +72,12 @@ import { parseDocxFile } from "./docxImport";
 import type { DocxImportResult } from "./docxImport";
 import {
   deleteEvidenceImageData,
+  deleteEvidenceImageDataBatch,
   hydrateDocumentImages,
   hydrateTeaDocumentImages,
   persistEmbeddedEvidenceImages,
   persistEmbeddedTeaImages,
-  saveEvidenceImageData,
+  saveEvidenceImageDataBatch,
 } from "./imageStorage";
 import { optimizeImageFile } from "./imageOptimizer";
 import {
@@ -200,6 +202,7 @@ type ConfirmAction = (
 ) => void;
 
 const ConfirmationContext = createContext<ConfirmAction | null>(null);
+const BufferedCommitContext = createContext<((commit: () => void) => () => void) | null>(null);
 
 type OutlineItemStatus = "pending" | "ok";
 
@@ -476,6 +479,10 @@ export default function App() {
   const [documentKind, setDocumentKind] = useState<DocumentKind>("ot");
   const [documentData, setDocumentData] = useState<OtDocument>(() => loadDraft());
   const [teaData, setTeaData] = useState<TeaDocument>(() => loadTeaDraft());
+  const [otPreviewDocumentData, setOtPreviewDocumentData] =
+    useState<OtDocument>(() => documentData);
+  const [teaPreviewDocumentData, setTeaPreviewDocumentData] =
+    useState<TeaDocument>(() => teaData);
   const [expandedTests, setExpandedTests] = useState<Record<string, boolean>>({});
   const [collapsedMacros, setCollapsedMacros] = useState<Record<string, boolean>>({});
   const [collapsedPermissionBlocks, setCollapsedPermissionBlocks] = useState<
@@ -506,8 +513,12 @@ export default function App() {
   const documentDataRef = useRef(documentData);
   const teaDataRef = useRef(teaData);
   const documentKindRef = useRef<DocumentKind>(documentKind);
+  documentDataRef.current = documentData;
+  teaDataRef.current = teaData;
+  documentKindRef.current = documentKind;
   const saveTimerRef = useRef<number | undefined>();
   const idleSaveRef = useRef<number | undefined>();
+  const bufferedCommittersRef = useRef<Set<() => void>>(new Set());
   const isDarkMode = colorScheme === "dark";
   const deferredDocumentData = useDeferredValue(documentData);
   const deferredTeaData = useDeferredValue(teaData);
@@ -577,17 +588,25 @@ export default function App() {
   );
   const totalTestCount = testBlockFilterCounts.all;
 
-  useEffect(() => {
-    documentDataRef.current = documentData;
-  }, [documentData]);
+  const registerBufferedCommit = useCallback((commit: () => void): (() => void) => {
+    bufferedCommittersRef.current.add(commit);
 
-  useEffect(() => {
-    teaDataRef.current = teaData;
-  }, [teaData]);
+    return () => {
+      bufferedCommittersRef.current.delete(commit);
+    };
+  }, []);
 
-  useEffect(() => {
-    documentKindRef.current = documentKind;
-  }, [documentKind]);
+  const flushBufferedCommits = useCallback((): void => {
+    const committers = Array.from(bufferedCommittersRef.current);
+
+    if (committers.length === 0) {
+      return;
+    }
+
+    flushSync(() => {
+      committers.forEach((commit) => commit());
+    });
+  }, []);
 
   const cancelScheduledDraftSave = useCallback(() => {
     if (saveTimerRef.current !== undefined) {
@@ -694,6 +713,7 @@ export default function App() {
 
   useEffect(() => {
     const handleBeforeUnload = () => {
+      flushBufferedCommits();
       flushDraft();
     };
 
@@ -702,7 +722,7 @@ export default function App() {
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
-  }, [flushDraft]);
+  }, [flushBufferedCommits, flushDraft]);
 
   const reviewSummary = useMemo(
     () => buildReviewSummary(deferredDocumentData, permissionBlockEntries),
@@ -714,14 +734,33 @@ export default function App() {
     [deferredTeaData],
   );
 
+  const refreshOtPreview = useCallback((): void => {
+    flushBufferedCommits();
+    setOtPreviewDocumentData(documentDataRef.current);
+  }, [flushBufferedCommits]);
+
+  const refreshTeaPreview = useCallback((): void => {
+    flushBufferedCommits();
+    setTeaPreviewDocumentData(teaDataRef.current);
+  }, [flushBufferedCommits]);
+
+  const isOtPreviewStale = otPreviewDocumentData !== documentData;
+  const isTeaPreviewStale = teaPreviewDocumentData !== teaData;
+
   const otPreviewModel = useMemo(
-    () => buildOtPreviewModel(deferredDocumentData),
-    [deferredDocumentData],
+    () =>
+      documentKind === "ot" && activeTab === "preview"
+        ? buildOtPreviewModel(otPreviewDocumentData)
+        : null,
+    [activeTab, documentKind, otPreviewDocumentData],
   );
 
   const teaPreviewModel = useMemo(
-    () => buildTeaPreviewModel(deferredTeaData),
-    [deferredTeaData],
+    () =>
+      documentKind === "tea" && teaActiveTab === "preview"
+        ? buildTeaPreviewModel(teaPreviewDocumentData)
+        : null,
+    [documentKind, teaActiveTab, teaPreviewDocumentData],
   );
 
   const otOutlineGroups = useMemo(
@@ -810,6 +849,7 @@ export default function App() {
       return;
     }
 
+    flushBufferedCommits();
     flushDraft();
     setDocumentKind(nextKind);
   }
@@ -1592,6 +1632,9 @@ export default function App() {
 
   function handleOtOutlineItemClick(item: DocumentOutlineItem): void {
     setActiveOutlineTargetId(item.targetId);
+    if (item.tab === "preview") {
+      refreshOtPreview();
+    }
     setActiveTab(item.tab as ActiveTab);
 
     if (item.tab === "tests") {
@@ -1643,6 +1686,9 @@ export default function App() {
 
   function handleTeaOutlineItemClick(item: DocumentOutlineItem): void {
     setActiveOutlineTargetId(item.targetId);
+    if (item.tab === "preview") {
+      refreshTeaPreview();
+    }
     setTeaActiveTab(item.tab as TeaTab);
 
     window.setTimeout(() => {
@@ -1655,6 +1701,8 @@ export default function App() {
       return;
     }
 
+    flushBufferedCommits();
+    flushDraft();
     setIsImporting(true);
 
     try {
@@ -1702,6 +1750,7 @@ export default function App() {
   }
 
   async function handleExport(): Promise<void> {
+    flushBufferedCommits();
     flushDraft();
     setIsExporting(true);
 
@@ -1717,6 +1766,8 @@ export default function App() {
   }
 
   async function clearCurrentDraft(): Promise<void> {
+    flushBufferedCommits();
+
     if (documentKindRef.current === "tea") {
       await clearTeaDraft();
       setTeaData(loadTeaDraft());
@@ -1757,6 +1808,7 @@ export default function App() {
 
   return (
     <ConfirmationContext.Provider value={requestConfirmation}>
+    <BufferedCommitContext.Provider value={registerBufferedCommit}>
     <a href="#main-content" className="skipLink">
       Pular para o conteúdo
     </a>
@@ -1946,7 +1998,11 @@ export default function App() {
           value={activeTab}
           onChange={(value) => {
             if (value) {
-              setActiveTab(value as ActiveTab);
+              const nextTab = value as ActiveTab;
+              if (nextTab === "preview") {
+                refreshOtPreview();
+              }
+              setActiveTab(nextTab);
             }
           }}
           keepMounted={false}
@@ -1975,46 +2031,44 @@ export default function App() {
         <Section title="Documento" tone="document" sectionId="ot-section-document">
           <Stack gap="sm">
             <div className="documentFields">
-            <TextInput
+            <BufferedTextInput
               label="Tela"
               value={documentData.metadata.screen}
-              onChange={(event) => updateMetadata("screen", event.currentTarget.value)}
+              onCommit={(value) => updateMetadata("screen", value)}
             />
-            <TextInput
+            <BufferedTextInput
               label="Responsável pelo teste"
               value={documentData.metadata.responsible}
-              onChange={(event) => updateMetadata("responsible", event.currentTarget.value)}
+              onCommit={(value) => updateMetadata("responsible", value)}
             />
-            <TextInput
+            <BufferedTextInput
               label="Data"
               type="date"
               value={documentData.metadata.date}
-              onChange={(event) => updateMetadata("date", event.currentTarget.value)}
+              onCommit={(value) => updateMetadata("date", value)}
             />
-            <TextInput
+            <BufferedTextInput
               label="Ambiente"
               value={documentData.metadata.environment}
-              onChange={(event) => updateMetadata("environment", event.currentTarget.value)}
+              onCommit={(value) => updateMetadata("environment", value)}
             />
-            <TextInput
+            <BufferedTextInput
               label="Elaborada por"
               value={documentData.metadata.author}
-              onChange={(event) => updateMetadata("author", event.currentTarget.value)}
+              onCommit={(value) => updateMetadata("author", value)}
             />
             </div>
-            <Textarea
+            <BufferedTextarea
               label="Objetivo"
               minRows={4}
               styles={{ input: { resize: "vertical" } }}
               value={documentData.objective}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-
+              onCommit={(value) =>
                 updateDocument((current) => ({
                   ...current,
                   objective: value,
-                }));
-              }}
+                }))
+              }
             />
           </Stack>
         </Section>
@@ -2030,22 +2084,23 @@ export default function App() {
           }
         >
           <Stack gap="xs">
-            <Textarea
+            <BufferedTextarea
               label="Editar passos em lote"
               minRows={3}
               autosize
               value={documentData.accessSteps.map((step) => step.text).join("\n")}
-              onChange={(event) => replaceAccessStepsFromBulk(event.currentTarget.value)}
+              onCommit={replaceAccessStepsFromBulk}
+              delay={180}
             />
             {documentData.accessSteps.map((step, index) => (
               <Group key={step.id} align="flex-end" wrap="nowrap">
                 <Badge color="gray" variant="outline" w={34} h={34}>
                   {index + 1}
                 </Badge>
-                <TextInput
+                <BufferedTextInput
                   label={`Passo ${index + 1}`}
                   value={step.text}
-                  onChange={(event) => updateStep(step.id, event.currentTarget.value)}
+                  onCommit={(value) => updateStep(step.id, value)}
                   onPaste={(event) => handleStepPaste(step.id, event)}
                   style={{ flex: 1 }}
                 />
@@ -2233,13 +2288,20 @@ export default function App() {
           </Tabs.Panel>
 
           <Tabs.Panel value="preview" pt="md">
-            <DocxPreview model={otPreviewModel} />
+            {activeTab === "preview" && otPreviewModel ? (
+              <PreviewPanel
+                model={otPreviewModel}
+                isStale={isOtPreviewStale}
+                onRefresh={refreshOtPreview}
+              />
+            ) : null}
           </Tabs.Panel>
         </Tabs>
         ) : (
           <TeaWorkspace
             documentData={teaData}
             previewModel={teaPreviewModel}
+            isPreviewStale={isTeaPreviewStale}
             activeTab={teaActiveTab}
             reviewSummary={teaReviewSummary}
             collapsedActivities={collapsedTeaActivities}
@@ -2247,6 +2309,7 @@ export default function App() {
             collapsedComposers={collapsedTeaComposers}
             collapsedContentBlocks={collapsedTeaContentBlocks}
             onTabChange={setTeaActiveTab}
+            onRefreshPreview={refreshTeaPreview}
             onMetadataChange={updateTeaMetadata}
             onOverviewChange={updateTeaOverview}
             onActivityIntroChange={updateTeaActivityIntro}
@@ -2320,13 +2383,15 @@ export default function App() {
         void confirmTeaSubActivityCopy();
       }}
     />
+    </BufferedCommitContext.Provider>
     </ConfirmationContext.Provider>
   );
 }
 
-function TeaWorkspace({
+const TeaWorkspace = memo(function TeaWorkspace({
   documentData,
   previewModel,
+  isPreviewStale,
   activeTab,
   reviewSummary,
   collapsedActivities,
@@ -2352,9 +2417,11 @@ function TeaWorkspace({
   onComposerCollapseChange,
   onContentBlockCollapseChange,
   onReviewIssueClick,
+  onRefreshPreview,
 }: {
   documentData: TeaDocument;
-  previewModel: DocxPreviewModel;
+  previewModel: DocxPreviewModel | null;
+  isPreviewStale: boolean;
   activeTab: TeaTab;
   reviewSummary: TeaReviewSummary;
   collapsedActivities: Record<string, boolean>;
@@ -2391,6 +2458,7 @@ function TeaWorkspace({
   onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
   onContentBlockCollapseChange: (blockId: string, collapsed: boolean) => void;
   onReviewIssueClick: (issue: TeaReviewIssue) => void;
+  onRefreshPreview: () => void;
 }) {
   const overview = useBufferedText(documentData.overview, onOverviewChange, 180);
   const activityIntro = useBufferedText(documentData.activityIntro, onActivityIntroChange, 180);
@@ -2445,7 +2513,11 @@ function TeaWorkspace({
       value={activeTab}
       onChange={(value) => {
         if (value) {
-          onTabChange(value as TeaTab);
+          const nextTab = value as TeaTab;
+          if (nextTab === "preview") {
+            onRefreshPreview();
+          }
+          onTabChange(nextTab);
         }
       }}
       keepMounted={false}
@@ -2471,54 +2543,52 @@ function TeaWorkspace({
           <Section title="Documento TEA" tone="document" sectionId="tea-section-document">
             <Stack gap="sm">
               <div className="documentFields">
-                <TextInput
+                <BufferedTextInput
                   label="Ordem de Serviço"
                   id="tea-metadata-service-order"
                   value={documentData.metadata.serviceOrder}
                   error={inlineError("tea-metadata-service-order")}
                   placeholder="OS2171 - Login/Menu/Prestador/Documentos Vencidos"
-                  onChange={(event) =>
-                    onMetadataChange("serviceOrder", event.currentTarget.value)
-                  }
+                  onCommit={(value) => onMetadataChange("serviceOrder", value)}
                 />
-                <TextInput
+                <BufferedTextInput
                   label="Fase/Etapa"
                   id="tea-metadata-phase"
                   value={documentData.metadata.phase}
                   error={inlineError("tea-metadata-phase")}
                   placeholder="Etapa 5"
-                  onChange={(event) => onMetadataChange("phase", event.currentTarget.value)}
+                  onCommit={(value) => onMetadataChange("phase", value)}
                 />
-                <TextInput
+                <BufferedTextInput
                   label="Chamado"
                   id="tea-metadata-ticket"
                   value={documentData.metadata.ticket}
                   error={inlineError("tea-metadata-ticket")}
                   placeholder="Chamado 202504000396"
-                  onChange={(event) => onMetadataChange("ticket", event.currentTarget.value)}
+                  onCommit={(value) => onMetadataChange("ticket", value)}
                 />
-                <TextInput
+                <BufferedTextInput
                   label="Assunto"
                   id="tea-metadata-subject"
                   value={documentData.metadata.subject}
                   error={inlineError("tea-metadata-subject")}
                   placeholder="Telas - Novo Layout"
-                  onChange={(event) => onMetadataChange("subject", event.currentTarget.value)}
+                  onCommit={(value) => onMetadataChange("subject", value)}
                 />
-                <TextInput
+                <BufferedTextInput
                   label="Data"
                   id="tea-metadata-date"
                   type="date"
                   value={documentData.metadata.date}
                   error={inlineError("tea-metadata-date")}
-                  onChange={(event) => onMetadataChange("date", event.currentTarget.value)}
+                  onCommit={(value) => onMetadataChange("date", value)}
                 />
-                <TextInput
+                <BufferedTextInput
                   label="Elaborado por"
                   id="tea-metadata-author"
                   value={documentData.metadata.author}
                   error={inlineError("tea-metadata-author")}
-                  onChange={(event) => onMetadataChange("author", event.currentTarget.value)}
+                  onCommit={(value) => onMetadataChange("author", value)}
                 />
               </div>
               <Textarea
@@ -2652,13 +2722,19 @@ function TeaWorkspace({
       </Tabs.Panel>
 
       <Tabs.Panel value="preview" pt="md">
-        <DocxPreview model={previewModel} />
+        {activeTab === "preview" && previewModel ? (
+          <PreviewPanel
+            model={previewModel}
+            isStale={isPreviewStale}
+            onRefresh={onRefreshPreview}
+          />
+        ) : null}
       </Tabs.Panel>
     </Tabs>
   );
-}
+});
 
-function TeaActivityEditor({
+const TeaActivityEditor = memo(function TeaActivityEditor({
   index,
   totalActivities,
   activity,
@@ -2870,9 +2946,9 @@ function TeaActivityEditor({
       </Stack>
     </Paper>
   );
-}
+});
 
-function TeaSubActivityEditor({
+const TeaSubActivityEditor = memo(function TeaSubActivityEditor({
   activityIndex,
   index,
   totalSubActivities,
@@ -3054,9 +3130,9 @@ function TeaSubActivityEditor({
       </Stack>
     </Paper>
   );
-}
+});
 
-function TeaContentComposer({
+const TeaContentComposer = memo(function TeaContentComposer({
   composerId,
   title,
   description,
@@ -3110,9 +3186,7 @@ function TeaContentComposer({
   function removeBlock(block: TeaContentBlock): void {
     function removeCurrentBlock(): void {
       if (block.type === "images") {
-        block.images.forEach((image) => {
-          void deleteEvidenceImageData(image.id);
-        });
+        void deleteEvidenceImageDataBatch(block.images.map((image) => image.id));
       }
 
       onBlocksChange((current) => current.filter((candidate) => candidate.id !== block.id));
@@ -3215,9 +3289,9 @@ function TeaContentComposer({
       </Stack>
     </Paper>
   );
-}
+});
 
-function TeaContentBlockEditor({
+const TeaContentBlockEditor = memo(function TeaContentBlockEditor({
   block,
   index,
   totalBlocks,
@@ -3312,6 +3386,7 @@ function TeaContentBlockEditor({
         </Group>
 
         <Collapse in={!isCollapsed}>
+          {!isCollapsed ? (
           <div id={panelId}>
             {block.type === "text" ? (
               <Textarea
@@ -3361,11 +3436,12 @@ function TeaContentBlockEditor({
               />
             ) : null}
           </div>
+          ) : null}
         </Collapse>
       </Stack>
     </Paper>
   );
-}
+});
 
 function SummaryChips({
   items,
@@ -3802,6 +3878,42 @@ function ReviewTabLabel({ count }: { count: number }) {
   );
 }
 
+function PreviewPanel({
+  model,
+  isStale,
+  onRefresh,
+}: {
+  model: DocxPreviewModel;
+  isStale: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <Stack gap="sm">
+      <Paper withBorder p="sm" className="previewToolbar">
+        <Group justify="space-between" align="center" gap="sm">
+          <Group gap="xs">
+            <Text fw={750} size="sm">
+              Prévia DOCX
+            </Text>
+            <Badge color={isStale ? "yellow" : "green"} variant="light" aria-live="polite">
+              {isStale ? "Desatualizada" : "Atualizada"}
+            </Badge>
+          </Group>
+          <Button
+            variant="light"
+            size="xs"
+            leftSection={<RotateCcw size={15} />}
+            onClick={onRefresh}
+          >
+            Atualizar prévia
+          </Button>
+        </Group>
+      </Paper>
+      <DocxPreview model={model} />
+    </Stack>
+  );
+}
+
 function TeaReviewPanel({
   summary,
   onIssueClick,
@@ -4004,6 +4116,68 @@ function Section({
   );
 }
 
+type BufferedTextInputProps = Omit<
+  ComponentProps<typeof TextInput>,
+  "value" | "onChange"
+> & {
+  value: string;
+  onCommit: (value: string) => void;
+  delay?: number;
+};
+
+function BufferedTextInput({
+  value,
+  onCommit,
+  delay,
+  onBlur,
+  ...props
+}: BufferedTextInputProps) {
+  const buffered = useBufferedText(value, onCommit, delay);
+
+  return (
+    <TextInput
+      {...props}
+      value={buffered.value}
+      onChange={(event) => buffered.setValue(event.currentTarget.value)}
+      onBlur={(event) => {
+        buffered.commit();
+        onBlur?.(event);
+      }}
+    />
+  );
+}
+
+type BufferedTextareaProps = Omit<
+  ComponentProps<typeof Textarea>,
+  "value" | "onChange"
+> & {
+  value: string;
+  onCommit: (value: string) => void;
+  delay?: number;
+};
+
+function BufferedTextarea({
+  value,
+  onCommit,
+  delay,
+  onBlur,
+  ...props
+}: BufferedTextareaProps) {
+  const buffered = useBufferedText(value, onCommit, delay);
+
+  return (
+    <Textarea
+      {...props}
+      value={buffered.value}
+      onChange={(event) => buffered.setValue(event.currentTarget.value)}
+      onBlur={(event) => {
+        buffered.commit();
+        onBlur?.(event);
+      }}
+    />
+  );
+}
+
 function TestBlockFilterBar({
   value,
   counts,
@@ -4105,17 +4279,17 @@ function PermissionGroupEditor({
         </Group>
 
         <div className="permissionFields">
-          <TextInput
+          <BufferedTextInput
             label="Código"
             value={macro.code}
             placeholder="AO"
-            onChange={(event) => onMacroChange({ code: event.currentTarget.value })}
+            onCommit={(value) => onMacroChange({ code: value })}
           />
-          <TextInput
+          <BufferedTextInput
             label="Descrição"
             value={macro.label}
             placeholder="Administrador Geral"
-            onChange={(event) => onMacroChange({ label: event.currentTarget.value })}
+            onCommit={(value) => onMacroChange({ label: value })}
           />
         </div>
 
@@ -4140,21 +4314,17 @@ function PermissionGroupEditor({
                   onMicroChange(micro.id, { selected: event.currentTarget.checked })
                 }
               />
-              <TextInput
+              <BufferedTextInput
                 label="Código"
                 value={micro.code}
                 placeholder="AT"
-                onChange={(event) =>
-                  onMicroChange(micro.id, { code: event.currentTarget.value })
-                }
+                onCommit={(value) => onMicroChange(micro.id, { code: value })}
               />
-              <TextInput
+              <BufferedTextInput
                 label="Descrição"
                 value={micro.label}
                 placeholder="Atualização"
-                onChange={(event) =>
-                  onMicroChange(micro.id, { label: event.currentTarget.value })
-                }
+                onCommit={(value) => onMicroChange(micro.id, { label: value })}
               />
               <Tooltip label="Remover micro">
                 <ActionIcon
@@ -4241,6 +4411,7 @@ const PermissionBlockGroup = memo(function PermissionBlockGroup({
         </Group>
 
         <Collapse in={isExpanded}>
+          {isExpanded ? (
           <Stack gap="sm" id={panelId}>
             {entries.map((entry) => (
               <PermissionBlockEditor
@@ -4265,6 +4436,7 @@ const PermissionBlockGroup = memo(function PermissionBlockGroup({
               />
             ))}
           </Stack>
+          ) : null}
         </Collapse>
       </Stack>
     </Paper>
@@ -4345,6 +4517,7 @@ const PermissionBlockEditor = memo(function PermissionBlockEditor({
         </Group>
 
         <Collapse in={isExpanded}>
+          {isExpanded ? (
           <Stack gap="sm" id={panelId}>
             {block.tests.map((test, visibleIndex) => {
               const selfReferenceKey = createTestReferenceKey(entry.key, test.id);
@@ -4382,6 +4555,7 @@ const PermissionBlockEditor = memo(function PermissionBlockEditor({
               />
             ) : null}
           </Stack>
+          ) : null}
         </Collapse>
       </Stack>
     </Paper>
@@ -4798,12 +4972,6 @@ const EvidenceUploader = memo(function EvidenceUploader({
           const optimized = await optimizeImageFile(file);
           const id = createId();
 
-          try {
-            await saveEvidenceImageData(id, optimized.dataUrl);
-          } catch {
-            window.alert("Nao foi possivel salvar a imagem no rascunho do navegador.");
-          }
-
           return {
             id,
             label: "",
@@ -4817,6 +4985,14 @@ const EvidenceUploader = memo(function EvidenceUploader({
           };
         }),
     );
+
+    try {
+      await saveEvidenceImageDataBatch(
+        evidence.map((image) => ({ id: image.id, dataUrl: image.dataUrl })),
+      );
+    } catch {
+      window.alert("Nao foi possivel salvar a imagem no rascunho do navegador.");
+    }
 
     onChange((current) => [...current, ...evidence]);
   }
@@ -4908,12 +5084,10 @@ const EvidenceUploader = memo(function EvidenceUploader({
                     <div className="imagePreview imagePreview--missing">Sem preview</div>
                   )}
                   <Stack gap={4} className="evidenceImageFields">
-                    <TextInput
+                    <BufferedTextInput
                       label="Legenda da imagem"
                       value={image.label}
-                      onChange={(event) =>
-                        updateImageLabel(image.id, event.currentTarget.value)
-                      }
+                      onCommit={(value) => updateImageLabel(image.id, value)}
                     />
                     <Text size="xs" c="dimmed" truncate>
                       {image.name}
@@ -5496,6 +5670,7 @@ function useBufferedText(
   onCommit: (value: string) => void,
   delay = 120,
 ): BufferedTextState {
+  const registerBufferedCommit = useContext(BufferedCommitContext);
   const [value, setValueState] = useState(externalValue);
   const valueRef = useRef(externalValue);
   const lastExternalValueRef = useRef(externalValue);
@@ -5559,6 +5734,10 @@ function useBufferedText(
   }, [clearScheduledCommit, externalValue]);
 
   useEffect(() => commit, [commit]);
+  useEffect(
+    () => registerBufferedCommit?.(commit),
+    [commit, registerBufferedCommit],
+  );
 
   return { value, setValue, commit };
 }
@@ -5804,9 +5983,10 @@ function buildOtOutlineItems(
   reviewSummary: ReviewSummary,
 ): DocumentOutlineGroup[] {
   const issues = reviewSummary.issues;
-  const documentIssues = countIssues(issues, (issue) => issue.tab === "document");
-  const permissionIssues = countIssues(issues, (issue) => issue.tab === "permissions");
-  const testIssues = countIssues(issues, (issue) => issue.tab === "tests");
+  const issueCounts = buildOtOutlineIssueCounts(issues);
+  const documentIssues = issueCounts.byTab.document;
+  const permissionIssues = issueCounts.byTab.permissions;
+  const testIssues = issueCounts.byTab.tests;
   const nonEmptyStepCount = documentData.accessSteps.filter((step) => step.text.trim()).length;
   const selectedMacroIds = new Set(entries.map((entry) => entry.macro.id));
 
@@ -5829,9 +6009,7 @@ function buildOtOutlineItems(
           meta: formatOtCount(nonEmptyStepCount, "passo", "passos"),
           tab: "document",
           targetId: "ot-section-steps",
-          status: outlineStatus(
-            countIssues(issues, (issue) => issue.id === "missing-steps"),
-          ),
+          status: outlineStatus(issueCounts.byId.get("missing-steps") ?? 0),
         },
       ],
     },
@@ -5874,7 +6052,7 @@ function buildOtOutlineItems(
         },
         ...entries.flatMap((entry) => {
           const block = documentData.permissionBlocks[entry.key] ?? emptyPermissionBlock;
-          const blockIssues = countIssues(issues, (issue) => issue.blockKey === entry.key);
+          const blockIssues = issueCounts.byBlockKey.get(entry.key) ?? 0;
           const blockItem: DocumentOutlineItem = {
             id: `ot-block-${entry.key}`,
             title: formatPermission(entry.micro) || "Micro sem nome",
@@ -5891,10 +6069,7 @@ function buildOtOutlineItems(
           };
           const testItems = block.tests.map<DocumentOutlineItem>((test, index) => {
             const referenceKey = createTestReferenceKey(entry.key, test.id);
-            const testIssueCount = countIssues(
-              issues,
-              (issue) => issue.blockKey === entry.key && issue.testId === test.id,
-            );
+            const testIssueCount = issueCounts.byTestReferenceKey.get(referenceKey) ?? 0;
 
             return {
               id: `ot-test-${referenceKey}`,
@@ -5953,6 +6128,7 @@ function buildTeaOutlineItems(
   context: TeaOutlineContext,
 ): DocumentOutlineGroup[] {
   const issues = reviewSummary.issues;
+  const issueCounts = buildTeaOutlineIssueCounts(issues);
   const tab: TeaTab = context === "preview" ? "preview" : "activities";
 
   return [
@@ -5961,10 +6137,7 @@ function buildTeaOutlineItems(
       title: "Atividades",
       items: documentData.activities.flatMap((activity, activityIndex) => {
         const activityNumber = `2.${activityIndex + 1}`;
-        const activityIssueCount = countTeaIssues(
-          issues,
-          (issue) => issue.activityId === activity.id,
-        );
+        const activityIssueCount = issueCounts.byActivityId.get(activity.id) ?? 0;
         const activityTargetPrefix =
           context === "preview" ? "tea-preview-activity" : "tea-activity";
         const subActivityTargetPrefix =
@@ -5985,10 +6158,8 @@ function buildTeaOutlineItems(
         const subActivityItems = activity.subActivities.map<DocumentOutlineItem>(
           (subActivity, subIndex) => {
             const subActivityNumber = `${activityNumber}.${subIndex + 1}`;
-            const subActivityIssueCount = countTeaIssues(
-              issues,
-              (issue) => issue.subActivityId === subActivity.id,
-            );
+            const subActivityIssueCount =
+              issueCounts.bySubActivityId.get(subActivity.id) ?? 0;
 
             return {
               id: `tea-${context}-subactivity-outline-${subActivity.id}`,
@@ -6013,18 +6184,68 @@ function buildTeaOutlineItems(
   ];
 }
 
-function countIssues(
-  issues: ReviewIssue[],
-  predicate: (issue: ReviewIssue) => boolean,
-): number {
-  return issues.filter(predicate).length;
+function buildOtOutlineIssueCounts(issues: ReviewIssue[]): {
+  byTab: Record<ActiveTab, number>;
+  byId: Map<string, number>;
+  byBlockKey: Map<string, number>;
+  byTestReferenceKey: Map<string, number>;
+} {
+  const counts = {
+    byTab: {
+      document: 0,
+      permissions: 0,
+      tests: 0,
+      review: 0,
+      preview: 0,
+    },
+    byId: new Map<string, number>(),
+    byBlockKey: new Map<string, number>(),
+    byTestReferenceKey: new Map<string, number>(),
+  };
+
+  issues.forEach((issue) => {
+    counts.byTab[issue.tab] += 1;
+    incrementCount(counts.byId, issue.id);
+
+    if (issue.blockKey) {
+      incrementCount(counts.byBlockKey, issue.blockKey);
+
+      if (issue.testId) {
+        incrementCount(
+          counts.byTestReferenceKey,
+          createTestReferenceKey(issue.blockKey, issue.testId),
+        );
+      }
+    }
+  });
+
+  return counts;
 }
 
-function countTeaIssues(
-  issues: TeaReviewIssue[],
-  predicate: (issue: TeaReviewIssue) => boolean,
-): number {
-  return issues.filter(predicate).length;
+function buildTeaOutlineIssueCounts(issues: TeaReviewIssue[]): {
+  byActivityId: Map<string, number>;
+  bySubActivityId: Map<string, number>;
+} {
+  const counts = {
+    byActivityId: new Map<string, number>(),
+    bySubActivityId: new Map<string, number>(),
+  };
+
+  issues.forEach((issue) => {
+    if (issue.activityId) {
+      incrementCount(counts.byActivityId, issue.activityId);
+    }
+
+    if (issue.subActivityId) {
+      incrementCount(counts.bySubActivityId, issue.subActivityId);
+    }
+  });
+
+  return counts;
+}
+
+function incrementCount(map: Map<string, number>, key: string): void {
+  map.set(key, (map.get(key) ?? 0) + 1);
 }
 
 function outlineStatus(issueCount: number): OutlineItemStatus | undefined {
@@ -6907,24 +7128,20 @@ async function duplicateTeaContentBlock(block: TeaContentBlock): Promise<TeaCont
   }
 
   let failedToPersist = false;
-  const images = await Promise.all(
-    block.images.map(async (image) => {
-      const id = createId();
+  const images = block.images.map((image) => ({
+    ...image,
+    id: createId(),
+  }));
 
-      if (image.dataUrl) {
-        try {
-          await saveEvidenceImageData(id, image.dataUrl);
-        } catch {
-          failedToPersist = true;
-        }
-      }
-
-      return {
-        ...image,
-        id,
-      };
-    }),
-  );
+  try {
+    await saveEvidenceImageDataBatch(
+      images.flatMap((image) =>
+        image.dataUrl ? [{ id: image.id, dataUrl: image.dataUrl }] : [],
+      ),
+    );
+  } catch {
+    failedToPersist = true;
+  }
 
   if (failedToPersist) {
     window.alert("Nao foi possivel duplicar uma ou mais imagens no rascunho do navegador.");

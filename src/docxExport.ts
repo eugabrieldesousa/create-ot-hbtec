@@ -67,6 +67,7 @@ const COLORS = {
   selectedFill: "EAF7EF",
   emptyFill: "F8FAFC",
 };
+const EXPORT_IMAGE_YIELD_INTERVAL = 3;
 
 export async function exportOtDocument(documentData: OtDocument): Promise<void> {
   const hydratedDocument = await hydrateDocumentImages(documentData);
@@ -279,11 +280,21 @@ async function optimizeTeaDocumentImages(documentData: TeaDocument): Promise<Tea
 async function optimizeEvidenceImagesForExport(
   images: EvidenceImage[],
 ): Promise<EvidenceImage[]> {
-  return Promise.all(images.map(optimizeEvidenceImageForExport));
+  const optimizedImages: EvidenceImage[] = [];
+
+  for (let index = 0; index < images.length; index += 1) {
+    if (index > 0 && index % EXPORT_IMAGE_YIELD_INTERVAL === 0) {
+      await yieldToBrowser();
+    }
+
+    optimizedImages.push(await optimizeEvidenceImageForExport(images[index]));
+  }
+
+  return optimizedImages;
 }
 
 async function optimizeEvidenceImageForExport(image: EvidenceImage): Promise<EvidenceImage> {
-  if (!hasImageData(image)) {
+  if (!hasImageData(image) || image.optimized) {
     return image;
   }
 
@@ -298,6 +309,12 @@ async function optimizeEvidenceImageForExport(image: EvidenceImage): Promise<Evi
     savedBytes: optimized.savedBytes,
     optimized: image.optimized || optimized.optimized,
   };
+}
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
 }
 
 function buildTeaDocumentChildren(documentData: TeaDocument) {

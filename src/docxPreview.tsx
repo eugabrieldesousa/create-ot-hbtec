@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { CSSProperties } from "react";
 import type {
   DocxPreviewBlock,
@@ -8,7 +9,7 @@ import type {
   DocxPreviewTable,
 } from "./docxPreviewModel";
 
-export function DocxPreview({ model }: { model: DocxPreviewModel }) {
+export const DocxPreview = memo(function DocxPreview({ model }: { model: DocxPreviewModel }) {
   return (
     <section
       id={model.sectionId}
@@ -27,7 +28,7 @@ export function DocxPreview({ model }: { model: DocxPreviewModel }) {
       </div>
     </section>
   );
-}
+});
 
 function renderBlock(block: DocxPreviewBlock, index: number) {
   if (block.type === "paragraph") {

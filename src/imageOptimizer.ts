@@ -30,7 +30,13 @@ export async function optimizeImageDataUrl(
   options: OptimizeOptions = {},
 ): Promise<OptimizedImageData> {
   const originalBytes = dataUrlByteLength(dataUrl);
-  const originalSize = await readImageSize(dataUrl);
+  const originalImage = await loadImage(dataUrl).catch(() => undefined);
+  const originalSize = originalImage
+    ? {
+        width: originalImage.naturalWidth || 560,
+        height: originalImage.naturalHeight || 320,
+      }
+    : { width: 560, height: 320 };
   const fallback: OptimizedImageData = {
     dataUrl,
     width: originalSize.width,
@@ -51,11 +57,11 @@ export async function optimizeImageDataUrl(
     const scale = Math.min(maxDimension / originalSize.width, maxDimension / originalSize.height, 1);
     const width = Math.max(1, Math.round(originalSize.width * scale));
     const height = Math.max(1, Math.round(originalSize.height * scale));
-    const image = await loadImage(dataUrl);
+    const image = originalImage;
     const canvas = window.document.createElement("canvas");
     const context = canvas.getContext("2d");
 
-    if (!context) {
+    if (!image || !context) {
       return fallback;
     }
 
@@ -116,15 +122,6 @@ function fileToDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
-}
-
-function readImageSize(dataUrl: string): Promise<{ width: number; height: number }> {
-  return loadImage(dataUrl)
-    .then((image) => ({
-      width: image.naturalWidth || 560,
-      height: image.naturalHeight || 320,
-    }))
-    .catch(() => ({ width: 560, height: 320 }));
 }
 
 function loadImage(dataUrl: string): Promise<HTMLImageElement> {

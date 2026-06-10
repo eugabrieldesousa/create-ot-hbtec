@@ -1,7 +1,7 @@
 import { createDefaultDocument, createEmptyTestResult, createPermissionKey } from "./defaultDocument";
 import { createDefaultTeaDocument } from "./defaultTeaDocument";
 import {
-  deleteEvidenceImageData,
+  deleteEvidenceImageDataBatch,
   stripImageDataFromDocument,
   stripImageDataFromTeaDocument,
 } from "./imageStorage";
@@ -489,15 +489,11 @@ function normalizeTeaTextItems(items: TeaTextItem[] | unknown, prefix: string): 
 }
 
 async function deleteEvidenceImages(imageIds: string[]): Promise<void> {
-  await Promise.all(
-    Array.from(new Set(imageIds)).map(async (imageId) => {
-      try {
-        await deleteEvidenceImageData(imageId);
-      } catch {
-        // A falta do IndexedDB nao deve impedir a limpeza do rascunho leve.
-      }
-    }),
-  );
+  try {
+    await deleteEvidenceImageDataBatch(imageIds);
+  } catch {
+    // A falta do IndexedDB nao deve impedir a limpeza do rascunho leve.
+  }
 }
 
 function getOtImageIds(document: OtDocument): string[] {

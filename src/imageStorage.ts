@@ -17,32 +17,82 @@ type StoredImage = {
   updatedAt: number;
 };
 
+type EvidenceImageDataEntry = {
+  id: string;
+  dataUrl: string;
+};
+
 export async function saveEvidenceImageData(id: string, dataUrl: string): Promise<void> {
+  await saveEvidenceImageDataBatch([{ id, dataUrl }]);
+}
+
+export async function saveEvidenceImageDataBatch(
+  images: EvidenceImageDataEntry[],
+): Promise<void> {
+  if (images.length === 0) {
+    return;
+  }
+
   const db = await openImageDatabase();
+  const updatedAt = Date.now();
 
   await runImageTransaction(db, "readwrite", (store) => {
-    store.put({ id, dataUrl, updatedAt: Date.now() } satisfies StoredImage);
+    images.forEach(({ id, dataUrl }) => {
+      store.put({ id, dataUrl, updatedAt } satisfies StoredImage);
+    });
   });
 }
 
 export async function loadEvidenceImageData(id: string): Promise<string | undefined> {
+  const images = await loadEvidenceImageDataBatch([id]);
+  return images[id];
+}
+
+export async function loadEvidenceImageDataBatch(
+  ids: string[],
+): Promise<Record<string, string | undefined>> {
+  const uniqueIds = Array.from(new Set(ids)).filter(Boolean);
+
+  if (uniqueIds.length === 0) {
+    return {};
+  }
+
   try {
     const db = await openImageDatabase();
-    const image = await runImageTransaction(db, "readonly", (store) =>
-      requestValue<StoredImage>(store.get(id)),
-    );
+    const images = await runImageTransaction(db, "readonly", async (store) => {
+      const entries = await Promise.all(
+        uniqueIds.map(async (id) => [
+          id,
+          (await requestValue<StoredImage | undefined>(store.get(id)))?.dataUrl,
+        ] as const),
+      );
 
-    return image?.dataUrl;
+      return Object.fromEntries(entries);
+    });
+
+    return images;
   } catch {
-    return undefined;
+    return Object.fromEntries(uniqueIds.map((id) => [id, undefined]));
   }
 }
 
 export async function deleteEvidenceImageData(id: string): Promise<void> {
+  await deleteEvidenceImageDataBatch([id]);
+}
+
+export async function deleteEvidenceImageDataBatch(ids: string[]): Promise<void> {
+  const uniqueIds = Array.from(new Set(ids)).filter(Boolean);
+
+  if (uniqueIds.length === 0) {
+    return;
+  }
+
   const db = await openImageDatabase();
 
   await runImageTransaction(db, "readwrite", (store) => {
-    store.delete(id);
+    uniqueIds.forEach((id) => {
+      store.delete(id);
+    });
   });
 }
 
@@ -57,53 +107,51 @@ export async function clearEvidenceImageData(): Promise<void> {
 export async function persistEmbeddedEvidenceImages(
   documentData: OtDocument,
 ): Promise<OtDocument> {
-  const images = getDocumentImages(documentData).filter((image) => image.dataUrl);
-
-  await Promise.all(
-    images.map((image) => saveEvidenceImageData(image.id, image.dataUrl as string)),
+  const images = getDocumentImages(documentData).flatMap((image) =>
+    image.dataUrl ? [{ id: image.id, dataUrl: image.dataUrl }] : [],
   );
+
+  await saveEvidenceImageDataBatch(images);
 
   return documentData;
 }
 
 export async function persistEmbeddedTeaImages(documentData: TeaDocument): Promise<TeaDocument> {
-  const images = getTeaDocumentImages(documentData).filter((image) => image.dataUrl);
-
-  await Promise.all(
-    images.map((image) => saveEvidenceImageData(image.id, image.dataUrl as string)),
+  const images = getTeaDocumentImages(documentData).flatMap((image) =>
+    image.dataUrl ? [{ id: image.id, dataUrl: image.dataUrl }] : [],
   );
+
+  await saveEvidenceImageDataBatch(images);
 
   return documentData;
 }
 
 export async function hydrateDocumentImages(documentData: OtDocument): Promise<OtDocument> {
-  const hydrateImages = async (images: EvidenceImage[]): Promise<EvidenceImage[]> =>
-    Promise.all(
-      images.map(async (image) => ({
-        ...image,
-        dataUrl: image.dataUrl ?? (await loadEvidenceImageData(image.id)),
-      })),
-    );
+  const missingImageIds = getDocumentImages(documentData).flatMap((image) =>
+    image.dataUrl ? [] : [image.id],
+  );
+  const imageDataById = await loadEvidenceImageDataBatch(missingImageIds);
+  const hydrateImages = (images: EvidenceImage[]): EvidenceImage[] =>
+    images.map((image) => ({
+      ...image,
+      dataUrl: image.dataUrl ?? imageDataById[image.id],
+    }));
 
   const permissionBlocks = Object.fromEntries(
-    await Promise.all(
-      Object.entries(documentData.permissionBlocks).map(async ([blockKey, block]) => [
-        blockKey,
-        {
-          ...block,
-          tests: await Promise.all(
-            block.tests.map(async (test) => ({
-              ...test,
-              result: {
-                ...test.result,
-                legacyImages: await hydrateImages(test.result.legacyImages),
-                newImages: await hydrateImages(test.result.newImages),
-              },
-            })),
-          ),
-        },
-      ]),
-    ),
+    Object.entries(documentData.permissionBlocks).map(([blockKey, block]) => [
+      blockKey,
+      {
+        ...block,
+        tests: block.tests.map((test) => ({
+          ...test,
+          result: {
+            ...test.result,
+            legacyImages: hydrateImages(test.result.legacyImages),
+            newImages: hydrateImages(test.result.newImages),
+          },
+        })),
+      },
+    ]),
   );
 
   return {
@@ -113,37 +161,37 @@ export async function hydrateDocumentImages(documentData: OtDocument): Promise<O
 }
 
 export async function hydrateTeaDocumentImages(documentData: TeaDocument): Promise<TeaDocument> {
-  const hydrateImages = async (images: EvidenceImage[]): Promise<EvidenceImage[]> =>
-    Promise.all(
-      images.map(async (image) => ({
-        ...image,
-        dataUrl: image.dataUrl ?? (await loadEvidenceImageData(image.id)),
-      })),
-    );
+  const missingImageIds = getTeaDocumentImages(documentData).flatMap((image) =>
+    image.dataUrl ? [] : [image.id],
+  );
+  const imageDataById = await loadEvidenceImageDataBatch(missingImageIds);
+  const hydrateImages = (images: EvidenceImage[]): EvidenceImage[] =>
+    images.map((image) => ({
+      ...image,
+      dataUrl: image.dataUrl ?? imageDataById[image.id],
+    }));
 
-  const hydrateBlock = async (block: TeaContentBlock): Promise<TeaContentBlock> =>
+  const hydrateBlock = (block: TeaContentBlock): TeaContentBlock =>
     block.type === "images"
       ? {
           ...block,
-          images: await hydrateImages(block.images),
+          images: hydrateImages(block.images),
         }
       : block;
 
-  const hydrateActivity = async (activity: TeaActivity): Promise<TeaActivity> => ({
+  const hydrateActivity = (activity: TeaActivity): TeaActivity => ({
     ...activity,
-    blocks: await Promise.all(activity.blocks.map(hydrateBlock)),
-    subActivities: await Promise.all(
-      activity.subActivities.map(async (subActivity) => ({
+    blocks: activity.blocks.map(hydrateBlock),
+    subActivities: activity.subActivities.map((subActivity) => ({
         ...subActivity,
-        blocks: await Promise.all(subActivity.blocks.map(hydrateBlock)),
+        blocks: subActivity.blocks.map(hydrateBlock),
       })),
-    ),
   });
 
   return {
     ...documentData,
-    activityImages: await hydrateImages(documentData.activityImages),
-    activities: await Promise.all(documentData.activities.map(hydrateActivity)),
+    activityImages: hydrateImages(documentData.activityImages),
+    activities: documentData.activities.map(hydrateActivity),
   };
 }
 

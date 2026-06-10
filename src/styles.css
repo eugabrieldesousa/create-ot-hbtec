@@ -1282,6 +1282,15 @@ main:focus {
   white-space: pre-wrap;
 }
 
+.previewToolbar {
+  background: var(--app-card-bg);
+  border-color: var(--app-border);
+}
+
+.previewToolbar .mantine-Group-root {
+  min-width: 0;
+}
+
 .docxPreviewSection {
   scroll-margin-top: 1rem;
 }

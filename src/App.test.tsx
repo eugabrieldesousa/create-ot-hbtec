@@ -356,12 +356,17 @@ describe("App document outline", () => {
     expect(tabs).toContain("Prévia DOCX");
     expect(container.textContent ?? "").toContain("Importar DOCX");
     expect(container.textContent ?? "").toContain("Exportar DOCX");
+    expect(container.querySelector(".docxPreviewPage")).toBeNull();
+
+    await clickButton("Documento");
+    await setFieldValue(getInputByLabel("Tela"), "Tela performatica");
 
     await clickButton("Prévia DOCX");
 
-    expect(container.querySelector(".docxPreviewPage")?.textContent ?? "").toContain(
-      "OBSERVABILIDADE DE TESTES",
-    );
+    const previewText = container.querySelector(".docxPreviewPage")?.textContent ?? "";
+    expect(previewText).toContain("OBSERVABILIDADE DE TESTES");
+    expect(previewText).toContain("Tela performatica");
+    expect(container.textContent ?? "").toContain("Atualizada");
 
     await clickOutlineItem("Prévia DOCX");
 
@@ -1161,6 +1166,32 @@ function hasInputValue(value: string): boolean {
   return Array.from(container.querySelectorAll<HTMLInputElement>("input")).some(
     (input) => input.value === value,
   );
+}
+
+function getInputByLabel(label: string): HTMLInputElement {
+  const input = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find(
+    (candidate) =>
+      candidate.closest(".mantine-InputWrapper-root")?.textContent?.includes(label),
+  );
+
+  expect(input).toBeTruthy();
+  return input as HTMLInputElement;
+}
+
+async function setFieldValue(
+  field: HTMLInputElement | HTMLTextAreaElement,
+  value: string,
+): Promise<void> {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    Object.getPrototypeOf(field),
+    "value",
+  );
+
+  await act(async () => {
+    descriptor?.set?.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 function getQuickCheckButton(label: string): HTMLButtonElement | undefined {
