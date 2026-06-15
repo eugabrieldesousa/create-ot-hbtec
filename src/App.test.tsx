@@ -328,6 +328,77 @@ describe("App OT card UX", () => {
     expect(testCard?.textContent ?? "").toContain("Corrigido");
   });
 
+  it("preserves multiline observations and groups Para corrigir by macro and micro", async () => {
+    const documentData = createCorrectionDraft();
+    documentData.permissionBlocks["macro-a:micro-at"].tests[0].result.observations =
+      "Primeira linha\nSegunda linha";
+    window.localStorage.setItem(draftKey, JSON.stringify(documentData));
+
+    await renderApp();
+    await clickButton("Para corrigir");
+
+    expect(container.querySelectorAll(".correctionPermissionGroup")).toHaveLength(1);
+    expect(container.querySelectorAll(".correctionMicroGroup")).toHaveLength(2);
+
+    await clickElement(getToggleByControlPrefix("correction-details"));
+
+    const observation = container.querySelector<HTMLElement>(".readonlyMultilineText");
+    expect(observation?.textContent ?? "").toContain("Primeira linha\nSegunda linha");
+  });
+
+  it("filters Para corrigir and bulk-updates only visible items", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createCorrectionDraft()));
+
+    await renderApp();
+    await clickButton("Para corrigir");
+
+    expect(getFilterCount("Todos")).toBe("2");
+    expect(getFilterCount("Pendentes")).toBe("1");
+    expect(getFilterCount("Corrigidos")).toBe("1");
+    expect(getFilterCount("Sem hotfix")).toBe("2");
+
+    await clickFilterButton("Pendentes");
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").toContain(
+      "pendente visivel",
+    );
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").not.toContain(
+      "corrigido oculto",
+    );
+
+    await setFieldValue(getInputByLabel("Tag da hotfix"), "hotfix bulk");
+    await setFieldValue(getInputByLabel("Corrigido por"), "Ana");
+    await clickButton("Atualizar todos");
+
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").toContain(
+      "hotfix bulk",
+    );
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").toContain("Por Ana");
+
+    await clickFilterButton("Corrigidos");
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").toContain(
+      "corrigido oculto",
+    );
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").not.toContain(
+      "hotfix bulk",
+    );
+  });
+
+  it("opens an image preview from evidence thumbnails without showing caption fields", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await clickButton("Testes");
+    await clickElement(getToggleByControlPrefix("test-details"));
+
+    expect(container.textContent ?? "").not.toContain("Legenda da imagem");
+
+    const previewButton = container.querySelector<HTMLButtonElement>(".imagePreviewButton");
+    await clickElement(previewButton);
+
+    await waitForDialogText("Pre-visualizacao da imagem");
+    expect(document.body.textContent ?? "").toContain("legacy-image.png");
+  });
+
   it("moves secondary OT actions into menus and keeps them working", async () => {
     window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
 
@@ -459,6 +530,31 @@ describe("App document outline", () => {
 
     expect(container.textContent ?? "").toContain("Status rapido");
     expect(document.activeElement?.id).toBe("test-card-macro-a-micro-at--test-missing-status");
+  });
+
+  it("hides and restores the document outline from the visible top button", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createReviewDraft()));
+
+    await renderApp();
+    await clickButton("Testes");
+
+    expect(container.querySelector<HTMLElement>(".documentOutline")).toBeTruthy();
+
+    await clickAriaButtonAt("Mais ações do documento");
+    await clickMenuItem("Ocultar indice");
+
+    expect(container.querySelector<HTMLElement>(".documentOutline")).toBeNull();
+    expect(window.localStorage.getItem("create-ot:outline-hidden")).toBe("true");
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+
+    await renderApp();
+    await clickButton("Testes");
+
+    expect(container.querySelector<HTMLElement>(".documentOutline")).toBeNull();
   });
 
   it("shows and opens the OT DOCX preview without replacing import or export actions", async () => {
@@ -797,7 +893,7 @@ describe("App TEA content blocks", () => {
     expect(text).toContain("Blocos de Subtopico com imagem");
     expect(text).toContain("Bloco 1 - Texto");
     expect(text).not.toContain("Conteúdo");
-    expect(text).toContain("Legenda da imagem");
+    expect(text).not.toContain("Legenda da imagem");
     expect(text).toContain("Adicionar imagem");
   });
 
@@ -975,6 +1071,36 @@ describe("App TEA content blocks", () => {
     expect(destinationActivity?.textContent ?? "").toContain("Texto copiado");
     expect(destinationActivity?.textContent ?? "").toContain("Item copiado");
     expect(destinationActivity?.textContent ?? "").toContain("copy-source-image.png");
+  });
+
+  it("copies multiple TEA subtopics to one target activity", async () => {
+    window.localStorage.setItem(
+      teaDraftKey,
+      JSON.stringify(createTeaDraftForBulkSubActivityCopy()),
+    );
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    await clickButton("Copiar subt");
+    await waitForDialogText("Selecionar todos");
+    await selectComboboxOption("Atividade destino", "2.3 Atividade destino B");
+    await clickDialogButton("Copiar subt");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    });
+
+    const activityCards = Array.from(container.querySelectorAll<HTMLElement>(".teaActivityCard"));
+    const destinationActivity = activityCards.find((activityCard) =>
+      activityCard.textContent?.includes("2.3 Atividade destino B"),
+    );
+
+    expect(container.querySelectorAll(".teaSubActivityCard")).toHaveLength(4);
+    expect(destinationActivity?.textContent ?? "").toContain("2.3.1 Subtopico origem");
+    expect(destinationActivity?.textContent ?? "").toContain("2.3.2 Segundo subtopico");
+    expect(destinationActivity?.textContent ?? "").toContain("Texto do segundo subtopico");
   });
 
   it("disables subtopic copy confirmation when there is no other activity", async () => {
@@ -1756,6 +1882,66 @@ function createCompleteReviewDraft(): OtDocument {
   };
 }
 
+function createCorrectionDraft(): OtDocument {
+  const documentData = createCompleteReviewDraft();
+  const macro = documentData.permissionGroups[0];
+
+  macro.microPermissions.push({
+    id: "micro-co",
+    code: "CO",
+    label: "Consulta",
+    selected: true,
+  });
+
+  documentData.permissionBlocks["macro-a:micro-at"] = {
+    tests: [
+      {
+        id: "pending-correction",
+        title: "pendente visivel",
+        result: {
+          ...createResult({ newIssue: true }),
+          observations: "Falha pendente.",
+          legacyImages: [createImage("legacy-pending")],
+          newImages: [createImage("new-pending")],
+        },
+        correction: {
+          corrected: false,
+          hotfixTag: "",
+          correctedBy: "",
+          cloudStage: "none",
+          beforeImages: [],
+          afterImages: [],
+        },
+      },
+    ],
+  };
+
+  documentData.permissionBlocks["macro-a:micro-co"] = {
+    tests: [
+      {
+        id: "corrected-correction",
+        title: "corrigido oculto",
+        result: {
+          ...createResult({ newIssue: true }),
+          observations: "Falha corrigida.",
+          legacyImages: [createImage("legacy-corrected")],
+          newImages: [createImage("new-corrected")],
+        },
+        correction: {
+          corrected: true,
+          hotfixTag: "",
+          correctedBy: "",
+          cloudStage: "none",
+          beforeImages: [createImage("before-corrected")],
+          afterImages: [createImage("after-corrected")],
+        },
+      },
+    ],
+  };
+
+  return documentData;
+}
+
 function createLegacyTeaDraft(): unknown {
   return {
     metadata: {
@@ -1885,6 +2071,25 @@ function createTeaDraftForSubActivityCopy(): TeaDocument {
       },
     ],
   };
+}
+
+function createTeaDraftForBulkSubActivityCopy(): TeaDocument {
+  const documentData = createTeaDraftForSubActivityCopy();
+  const sourceActivity = documentData.activities[0];
+
+  sourceActivity.subActivities.push({
+    id: "copy-source-subactivity-two",
+    title: "Segundo subtopico",
+    blocks: [
+      {
+        id: "copy-source-two-text",
+        type: "text",
+        text: "Texto do segundo subtopico",
+      },
+    ],
+  });
+
+  return documentData;
 }
 
 function createSingleActivitySubtopicDraft(): TeaDocument {

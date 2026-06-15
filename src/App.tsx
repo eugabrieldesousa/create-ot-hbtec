@@ -52,6 +52,8 @@ import {
   ClipboardList,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   FileSearch,
   FileText,
   FileUp,
@@ -236,7 +238,7 @@ type PendingConfirmation = ConfirmationOptions & {
 
 type TeaSubActivityCopyRequest = {
   sourceActivityId: string;
-  subActivityId: string;
+  selectedSubActivityIds: string[];
   targetActivityId: string | null;
 };
 
@@ -247,6 +249,7 @@ type ConfirmAction = (
 
 const ConfirmationContext = createContext<ConfirmAction | null>(null);
 const BufferedCommitContext = createContext<((commit: () => void) => () => void) | null>(null);
+const ImagePreviewContext = createContext<((image: EvidenceImage) => void) | null>(null);
 
 type OutlineItemStatus = "pending" | "ok";
 
@@ -282,6 +285,27 @@ type CorrectionGroup = {
   title: string;
   occurrences: CorrectionOccurrence[];
   correction: TestCorrection;
+};
+
+type CorrectionFilter =
+  | "all"
+  | "pending"
+  | "corrected"
+  | "withoutHotfix"
+  | "withoutResponsible"
+  | "withoutCloud"
+  | "withoutPrints";
+
+type CorrectionMicroGroup = {
+  key: string;
+  macro: PermissionGroup;
+  micro: PermissionItem;
+  groups: CorrectionGroup[];
+};
+
+type CorrectionMacroGroup = {
+  macro: PermissionGroup;
+  entries: CorrectionMicroGroup[];
 };
 
 type FaqSection = {
@@ -407,7 +431,7 @@ type TeaWorkspaceProps = {
     subActivityId: string,
     direction: MoveDirection,
   ) => void;
-  onSubActivityCopy: (activityId: string, subActivityId: string) => void;
+  onSubActivityCopy: (activityId: string, subActivityIds: string[]) => void;
   onActivityCollapseChange: (activityId: string, collapsed: boolean) => void;
   onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
   onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
@@ -435,7 +459,7 @@ type TeaActivityEditorProps = {
   ) => void;
   onSubActivityRemove: (subActivityId: string) => void;
   onSubActivityMove: (subActivityId: string, direction: MoveDirection) => void;
-  onSubActivityCopy: (subActivityId: string) => void;
+  onSubActivityCopy: (subActivityIds: string[]) => void;
   onCollapseChange: (collapsed: boolean) => void;
   onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
   onComposerCollapseChange: (composerId: string, collapsed: boolean) => void;
@@ -510,6 +534,16 @@ function useConfirmAction(): ConfirmAction {
   return confirmAction;
 }
 
+function useImagePreview(): (image: EvidenceImage) => void {
+  const openPreview = useContext(ImagePreviewContext);
+
+  if (!openPreview) {
+    throw new Error("useImagePreview must be used inside ImagePreviewContext.Provider");
+  }
+
+  return openPreview;
+}
+
 const quickCheckLabels: Record<CheckKey, string> = {
   sameBehavior: "OK",
   possibleIssue: "Possível",
@@ -548,6 +582,26 @@ const testBlockFilterOrder: TestBlockFilter[] = [
   "withProblem",
 ];
 
+const correctionFilterLabels: Record<CorrectionFilter, string> = {
+  all: "Todos",
+  pending: "Pendentes",
+  corrected: "Corrigidos",
+  withoutHotfix: "Sem hotfix",
+  withoutResponsible: "Sem responsavel",
+  withoutCloud: "Sem nuvem",
+  withoutPrints: "Sem prints",
+};
+
+const correctionFilterOrder: CorrectionFilter[] = [
+  "all",
+  "pending",
+  "corrected",
+  "withoutHotfix",
+  "withoutResponsible",
+  "withoutCloud",
+  "withoutPrints",
+];
+
 const cloudStageOptions: Array<{ value: TestCorrection["cloudStage"]; label: string }> = [
   { value: "none", label: "Nao enviado" },
   { value: "dev", label: "Ate dev" },
@@ -556,6 +610,7 @@ const cloudStageOptions: Array<{ value: TestCorrection["cloudStage"]; label: str
 ];
 
 const emptyPermissionBlock: PermissionBlock = { tests: [] };
+const outlineHiddenPreferenceKey = "create-ot:outline-hidden";
 
 const faqSections: FaqSection[] = [
   {
@@ -690,6 +745,8 @@ export default function App() {
   const [teaActiveTab, setTeaActiveTab] = useState<TeaTab>("document");
   const [testBlockFilter, setTestBlockFilter] = useState<TestBlockFilter>("all");
   const [isFaqOpen, setIsFaqOpen] = useState(false);
+  const [isOutlineHidden, setIsOutlineHidden] = useState(loadOutlineHiddenPreference);
+  const [previewImage, setPreviewImage] = useState<EvidenceImage | null>(null);
   const [globalLoading, setGlobalLoading] = useState<LoadingTask | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -953,6 +1010,10 @@ export default function App() {
     permissionBulkTextRef.current = permissionBulkText;
   }, [permissionBulkText]);
 
+  useEffect(() => {
+    saveOutlineHiddenPreference(isOutlineHidden);
+  }, [isOutlineHidden]);
+
   const reviewSummary = useMemo(
     () => buildReviewSummary(deferredDocumentData, permissionBlockEntries),
     [deferredDocumentData, permissionBlockEntries],
@@ -1020,7 +1081,8 @@ export default function App() {
     [teaData, teaOutlineContext, teaReviewSummary],
   );
   const showDocumentOutline =
-    (documentKind === "ot" && otOutlineContext !== null) || teaOutlineContext !== null;
+    !isOutlineHidden &&
+    ((documentKind === "ot" && otOutlineContext !== null) || teaOutlineContext !== null);
   const isTeaActivitiesOutlineNavigable =
     documentKind !== "tea" ||
     teaActiveTab !== "activities" ||
@@ -1221,15 +1283,24 @@ export default function App() {
 
   const openTeaSubActivityCopyModal = useCallback((
     sourceActivityId: string,
-    subActivityId: string,
+    subActivityIds: string[],
   ): void => {
+    const sourceActivity = teaDataRef.current.activities.find(
+      (activity) => activity.id === sourceActivityId,
+    );
+    const validSubActivityIds = new Set(
+      sourceActivity?.subActivities.map((subActivity) => subActivity.id) ?? [],
+    );
+    const selectedSubActivityIds = subActivityIds.filter((subActivityId) =>
+      validSubActivityIds.has(subActivityId),
+    );
     const targetActivityId =
       teaDataRef.current.activities.find((activity) => activity.id !== sourceActivityId)?.id ??
       null;
 
     setTeaSubActivityCopyRequest({
       sourceActivityId,
-      subActivityId,
+      selectedSubActivityIds,
       targetActivityId,
     });
   }, []);
@@ -1240,36 +1311,58 @@ export default function App() {
     );
   }, []);
 
+  const updateTeaSubActivityCopySelection = useCallback((selectedSubActivityIds: string[]): void => {
+    setTeaSubActivityCopyRequest((current) =>
+      current ? { ...current, selectedSubActivityIds } : current,
+    );
+  }, []);
+
   async function confirmTeaSubActivityCopy(): Promise<void> {
     const request = teaSubActivityCopyRequest;
 
-    if (!request?.targetActivityId || isCopyingTeaSubActivity) {
+    if (
+      !request?.targetActivityId ||
+      request.selectedSubActivityIds.length === 0 ||
+      isCopyingTeaSubActivity
+    ) {
       return;
     }
 
     setIsCopyingTeaSubActivity(true);
 
     try {
-      const sourceSubActivity = findTeaSubActivity(
-        teaDataRef.current,
-        request.sourceActivityId,
-        request.subActivityId,
+      const sourceActivity = teaDataRef.current.activities.find(
+        (activity) => activity.id === request.sourceActivityId,
       );
 
-      if (!sourceSubActivity) {
+      if (!sourceActivity) {
         setTeaSubActivityCopyRequest(null);
         return;
       }
 
-      const duplicatedSubActivity = await duplicateTeaSubActivity(sourceSubActivity);
+      const selectedIds = new Set(request.selectedSubActivityIds);
+      const sourceSubActivities = sourceActivity.subActivities.filter((subActivity) =>
+        selectedIds.has(subActivity.id),
+      );
+
+      if (sourceSubActivities.length === 0) {
+        setTeaSubActivityCopyRequest(null);
+        return;
+      }
+
+      const duplicatedSubActivities = await Promise.all(
+        sourceSubActivities.map((subActivity) => duplicateTeaSubActivity(subActivity)),
+      );
 
       setTeaSubActivityCopyRequest(null);
       setTeaActiveTab("activities");
       setTeaActivityCollapsed(request.targetActivityId, false);
-      setTeaSubActivityCollapsed(duplicatedSubActivity.id, false);
-      setTeaComposerCollapsed(duplicatedSubActivity.id, false);
-      duplicatedSubActivity.blocks.forEach((block) => {
-        setTeaContentBlockCollapsed(block.id, false);
+      duplicatedSubActivities.forEach((duplicatedSubActivity) => {
+        setTeaSubActivityCollapsed(duplicatedSubActivity.id, false);
+        setTeaComposerCollapsed(duplicatedSubActivity.id, false);
+        duplicatedSubActivity.blocks.forEach((block) => {
+          setTeaContentBlockCollapsed(block.id, false);
+        });
       });
 
       updateTeaDocument((current) => ({
@@ -1278,14 +1371,14 @@ export default function App() {
           activity.id === request.targetActivityId
             ? {
                 ...activity,
-                subActivities: [...activity.subActivities, duplicatedSubActivity],
+                subActivities: [...activity.subActivities, ...duplicatedSubActivities],
               }
             : activity,
         ),
       }));
 
       window.setTimeout(() => {
-        scrollAndFocusReviewTarget(`tea-subactivity-${toDomId(duplicatedSubActivity.id)}`);
+        scrollAndFocusReviewTarget(`tea-subactivity-${toDomId(duplicatedSubActivities[0].id)}`);
       }, 80);
     } finally {
       setIsCopyingTeaSubActivity(false);
@@ -2146,6 +2239,7 @@ export default function App() {
   return (
     <ConfirmationContext.Provider value={requestConfirmation}>
     <BufferedCommitContext.Provider value={registerBufferedCommit}>
+    <ImagePreviewContext.Provider value={setPreviewImage}>
     <a href="#main-content" className="skipLink">
       Pular para o conteúdo
     </a>
@@ -2237,6 +2331,15 @@ export default function App() {
               <Button
                 variant="light"
                 color="gray"
+                leftSection={isOutlineHidden ? <Eye size={17} /> : <EyeOff size={17} />}
+                className="topBarOutlineButton"
+                onClick={() => setIsOutlineHidden((current) => !current)}
+              >
+                {isOutlineHidden ? "Mostrar indice" : "Ocultar indice"}
+              </Button>
+              <Button
+                variant="light"
+                color="gray"
                 leftSection={<RotateCcw size={17} />}
                 className="topBarDesktopOnly"
                 onClick={handleClearDraft}
@@ -2294,6 +2397,12 @@ export default function App() {
                     onClick={toggleColorScheme}
                   >
                     {isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}
+                  </Menu.Item>
+                  <Menu.Item
+                    leftSection={isOutlineHidden ? <Eye size={15} /> : <EyeOff size={15} />}
+                    onClick={() => setIsOutlineHidden((current) => !current)}
+                  >
+                    {isOutlineHidden ? "Mostrar indice" : "Ocultar indice"}
                   </Menu.Item>
                   <Menu.Item
                     color="red"
@@ -2734,10 +2843,15 @@ export default function App() {
         void confirmPendingAction();
       }}
     />
+    <ImagePreviewModal
+      image={previewImage}
+      onClose={() => setPreviewImage(null)}
+    />
     <TeaSubActivityCopyModal
       documentData={teaData}
       request={teaSubActivityCopyRequest}
       isCopying={isCopyingTeaSubActivity}
+      onSelectionChange={updateTeaSubActivityCopySelection}
       onTargetActivityChange={updateTeaSubActivityCopyTarget}
       onClose={() => {
         if (!isCopyingTeaSubActivity) {
@@ -2748,6 +2862,7 @@ export default function App() {
         void confirmTeaSubActivityCopy();
       }}
     />
+    </ImagePreviewContext.Provider>
     </BufferedCommitContext.Provider>
     </ConfirmationContext.Provider>
   );
@@ -3023,8 +3138,8 @@ const TeaWorkspace = memo(function TeaWorkspace({
                 onSubActivityMove={(subActivityId, direction) =>
                   onSubActivityMove(activity.id, subActivityId, direction)
                 }
-                onSubActivityCopy={(subActivityId) =>
-                  onSubActivityCopy(activity.id, subActivityId)
+                onSubActivityCopy={(subActivityIds) =>
+                  onSubActivityCopy(activity.id, subActivityIds)
                 }
                 onCollapseChange={(collapsed) =>
                   onActivityCollapseChange(activity.id, collapsed)
@@ -3217,6 +3332,17 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
           <Button
             variant="subtle"
             size="xs"
+            leftSection={<Copy size={15} />}
+            disabled={activity.subActivities.length === 0}
+            onClick={() =>
+              onSubActivityCopy(activity.subActivities.map((subActivity) => subActivity.id))
+            }
+          >
+            Copiar subtopicos
+          </Button>
+          <Button
+            variant="subtle"
+            size="xs"
             leftSection={<Plus size={15} />}
             onClick={onAddSubActivity}
           >
@@ -3242,7 +3368,7 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
               onChange={(updater) => onSubActivityChange(subActivity.id, updater)}
               onRemove={() => onSubActivityRemove(subActivity.id)}
               onMove={(direction) => onSubActivityMove(subActivity.id, direction)}
-              onCopy={() => onSubActivityCopy(subActivity.id)}
+              onCopy={() => onSubActivityCopy([subActivity.id])}
               onCollapseChange={(collapsed) =>
                 onSubActivityCollapseChange(subActivity.id, collapsed)
               }
@@ -5263,7 +5389,49 @@ function CorrectionPanel({
     updater: (correction: TestCorrection) => TestCorrection,
   ) => void;
 }) {
+  const [filter, setFilter] = useState<CorrectionFilter>("all");
+  const [collapsedMacros, setCollapsedMacros] = useState<Record<string, boolean>>({});
+  const [collapsedMicros, setCollapsedMicros] = useState<Record<string, boolean>>({});
   const correctedCount = groups.filter((group) => group.correction.corrected).length;
+  const filterCounts = useMemo(() => buildCorrectionFilterCounts(groups), [groups]);
+  const filteredGroups = useMemo(
+    () => groups.filter((group) => correctionGroupMatchesFilter(group, filter)),
+    [filter, groups],
+  );
+  const groupedCorrections = useMemo(
+    () => buildCorrectionPermissionGroups(filteredGroups),
+    [filteredGroups],
+  );
+  const visibleCount = filteredGroups.length;
+
+  function setAllCorrectionPanelsCollapsed(collapsed: boolean): void {
+    const nextMacros: Record<string, boolean> = {};
+    const nextMicros: Record<string, boolean> = {};
+
+    groupedCorrections.forEach((macroGroup) => {
+      if (collapsed) {
+        nextMacros[macroGroup.macro.id] = true;
+      }
+
+      macroGroup.entries.forEach((entry) => {
+        if (collapsed) {
+          nextMicros[entry.key] = true;
+        }
+      });
+    });
+
+    setCollapsedMacros(nextMacros);
+    setCollapsedMicros(nextMicros);
+  }
+
+  function applyBulkUpdate(updates: Partial<Pick<TestCorrection, "hotfixTag" | "correctedBy" | "cloudStage">>): void {
+    filteredGroups.forEach((group) => {
+      onChangeGroup(group.key, (current) => ({
+        ...current,
+        ...updates,
+      }));
+    });
+  }
 
   return (
     <Section
@@ -5278,13 +5446,61 @@ function CorrectionPanel({
     >
       {groups.length > 0 ? (
         <Stack gap="md">
-          {groups.map((group) => (
-            <CorrectionGroupCard
-              key={group.key}
-              group={group}
-              onChange={(updater) => onChangeGroup(group.key, updater)}
+          <CorrectionFilterBar
+            value={filter}
+            counts={filterCounts}
+            visibleCount={visibleCount}
+            onChange={setFilter}
+          />
+          <CorrectionBulkUpdatePanel
+            visibleCount={visibleCount}
+            onApply={applyBulkUpdate}
+          />
+          <Group gap="xs" justify="flex-end" className="actionToolbar correctionExpansionActions">
+            <Button
+              variant="light"
+              size="xs"
+              leftSection={<ChevronsDown size={15} />}
+              disabled={groupedCorrections.length === 0}
+              onClick={() => setAllCorrectionPanelsCollapsed(false)}
+            >
+              Expandir todos
+            </Button>
+            <Button
+              variant="light"
+              size="xs"
+              leftSection={<ChevronsUp size={15} />}
+              disabled={groupedCorrections.length === 0}
+              onClick={() => setAllCorrectionPanelsCollapsed(true)}
+            >
+              Recolher todos
+            </Button>
+          </Group>
+          {groupedCorrections.map((macroGroup) => (
+            <CorrectionMacroGroupPanel
+              key={macroGroup.macro.id}
+              group={macroGroup}
+              isCollapsed={collapsedMacros[macroGroup.macro.id] ?? false}
+              collapsedMicros={collapsedMicros}
+              onMacroCollapseChange={(macroId, collapsed) =>
+                setCollapsedMacros((current) => setCollapsedMapValue(current, macroId, collapsed))
+              }
+              onMicroCollapseChange={(microKey, collapsed) =>
+                setCollapsedMicros((current) => setCollapsedMapValue(current, microKey, collapsed))
+              }
+              onChangeGroup={onChangeGroup}
             />
           ))}
+          {groupedCorrections.length === 0 ? (
+            <Paper withBorder p="md" ta="center" className="softEmpty">
+              <Stack gap="xs" align="center">
+                <Text c="dimmed">Nenhum item encontrado para este filtro.</Text>
+                <Button variant="light" size="xs" onClick={() => setFilter("all")}>
+                  Mostrar todos
+                </Button>
+              </Stack>
+            </Paper>
+          ) : null}
         </Stack>
       ) : (
         <Paper withBorder p="md" ta="center" className="softEmpty">
@@ -5292,6 +5508,284 @@ function CorrectionPanel({
         </Paper>
       )}
     </Section>
+  );
+}
+
+function CorrectionFilterBar({
+  value,
+  counts,
+  visibleCount,
+  onChange,
+}: {
+  value: CorrectionFilter;
+  counts: Record<CorrectionFilter, number>;
+  visibleCount: number;
+  onChange: (value: CorrectionFilter) => void;
+}) {
+  return (
+    <Paper withBorder p="sm" className="testBlockFilterBar correctionFilterBar">
+      <Stack gap="xs">
+        <Group justify="space-between" align="center" gap="sm">
+          <div>
+            <Text fw={750} size="sm">
+              Filtrar itens para corrigir
+            </Text>
+            <Text c="dimmed" size="xs">
+              Reduza a lista antes de aplicar ajustes em massa.
+            </Text>
+          </div>
+          <Badge variant="outline" color={value === "all" ? "gray" : "blue"}>
+            {formatOtCount(visibleCount, "item", "itens")}
+          </Badge>
+        </Group>
+
+        <div className="testBlockFilters" role="tablist" aria-label="Filtros de correcoes">
+          {correctionFilterOrder.map((option) => {
+            const isActive = value === option;
+            const isEmpty = option !== "all" && counts[option] === 0;
+
+            return (
+              <button
+                key={option}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                className={`testBlockFilter ${isActive ? "testBlockFilter--active" : ""}`}
+                disabled={!isActive && isEmpty}
+                onClick={() => onChange(option)}
+              >
+                <span>{correctionFilterLabels[option]}</span>
+                <strong>{counts[option]}</strong>
+              </button>
+            );
+          })}
+        </div>
+      </Stack>
+    </Paper>
+  );
+}
+
+function CorrectionBulkUpdatePanel({
+  visibleCount,
+  onApply,
+}: {
+  visibleCount: number;
+  onApply: (updates: Partial<Pick<TestCorrection, "hotfixTag" | "correctedBy" | "cloudStage">>) => void;
+}) {
+  const [hotfixTag, setHotfixTag] = useState("");
+  const [correctedBy, setCorrectedBy] = useState("");
+  const [cloudStage, setCloudStage] = useState<TestCorrection["cloudStage"]>("none");
+  const updates: Partial<Pick<TestCorrection, "hotfixTag" | "correctedBy" | "cloudStage">> = {};
+  const trimmedHotfix = hotfixTag.trim();
+  const trimmedCorrectedBy = correctedBy.trim();
+
+  if (trimmedHotfix) {
+    updates.hotfixTag = trimmedHotfix;
+  }
+
+  if (trimmedCorrectedBy) {
+    updates.correctedBy = trimmedCorrectedBy;
+  }
+
+  if (cloudStage !== "none") {
+    updates.cloudStage = cloudStage;
+  }
+
+  const canApply = visibleCount > 0 && Object.keys(updates).length > 0;
+
+  return (
+    <Paper withBorder p="sm" className="correctionBulkPanel">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center" gap="sm">
+          <div>
+            <Text fw={750} size="sm">
+              Atualizar itens visiveis
+            </Text>
+            <Text c="dimmed" size="xs">
+              Campos vazios nao sobrescrevem valores existentes.
+            </Text>
+          </div>
+          <Badge variant="outline" color={visibleCount > 0 ? "blue" : "gray"}>
+            {formatOtCount(visibleCount, "item visivel", "itens visiveis")}
+          </Badge>
+        </Group>
+        <div className="correctionBulkFields">
+          <TextInput
+            label="Tag da hotfix"
+            value={hotfixTag}
+            placeholder="hotfix 1.2.2"
+            onChange={(event) => setHotfixTag(event.currentTarget.value)}
+          />
+          <TextInput
+            label="Corrigido por"
+            value={correctedBy}
+            placeholder="Nome de quem corrigiu"
+            onChange={(event) => setCorrectedBy(event.currentTarget.value)}
+          />
+          <Select
+            label="Nuvem"
+            data={cloudStageOptions}
+            value={cloudStage}
+            allowDeselect={false}
+            onChange={(value) => setCloudStage(parseCloudStage(value))}
+          />
+          <Button
+            className="correctionBulkApply"
+            leftSection={<Wrench size={17} />}
+            disabled={!canApply}
+            onClick={() => onApply(updates)}
+          >
+            Atualizar todos
+          </Button>
+        </div>
+      </Stack>
+    </Paper>
+  );
+}
+
+function CorrectionMacroGroupPanel({
+  group,
+  isCollapsed,
+  collapsedMicros,
+  onMacroCollapseChange,
+  onMicroCollapseChange,
+  onChangeGroup,
+}: {
+  group: CorrectionMacroGroup;
+  isCollapsed: boolean;
+  collapsedMicros: Record<string, boolean>;
+  onMacroCollapseChange: (macroId: string, collapsed: boolean) => void;
+  onMicroCollapseChange: (microKey: string, collapsed: boolean) => void;
+  onChangeGroup: (
+    groupKey: string,
+    updater: (correction: TestCorrection) => TestCorrection,
+  ) => void;
+}) {
+  const isExpanded = !isCollapsed;
+  const panelId = `correction-macro-${toDomId(group.macro.id)}`;
+  const itemCount = group.entries.reduce((total, entry) => total + entry.groups.length, 0);
+
+  return (
+    <Paper withBorder p="md" className="blockGroup correctionPermissionGroup">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center" className="blockGroupHeader">
+          <Group gap="xs" align="center" wrap="nowrap" className="blockGroupTitle">
+            <Tooltip label={isExpanded ? "Recolher macro" : "Abrir macro"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onMacroCollapseChange(group.macro.id, isExpanded)}
+                aria-label={isExpanded ? "Recolher macro em Para corrigir" : "Abrir macro em Para corrigir"}
+                aria-expanded={isExpanded}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${isExpanded ? "testToggleIcon--open" : ""}`}
+                />
+              </ActionIcon>
+            </Tooltip>
+            <div>
+              <Text size="xs" c="dimmed" fw={700} tt="uppercase">
+                Macro
+              </Text>
+              <Title order={3} size="h5">
+                {formatPermission(group.macro)}
+              </Title>
+            </div>
+          </Group>
+          <Badge variant="outline" color="gray">
+            {formatOtCount(itemCount, "item", "itens")}
+          </Badge>
+        </Group>
+
+        <Collapse in={isExpanded}>
+          {isExpanded ? (
+            <Stack gap="sm" id={panelId}>
+              {group.entries.map((entry) => (
+                <CorrectionMicroGroupPanel
+                  key={entry.key}
+                  group={entry}
+                  isCollapsed={collapsedMicros[entry.key] ?? false}
+                  onCollapseChange={onMicroCollapseChange}
+                  onChangeGroup={onChangeGroup}
+                />
+              ))}
+            </Stack>
+          ) : null}
+        </Collapse>
+      </Stack>
+    </Paper>
+  );
+}
+
+function CorrectionMicroGroupPanel({
+  group,
+  isCollapsed,
+  onCollapseChange,
+  onChangeGroup,
+}: {
+  group: CorrectionMicroGroup;
+  isCollapsed: boolean;
+  onCollapseChange: (microKey: string, collapsed: boolean) => void;
+  onChangeGroup: (
+    groupKey: string,
+    updater: (correction: TestCorrection) => TestCorrection,
+  ) => void;
+}) {
+  const isExpanded = !isCollapsed;
+  const panelId = `correction-micro-${toDomId(group.key)}`;
+
+  return (
+    <Paper withBorder p="md" className="permissionBlock correctionMicroGroup">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center" gap="md" className="permissionBlockHeader">
+          <Group gap="xs" align="center" wrap="nowrap" className="permissionBlockTitle">
+            <Tooltip label={isExpanded ? "Recolher micro" : "Abrir micro"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => onCollapseChange(group.key, isExpanded)}
+                aria-label={isExpanded ? "Recolher micro em Para corrigir" : "Abrir micro em Para corrigir"}
+                aria-expanded={isExpanded}
+                aria-controls={panelId}
+              >
+                <ChevronDown
+                  size={18}
+                  className={`testToggleIcon ${isExpanded ? "testToggleIcon--open" : ""}`}
+                />
+              </ActionIcon>
+            </Tooltip>
+            <div className="summaryHeaderCopy">
+              <Group gap="xs" wrap="wrap">
+                <Badge variant="outline" color="gray">
+                  Micro
+                </Badge>
+                <Text fw={800}>{formatPermission(group.micro)}</Text>
+              </Group>
+              <Text c="dimmed" size="xs">
+                {formatPermission(group.macro)}
+              </Text>
+            </div>
+          </Group>
+          <Badge variant="outline" color="gray">
+            {formatOtCount(group.groups.length, "correcao", "correcoes")}
+          </Badge>
+        </Group>
+
+        <Collapse in={isExpanded}>
+          {isExpanded ? (
+            <Stack gap="sm" id={panelId}>
+              {group.groups.map((correctionGroup) => (
+                <CorrectionGroupCard
+                  key={correctionGroup.key}
+                  group={correctionGroup}
+                  onChange={(updater) => onChangeGroup(correctionGroup.key, updater)}
+                />
+              ))}
+            </Stack>
+          ) : null}
+        </Collapse>
+      </Stack>
+    </Paper>
   );
 }
 
@@ -5390,10 +5884,11 @@ function CorrectionGroupCard({
                   {observations.length > 0 ? (
                     <Stack gap={4}>
                       {observations.map((observation, index) => (
-                        <Text key={`${group.key}-observation-${index}`} size="sm">
-                          {observations.length > 1 ? `${index + 1}. ` : ""}
-                          {observation}
-                        </Text>
+                        <ReadonlyMultilineText
+                          key={`${group.key}-observation-${index}`}
+                          prefix={observations.length > 1 ? `${index + 1}. ` : undefined}
+                          value={observation}
+                        />
                       ))}
                     </Stack>
                   ) : (
@@ -5495,6 +5990,21 @@ function CorrectionGroupCard({
   );
 }
 
+function ReadonlyMultilineText({
+  value,
+  prefix,
+}: {
+  value: string;
+  prefix?: string;
+}) {
+  return (
+    <Text size="sm" className="readonlyMultilineText">
+      {prefix ? <span className="readonlyMultilinePrefix">{prefix}</span> : null}
+      <span>{value}</span>
+    </Text>
+  );
+}
+
 function CorrectionReadonlyPanel({ correction }: { correction: TestCorrection }) {
   if (!hasCorrectionDetails(correction)) {
     return null;
@@ -5573,6 +6083,8 @@ function ReadonlyImageStrip({
   images: EvidenceImage[];
   emptyLabel: string;
 }) {
+  const openImagePreview = useImagePreview();
+
   if (images.length === 0) {
     return (
       <Text c="dimmed" size="sm">
@@ -5585,13 +6097,20 @@ function ReadonlyImageStrip({
     <div className="readonlyImageStrip">
       {images.map((image) =>
         image.dataUrl ? (
-          <img
+          <button
             key={image.id}
-            className="imagePreview"
-            src={image.dataUrl}
-            alt={image.label || image.name || "Imagem anexada"}
-            title={image.label || image.name}
-          />
+            type="button"
+            className="imagePreviewButton"
+            onClick={() => openImagePreview(image)}
+            aria-label={`Pre-visualizar ${image.name || image.label || "imagem anexada"}`}
+          >
+            <img
+              className="imagePreview"
+              src={image.dataUrl}
+              alt={image.label || image.name || "Imagem anexada"}
+              title={image.label || image.name}
+            />
+          </button>
         ) : (
           <div key={image.id} className="imagePreview imagePreview--missing">
             Sem preview
@@ -5675,6 +6194,7 @@ const EvidenceUploader = memo(function EvidenceUploader({
   onChange: (updater: (images: EvidenceImage[]) => EvidenceImage[]) => void;
 }) {
   const confirmAction = useConfirmAction();
+  const openImagePreview = useImagePreview();
   const descriptionId = useId();
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
 
@@ -5736,12 +6256,6 @@ const EvidenceUploader = memo(function EvidenceUploader({
     } finally {
       setIsProcessingFiles(false);
     }
-  }
-
-  function updateImageLabel(imageId: string, label: string): void {
-    onChange((current) =>
-      current.map((image) => (image.id === imageId ? { ...image, label } : image)),
-    );
   }
 
   function removeImage(image: EvidenceImage): void {
@@ -5831,20 +6345,22 @@ const EvidenceUploader = memo(function EvidenceUploader({
               <Paper withBorder p="xs" key={image.id} className="evidenceItem">
                 <Group align="center" wrap="nowrap" className="evidenceImageRow">
                   {image.dataUrl ? (
-                    <img
-                      className="imagePreview"
-                      src={image.dataUrl}
-                      alt={image.label || image.name || "Imagem anexada"}
-                    />
+                    <button
+                      type="button"
+                      className="imagePreviewButton"
+                      onClick={() => openImagePreview(image)}
+                      aria-label={`Pre-visualizar ${image.name || image.label || "imagem anexada"}`}
+                    >
+                      <img
+                        className="imagePreview"
+                        src={image.dataUrl}
+                        alt={image.label || image.name || "Imagem anexada"}
+                      />
+                    </button>
                   ) : (
                     <div className="imagePreview imagePreview--missing">Sem preview</div>
                   )}
                   <Stack gap={4} className="evidenceImageFields">
-                    <BufferedTextInput
-                      label="Legenda da imagem"
-                      value={image.label}
-                      onCommit={(value) => updateImageLabel(image.id, value)}
-                    />
                     <Text size="xs" c="dimmed" truncate>
                       {image.name}
                       {image.savedBytes ? ` · ${formatBytes(image.savedBytes)}` : ""}
@@ -5893,6 +6409,48 @@ function EmptyState({
         </Button>
       </Stack>
     </Paper>
+  );
+}
+
+function ImagePreviewModal({
+  image,
+  onClose,
+}: {
+  image: EvidenceImage | null;
+  onClose: () => void;
+}) {
+  const title = image?.name || image?.label || "Imagem anexada";
+
+  return (
+    <Modal
+      opened={image !== null}
+      onClose={onClose}
+      title="Pre-visualizacao da imagem"
+      size="xl"
+      centered
+    >
+      {image ? (
+        <Stack gap="md">
+          <div>
+            <Text fw={800}>{title}</Text>
+            <Text size="sm" c="dimmed">
+              {image.width && image.height ? `${image.width} x ${image.height}px` : "Dimensoes nao informadas"}
+              {image.savedBytes ? ` - ${formatBytes(image.savedBytes)}` : ""}
+              {image.optimized ? " - otimizada" : ""}
+            </Text>
+          </div>
+          {image.dataUrl ? (
+            <div className="imagePreviewModalFrame">
+              <img src={image.dataUrl} alt={title} />
+            </div>
+          ) : (
+            <Paper withBorder p="md" ta="center" className="softEmpty">
+              <Text c="dimmed">Sem preview disponivel.</Text>
+            </Paper>
+          )}
+        </Stack>
+      ) : null}
+    </Modal>
   );
 }
 
@@ -5945,6 +6503,7 @@ function TeaSubActivityCopyModal({
   documentData,
   request,
   isCopying,
+  onSelectionChange,
   onTargetActivityChange,
   onClose,
   onConfirm,
@@ -5952,27 +6511,63 @@ function TeaSubActivityCopyModal({
   documentData: TeaDocument;
   request: TeaSubActivityCopyRequest | null;
   isCopying: boolean;
+  onSelectionChange: (selectedSubActivityIds: string[]) => void;
   onTargetActivityChange: (targetActivityId: string | null) => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const sourceSubActivity = request
-    ? findTeaSubActivity(documentData, request.sourceActivityId, request.subActivityId)
+  const sourceActivity = request
+    ? documentData.activities.find((activity) => activity.id === request.sourceActivityId)
     : undefined;
   const targetOptions = request
     ? buildTeaActivitySelectOptions(documentData, request.sourceActivityId)
     : [];
+  const selectedIds = request?.selectedSubActivityIds ?? [];
+  const selectedIdSet = new Set(selectedIds);
+  const selectedCount =
+    sourceActivity?.subActivities.filter((subActivity) => selectedIdSet.has(subActivity.id))
+      .length ?? 0;
+  const sourceSubActivity =
+    sourceActivity?.subActivities.find((subActivity) => selectedIdSet.has(subActivity.id));
+  const allSelected = Boolean(
+    sourceActivity &&
+      sourceActivity.subActivities.length > 0 &&
+      selectedCount === sourceActivity.subActivities.length,
+  );
   const canConfirm = Boolean(
     request?.targetActivityId &&
-      sourceSubActivity &&
+      selectedCount > 0 &&
       targetOptions.some((option) => option.value === request.targetActivityId),
   );
+  const targetLabel =
+    targetOptions.find((option) => option.value === request?.targetActivityId)?.label ??
+    "Nenhuma atividade destino";
+
+  function toggleSubActivity(subActivityId: string, checked: boolean): void {
+    if (!request) {
+      return;
+    }
+
+    const nextIds = checked
+      ? [...selectedIds, subActivityId]
+      : selectedIds.filter((candidate) => candidate !== subActivityId);
+
+    onSelectionChange(Array.from(new Set(nextIds)));
+  }
+
+  function toggleAll(checked: boolean): void {
+    onSelectionChange(
+      checked && sourceActivity
+        ? sourceActivity.subActivities.map((subActivity) => subActivity.id)
+        : [],
+    );
+  }
 
   return (
     <Modal
       opened={request !== null}
       onClose={isCopying ? () => undefined : onClose}
-      title="Copiar subtópico"
+      title="Copiar subtópicos"
       centered
       closeOnClickOutside={!isCopying}
       closeOnEscape={!isCopying}
@@ -5987,6 +6582,56 @@ function TeaSubActivityCopyModal({
               Selecione a atividade que receberá uma cópia completa deste subtópico.
             </Text>
           </div>
+
+          <Paper withBorder p="sm" className="teaSubActivityCopyList">
+            <Stack gap="xs">
+              <Group justify="space-between" align="center" gap="sm">
+                <Checkbox
+                  label="Selecionar todos"
+                  checked={allSelected}
+                  indeterminate={selectedCount > 0 && !allSelected}
+                  disabled={isCopying || !sourceActivity || sourceActivity.subActivities.length === 0}
+                  onChange={(event) => toggleAll(event.currentTarget.checked)}
+                />
+                <Badge variant="outline" color={selectedCount > 0 ? "blue" : "gray"}>
+                  {formatTeaCount(selectedCount, "selecionado", "selecionados")}
+                </Badge>
+              </Group>
+
+              {sourceActivity && sourceActivity.subActivities.length > 0 ? (
+                <Stack gap={6}>
+                  {sourceActivity.subActivities.map((subActivity, index) => (
+                    <label key={subActivity.id} className="teaSubActivityCopyOption">
+                      <Checkbox
+                        checked={selectedIdSet.has(subActivity.id)}
+                        disabled={isCopying}
+                        onChange={(event) =>
+                          toggleSubActivity(subActivity.id, event.currentTarget.checked)
+                        }
+                        aria-label={`Selecionar subtopico ${subActivity.title || index + 1}`}
+                      />
+                      <span>
+                        <Text fw={750} size="sm">
+                          {formatTeaEditorTitle(
+                            `2.${index + 1}`,
+                            subActivity.title,
+                            "Subtopico sem titulo",
+                          )}
+                        </Text>
+                        <Text size="xs" c="dimmed">
+                          {buildTeaSubActivitySummaryItems(subActivity).join(" - ")}
+                        </Text>
+                      </span>
+                    </label>
+                  ))}
+                </Stack>
+              ) : (
+                <Text size="sm" c="dimmed">
+                  Esta atividade ainda nao possui subtopicos para copiar.
+                </Text>
+              )}
+            </Stack>
+          </Paper>
 
           <Select
             label="Atividade destino"
@@ -6003,6 +6648,13 @@ function TeaSubActivityCopyModal({
             allowDeselect={false}
             searchable
           />
+
+          <Paper withBorder p="sm" className="softEmpty">
+            <Text size="sm" c="dimmed">
+              {formatTeaCount(selectedCount, "subtopico", "subtopicos")} serao copiados para{" "}
+              {targetLabel}.
+            </Text>
+          </Paper>
 
           {targetOptions.length === 0 ? (
             <Paper withBorder p="sm" className="softEmpty">
@@ -6022,7 +6674,7 @@ function TeaSubActivityCopyModal({
               loading={isCopying}
               onClick={onConfirm}
             >
-              Copiar subtópico
+              Copiar subtópicos
             </Button>
           </Group>
         </Stack>
@@ -7100,7 +7752,7 @@ function buildCorrectionGroups(
 
 function getCorrectionGroupKey(blockKey: string, test: PermissionBlockTest): string {
   const normalizedTitle = normalizeTextKey(test.title);
-  return normalizedTitle ? `title:${normalizedTitle}` : `single:${blockKey}:${test.id}`;
+  return normalizedTitle ? `block:${blockKey}:title:${normalizedTitle}` : `single:${blockKey}:${test.id}`;
 }
 
 function getTestCorrection(test: PermissionBlockTest): TestCorrection {
@@ -7110,6 +7762,98 @@ function getTestCorrection(test: PermissionBlockTest): TestCorrection {
     beforeImages: test.correction?.beforeImages ?? [],
     afterImages: test.correction?.afterImages ?? [],
   };
+}
+
+function buildCorrectionFilterCounts(groups: CorrectionGroup[]): Record<CorrectionFilter, number> {
+  const counts: Record<CorrectionFilter, number> = {
+    all: groups.length,
+    pending: 0,
+    corrected: 0,
+    withoutHotfix: 0,
+    withoutResponsible: 0,
+    withoutCloud: 0,
+    withoutPrints: 0,
+  };
+
+  groups.forEach((group) => {
+    correctionFilterOrder.forEach((filter) => {
+      if (filter !== "all" && correctionGroupMatchesFilter(group, filter)) {
+        counts[filter] += 1;
+      }
+    });
+  });
+
+  return counts;
+}
+
+function correctionGroupMatchesFilter(group: CorrectionGroup, filter: CorrectionFilter): boolean {
+  const correction = group.correction;
+
+  if (filter === "all") {
+    return true;
+  }
+
+  if (filter === "pending") {
+    return !correction.corrected;
+  }
+
+  if (filter === "corrected") {
+    return correction.corrected;
+  }
+
+  if (filter === "withoutHotfix") {
+    return !correction.hotfixTag.trim();
+  }
+
+  if (filter === "withoutResponsible") {
+    return !correction.correctedBy.trim();
+  }
+
+  if (filter === "withoutCloud") {
+    return correction.cloudStage === "none";
+  }
+
+  return correction.beforeImages.length === 0 || correction.afterImages.length === 0;
+}
+
+function buildCorrectionPermissionGroups(groups: CorrectionGroup[]): CorrectionMacroGroup[] {
+  const macroGroups = new Map<string, CorrectionMacroGroup>();
+
+  groups.forEach((group) => {
+    const firstOccurrence = group.occurrences[0];
+
+    if (!firstOccurrence) {
+      return;
+    }
+
+    const macroId = firstOccurrence.macro.id;
+    const microKey = createPermissionKey(firstOccurrence.macro.id, firstOccurrence.micro.id);
+    let macroGroup = macroGroups.get(macroId);
+
+    if (!macroGroup) {
+      macroGroup = {
+        macro: firstOccurrence.macro,
+        entries: [],
+      };
+      macroGroups.set(macroId, macroGroup);
+    }
+
+    let microGroup = macroGroup.entries.find((entry) => entry.key === microKey);
+
+    if (!microGroup) {
+      microGroup = {
+        key: microKey,
+        macro: firstOccurrence.macro,
+        micro: firstOccurrence.micro,
+        groups: [],
+      };
+      macroGroup.entries.push(microGroup);
+    }
+
+    microGroup.groups.push(group);
+  });
+
+  return Array.from(macroGroups.values());
 }
 
 function hasCorrectionDetails(correction: TestCorrection): boolean {
@@ -7131,6 +7875,22 @@ function parseCloudStage(value: string | null): TestCorrection["cloudStage"] {
 
 function formatCloudStage(value: TestCorrection["cloudStage"]): string {
   return cloudStageOptions.find((option) => option.value === value)?.label ?? "Nao enviado";
+}
+
+function loadOutlineHiddenPreference(): boolean {
+  try {
+    return window.localStorage.getItem(outlineHiddenPreferenceKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveOutlineHiddenPreference(hidden: boolean): void {
+  try {
+    window.localStorage.setItem(outlineHiddenPreferenceKey, hidden ? "true" : "false");
+  } catch {
+    // Preferencia visual; falha de storage nao deve bloquear o editor.
+  }
 }
 
 function buildOtOutlineItems(
