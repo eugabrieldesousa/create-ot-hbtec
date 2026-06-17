@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { exportOtDocument, exportTeaDocument } from "./docxExport";
-import type { CheckKey, OtDocument, TeaDocument } from "./types";
+import type { CheckKey, EvidenceImage, OtDocument, TeaDocument } from "./types";
 
 const docxState = vi.hoisted(() => ({
   documents: [] as Array<{ options: { sections: Array<{ children: unknown[] }> } }>,
+}));
+const jszipState = vi.hoisted(() => ({
+  media: [new Uint8Array([0, 0, 0])] as Uint8Array[],
+  loadAsync: vi.fn(),
 }));
 
 vi.mock("docx", () => {
@@ -90,6 +94,30 @@ vi.mock("docx", () => {
   };
 });
 
+vi.mock("jszip", () => {
+  class JSZip {
+    static async loadAsync(): Promise<{
+      files: Record<string, { dir: boolean; async: () => Promise<Uint8Array> }>;
+    }> {
+      jszipState.loadAsync();
+
+      return {
+        files: Object.fromEntries(
+          jszipState.media.map((bytes, index) => [
+            `word/media/image-${index + 1}.png`,
+            {
+              dir: false,
+              async: vi.fn(async () => bytes),
+            },
+          ]),
+        ),
+      };
+    }
+  }
+
+  return { default: JSZip };
+});
+
 vi.mock("./imageStorage", () => ({
   hydrateDocumentImages: vi.fn(async (documentData) => documentData),
   hydrateTeaDocumentImages: vi.fn(async (documentData) => documentData),
@@ -108,6 +136,8 @@ vi.mock("./imageOptimizer", () => ({
 
 beforeEach(() => {
   docxState.documents.length = 0;
+  jszipState.media = [new Uint8Array([0, 0, 0])];
+  jszipState.loadAsync.mockClear();
 
   Object.defineProperty(URL, "createObjectURL", {
     configurable: true,
@@ -191,6 +221,101 @@ describe("exportTeaDocument", () => {
       }),
     ]);
   });
+
+  it("blocks TEA export when an image block is empty", async () => {
+    const documentData = createTeaDocumentForExport();
+    const imageBlock = documentData.activities[0].blocks[0];
+
+    if (imageBlock.type === "images") {
+      imageBlock.images = [];
+    }
+
+    await expect(exportTeaDocument(documentData)).rejects.toMatchObject({
+      name: "DocxExportImageError",
+      problems: [
+        expect.objectContaining({
+          label: "Bloco de imagens vazio",
+          documentKind: "tea",
+        }),
+      ],
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+  });
+
+  it("blocks TEA export when an image has no data", async () => {
+    const documentData = createTeaDocumentForExport();
+    const imageBlock = documentData.activities[0].blocks[0];
+
+    if (imageBlock.type === "images") {
+      imageBlock.images = [createExportImageWithoutData("missing-tea", "Sem dados")];
+    }
+
+    await expect(exportTeaDocument(documentData)).rejects.toMatchObject({
+      name: "DocxExportImageError",
+      problems: [
+        expect.objectContaining({
+          label: "Imagem sem dados",
+          documentKind: "tea",
+        }),
+      ],
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+  });
+
+  it("reports invalid image data URLs with a specific message", async () => {
+    const documentData = createTeaDocumentForExport();
+    const imageBlock = documentData.activities[0].blocks[0];
+
+    if (imageBlock.type === "images") {
+      imageBlock.images = [
+        {
+          ...createExportImage("webp-image", "WebP"),
+          dataUrl: "data:image/webp;base64,AAAA",
+        },
+      ];
+    }
+
+    await expect(exportTeaDocument(documentData)).rejects.toMatchObject({
+      problems: [
+        expect.objectContaining({
+          label: "Imagem invalida",
+          detail: expect.stringContaining("tipo de imagem nao suportado"),
+        }),
+      ],
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+  });
+
+  it("reports when the generated DOCX is missing expected image media", async () => {
+    jszipState.media = [];
+
+    await expect(exportTeaDocument(createTeaDocumentForExport())).rejects.toMatchObject({
+      problems: [
+        expect.objectContaining({
+          label: "Imagem nao encontrada no DOCX gerado",
+          detail: expect.stringContaining("word/media"),
+        }),
+      ],
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+  });
+
+  it("allows duplicated image content when the DOCX stores one deduplicated media file", async () => {
+    const documentData = createTeaDocumentForExport();
+    const imageBlock = documentData.activities[0].blocks[0];
+
+    if (imageBlock.type === "images") {
+      imageBlock.images = [
+        createExportImage("duplicate-a", "Duplicada A"),
+        createExportImage("duplicate-b", "Duplicada B"),
+      ];
+    }
+
+    await exportTeaDocument(documentData);
+
+    expect(jszipState.loadAsync).toHaveBeenCalledTimes(1);
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("exportOtDocument", () => {
@@ -225,6 +350,38 @@ describe("exportOtDocument", () => {
     expect(correctionText).toContain("Nuvem Ate dev");
     expect(paragraphTexts).toContain("Antes (com erro):");
     expect(paragraphTexts).toContain("Depois (corrigido):");
+  });
+
+  it("blocks OT export when Legado or Novo images are empty", async () => {
+    const documentData = createOtDocumentForExport();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.legacyImages = [];
+
+    await expect(exportOtDocument(documentData)).rejects.toMatchObject({
+      problems: [
+        expect.objectContaining({
+          label: "Imagem do legado ausente",
+          documentKind: "ot",
+        }),
+      ],
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+  });
+
+  it("blocks OT export when an attached image has no data", async () => {
+    const documentData = createOtDocumentForExport();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.newImages = [createExportImageWithoutData("missing-ot", "Sem dados")];
+
+    await expect(exportOtDocument(documentData)).rejects.toMatchObject({
+      problems: [
+        expect.objectContaining({
+          label: "Imagem sem dados",
+          documentKind: "ot",
+        }),
+      ],
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
   });
 });
 
@@ -367,8 +524,8 @@ function createOtDocumentForExport(): OtDocument {
             result: {
               checks,
               observations: "Primeira linha\nSegunda linha\nTerceira linha",
-              legacyImages: [],
-              newImages: [],
+              legacyImages: [createExportImage("legacy", "Legado")],
+              newImages: [createExportImage("new", "Novo")],
             },
             correction: {
               corrected: true,
@@ -394,4 +551,9 @@ function createExportImage(id: string, label: string) {
     width: 100,
     height: 80,
   };
+}
+
+function createExportImageWithoutData(id: string, label: string): EvidenceImage {
+  const { dataUrl: _dataUrl, ...image } = createExportImage(id, label);
+  return image;
 }

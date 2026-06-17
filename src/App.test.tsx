@@ -9,14 +9,19 @@ import type { CheckKey, EvidenceImage, OtDocument, TeaDocument, TestResult } fro
 const appMocks = vi.hoisted(() => ({
   deleteEvidenceImageData: vi.fn(),
   deleteEvidenceImageDataBatch: vi.fn(),
+  exportOtBackup: vi.fn(),
   exportOtDocument: vi.fn(),
+  exportTeaBackup: vi.fn(),
   exportTeaDocument: vi.fn(),
   hydrateDocumentImages: vi.fn(),
   hydrateTeaDocumentImages: vi.fn(),
   optimizeImageFile: vi.fn(),
+  parseBackupFile: vi.fn(),
   parseDocxFile: vi.fn(),
   persistEmbeddedEvidenceImages: vi.fn(),
   persistEmbeddedTeaImages: vi.fn(),
+  removeAllOtImages: vi.fn(),
+  removeAllTeaImages: vi.fn(),
   saveEvidenceImageDataBatch: vi.fn(),
 }));
 
@@ -27,6 +32,14 @@ vi.mock("./docxExport", () => ({
 
 vi.mock("./docxImport", () => ({
   parseDocxFile: appMocks.parseDocxFile,
+}));
+
+vi.mock("./draftBackup", () => ({
+  exportOtBackup: appMocks.exportOtBackup,
+  exportTeaBackup: appMocks.exportTeaBackup,
+  parseBackupFile: appMocks.parseBackupFile,
+  removeAllOtImages: appMocks.removeAllOtImages,
+  removeAllTeaImages: appMocks.removeAllTeaImages,
 }));
 
 vi.mock("./imageOptimizer", () => ({
@@ -64,8 +77,12 @@ beforeEach(() => {
   appMocks.deleteEvidenceImageData.mockResolvedValue(undefined);
   appMocks.deleteEvidenceImageDataBatch.mockReset();
   appMocks.deleteEvidenceImageDataBatch.mockResolvedValue(undefined);
+  appMocks.exportOtBackup.mockReset();
+  appMocks.exportOtBackup.mockResolvedValue(undefined);
   appMocks.exportOtDocument.mockReset();
   appMocks.exportOtDocument.mockResolvedValue(undefined);
+  appMocks.exportTeaBackup.mockReset();
+  appMocks.exportTeaBackup.mockResolvedValue(undefined);
   appMocks.exportTeaDocument.mockReset();
   appMocks.exportTeaDocument.mockResolvedValue(undefined);
   appMocks.hydrateDocumentImages.mockReset();
@@ -82,6 +99,7 @@ beforeEach(() => {
     optimized: true,
   });
   appMocks.parseDocxFile.mockReset();
+  appMocks.parseBackupFile.mockReset();
   appMocks.persistEmbeddedEvidenceImages.mockReset();
   appMocks.persistEmbeddedEvidenceImages.mockImplementation(
     async (documentData: OtDocument) => documentData,
@@ -90,6 +108,16 @@ beforeEach(() => {
   appMocks.persistEmbeddedTeaImages.mockImplementation(
     async (documentData: TeaDocument) => documentData,
   );
+  appMocks.removeAllOtImages.mockReset();
+  appMocks.removeAllOtImages.mockImplementation((documentData: OtDocument) => ({
+    document: documentData,
+    imageIds: [],
+  }));
+  appMocks.removeAllTeaImages.mockReset();
+  appMocks.removeAllTeaImages.mockImplementation((documentData: TeaDocument) => ({
+    document: documentData,
+    imageIds: [],
+  }));
   appMocks.saveEvidenceImageDataBatch.mockReset();
   appMocks.saveEvidenceImageDataBatch.mockResolvedValue(undefined);
 
@@ -635,6 +663,80 @@ describe("App document outline", () => {
 });
 
 describe("App TEA content blocks", () => {
+  it("counts and replaces TEA text across all searchable fields", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaFindReplaceDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+
+    await setFieldValue(getInputByLabel("Localizar no TEA"), "marcador");
+    expect(container.textContent ?? "").toContain("13 ocorrencias");
+
+    await setFieldValue(getInputByLabel("Substituir por"), "troca");
+    await clickButton("Substituir tudo");
+
+    expect(container.textContent ?? "").toContain("0 ocorrencias");
+
+    await clickButton("Atividades");
+    expect(container.textContent ?? "").toContain("Atividade troca");
+    expect(container.textContent ?? "").toContain("Subtopico troca");
+
+    await clickButton("Documento");
+    expect(getInputByLabel("Ordem de Serviço").value).toBe("OS-troca");
+    expect(getInputByLabel("Fase/Etapa").value).toBe("Fase troca");
+    expect(getInputByLabel("Chamado").value).toBe("Chamado troca");
+    expect(getInputByLabel("Elaborado por").value).toBe("Autor troca");
+    expect(container.textContent ?? "").toContain("Resumo troca e troca.");
+  });
+
+  it("keeps TEA find/replace case-insensitive and accent-sensitive", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaFindReplaceDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+
+    await setFieldValue(getInputByLabel("Localizar no TEA"), "MARCADOR");
+    expect(container.textContent ?? "").toContain("13 ocorrencias");
+
+    await setFieldValue(getInputByLabel("Substituir por"), "ok");
+    await clickButton("Substituir tudo");
+    await setFieldValue(getInputByLabel("Localizar no TEA"), "márcador");
+
+    expect(container.textContent ?? "").toContain("1 ocorrencia");
+  });
+
+  it("disables TEA replace all when there is no searchable match", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaFindReplaceDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+
+    expect(getButton("Substituir tudo")?.disabled).toBe(true);
+
+    await setFieldValue(getInputByLabel("Localizar no TEA"), "nao existe");
+
+    expect(container.textContent ?? "").toContain("0 ocorrencias");
+    expect(getButton("Substituir tudo")?.disabled).toBe(true);
+  });
+
+  it("flushes pending TEA field edits before counting and replacing", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaFindReplaceDraft()));
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    await setFieldValue(getInputByLabel("Título"), "Atividade pendente");
+    await setFieldValue(getInputByLabel("Localizar no TEA"), "pendente");
+
+    expect(container.textContent ?? "").toContain("1 ocorrencia");
+
+    await setFieldValue(getInputByLabel("Substituir por"), "aplicada");
+    await clickButton("Substituir tudo");
+
+    expect(container.textContent ?? "").toContain("Atividade aplicada");
+  });
+
   it("shows the DOCX import action in TEA mode", async () => {
     await renderApp();
     await clickControl("TEA");
@@ -1043,6 +1145,179 @@ describe("App loading feedback", () => {
     await waitForNoBodyText("Exportando DOCX...");
   });
 
+  it("shows a large image export error modal and clears loading", async () => {
+    const exportError = Object.assign(new Error("imagem invalida"), {
+      name: "DocxExportImageError",
+      documentKind: "ot",
+      problems: [
+        {
+          label: "Imagem do legado ausente",
+          detail: "AO / AT / Teste: adicione evidencia em Legado antes de exportar.",
+          location: "OT > AO > AT > Teste > Legado",
+          severity: "danger",
+          documentKind: "ot",
+        },
+      ],
+    });
+    appMocks.exportOtDocument.mockRejectedValue(exportError);
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+
+    await clickElement(getButton("Exportar DOCX"));
+
+    await waitForBodyText("Exportacao bloqueada por problema nas imagens");
+    await waitForBodyText("O arquivo nao foi baixado.");
+    await waitForBodyText("Imagem do legado ausente");
+    await waitForNoBodyText("Exportando DOCX...");
+
+    expect(appMocks.exportOtDocument).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelector(".exportImageErrorSummary")).toBeTruthy();
+  });
+
+  it("saves backup from the navbar for OT and TEA", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftWithBlockImages()));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+
+    await clickElement(getButton("Salvar backup"));
+
+    expect(appMocks.exportOtBackup).toHaveBeenCalledTimes(1);
+    await waitForNoBodyText("Salvando backup...");
+
+    await clickControl("TEA");
+    await clickElement(getButton("Salvar backup"));
+
+    expect(appMocks.exportTeaBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the image export error modal save a backup instead of DOCX", async () => {
+    const exportError = Object.assign(new Error("imagem invalida"), {
+      name: "DocxExportImageError",
+      documentKind: "ot",
+      problems: [
+        {
+          label: "Imagem do legado ausente",
+          detail: "AO / AT / Teste: adicione evidencia em Legado antes de exportar.",
+          location: "OT > AO > AT > Teste > Legado",
+          severity: "danger",
+          documentKind: "ot",
+        },
+      ],
+    });
+    appMocks.exportOtDocument.mockRejectedValue(exportError);
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+
+    await clickElement(getButton("Exportar DOCX"));
+    await waitForBodyText("Exportacao bloqueada por problema nas imagens");
+    await clickDialogButton("Salvar backup mesmo assim");
+
+    expect(appMocks.exportOtBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it("imports a backup from the compact menu and switches to the right document kind", async () => {
+    const teaDocument = createTeaDraftWithBlockImages();
+    appMocks.parseBackupFile.mockResolvedValue({
+      kind: "tea",
+      document: teaDocument,
+      warnings: [],
+    });
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await openTopBarMenu();
+    await clickMenuItem("Importar backup");
+    await uploadFile(
+      'input[accept*=".zip"]',
+      "backup.zip",
+      "application/zip",
+    );
+
+    expect(appMocks.parseBackupFile).toHaveBeenCalledTimes(1);
+    expect(appMocks.persistEmbeddedTeaImages).toHaveBeenCalledWith(teaDocument);
+    await waitForBodyText("Gerador de TEA");
+  });
+
+  it("clears all OT images after confirmation", async () => {
+    const documentData = createCompleteReviewDraft();
+    const clearedDocument = {
+      ...documentData,
+      permissionBlocks: {
+        "macro-a:micro-at": {
+          tests: [
+            {
+              ...documentData.permissionBlocks["macro-a:micro-at"].tests[0],
+              result: {
+                ...documentData.permissionBlocks["macro-a:micro-at"].tests[0].result,
+                legacyImages: [],
+                newImages: [],
+              },
+            },
+          ],
+        },
+      },
+    };
+    appMocks.removeAllOtImages.mockReturnValue({
+      document: clearedDocument,
+      imageIds: ["legacy-image", "new-image"],
+    });
+    window.localStorage.setItem(draftKey, JSON.stringify(documentData));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await openTopBarMenu();
+    await clickMenuItem("Apagar imagens da OT");
+    await waitForDialogText("Todas as imagens da OT atual serao removidas");
+    await confirmDialog("Apagar imagens da OT");
+
+    expect(appMocks.removeAllOtImages).toHaveBeenCalledTimes(1);
+    expect(appMocks.deleteEvidenceImageDataBatch).toHaveBeenCalledWith([
+      "legacy-image",
+      "new-image",
+    ]);
+  });
+
+  it("clears all TEA images after confirmation", async () => {
+    const documentData = createTeaDraftWithBlockImages();
+    const clearedDocument = {
+      ...documentData,
+      activityImages: [],
+      activities: [
+        {
+          ...documentData.activities[0],
+          blocks: documentData.activities[0].blocks.map((block) =>
+            block.type === "images" ? { ...block, images: [] } : block,
+          ),
+        },
+      ],
+    };
+    appMocks.removeAllTeaImages.mockReturnValue({
+      document: clearedDocument,
+      imageIds: ["activity-image", "subactivity-image"],
+    });
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(documentData));
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickControl("TEA");
+    await openTopBarMenu();
+    await clickMenuItem("Apagar imagens do TEA");
+    await waitForDialogText("Todas as imagens do TEA atual serao removidas");
+    await confirmDialog("Apagar imagens do TEA");
+
+    expect(appMocks.removeAllTeaImages).toHaveBeenCalledTimes(1);
+    expect(appMocks.deleteEvidenceImageDataBatch).toHaveBeenCalledWith([
+      "activity-image",
+      "subactivity-image",
+    ]);
+  });
+
   it("shows local loading while processing evidence images", async () => {
     const optimizeTask = createDeferred<{
       dataUrl: string;
@@ -1350,6 +1625,10 @@ async function clickControl(label: string): Promise<void> {
   await act(async () => {
     control?.click();
   });
+}
+
+async function openTopBarMenu(): Promise<void> {
+  await clickElement(container.querySelector<HTMLElement>(".topBarCompactMenu"));
 }
 
 async function clickAriaButtonAt(label: string, index = 0): Promise<void> {
@@ -1820,6 +2099,61 @@ function createTeaDraftWithBlockImages(): TeaDocument {
                 id: "subactivity-images",
                 type: "images",
                 images: [createImage("subactivity-image")],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function createTeaFindReplaceDraft(): TeaDocument {
+  return {
+    metadata: {
+      serviceOrder: "OS-marcador",
+      phase: "Fase marcador",
+      ticket: "Chamado marcador",
+      subject: "Assunto",
+      date: "2026-06-08",
+      author: "Autor marcador",
+    },
+    overview: "Resumo marcador e marcador.",
+    activityIntro: "Intro marcador.",
+    activityImages: [createImage("ignored-marcador-image")],
+    activities: [
+      {
+        id: "find-activity",
+        title: "Atividade marcador",
+        blocks: [
+          {
+            id: "find-text",
+            type: "text",
+            text: "Texto marcador e MARCADOR.",
+          },
+          {
+            id: "find-list",
+            type: "list",
+            items: [
+              { id: "find-list-item", text: "Item marcador" },
+              { id: "find-accent-item", text: "Item márcador" },
+            ],
+          },
+          {
+            id: "find-images",
+            type: "images",
+            images: [createImage("find-image")],
+          },
+        ],
+        subActivities: [
+          {
+            id: "find-subactivity",
+            title: "Subtopico marcador",
+            blocks: [
+              {
+                id: "find-subactivity-text",
+                type: "text",
+                text: "Sub marcador",
               },
             ],
           },

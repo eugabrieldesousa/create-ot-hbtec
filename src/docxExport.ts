@@ -22,6 +22,7 @@ import {
   createEmptyTestCorrection,
   createPermissionKey,
 } from "./defaultDocument";
+import { mapWithConcurrency } from "./asyncUtils";
 import { hydrateDocumentImages, hydrateTeaDocumentImages } from "./imageStorage";
 import { optimizeImageDataUrl } from "./imageOptimizer";
 import type {
@@ -39,6 +40,14 @@ import type {
 } from "./types";
 
 type ExportableEvidenceImage = EvidenceImage & { dataUrl: string };
+export type DocxExportKind = "ot" | "tea";
+export type DocxExportImageProblem = {
+  label: string;
+  detail: string;
+  location: string;
+  severity: "danger";
+  documentKind: DocxExportKind;
+};
 type TeaRunOptions = {
   bold?: boolean;
   italics?: boolean;
@@ -74,9 +83,32 @@ const COLORS = {
 };
 const EXPORT_IMAGE_YIELD_INTERVAL = 3;
 
+export class DocxExportImageError extends Error {
+  readonly documentKind: DocxExportKind;
+  readonly problems: DocxExportImageProblem[];
+
+  constructor(documentKind: DocxExportKind, problems: DocxExportImageProblem[]) {
+    super("Exportacao bloqueada por problema nas imagens.");
+    this.name = "DocxExportImageError";
+    this.documentKind = documentKind;
+    this.problems = problems;
+  }
+}
+
+export function isDocxExportImageError(error: unknown): error is DocxExportImageError {
+  return (
+    error instanceof Error &&
+    error.name === "DocxExportImageError" &&
+    Array.isArray((error as Partial<DocxExportImageError>).problems)
+  );
+}
+
 export async function exportOtDocument(documentData: OtDocument): Promise<void> {
   const hydratedDocument = await hydrateDocumentImages(documentData);
+  assertNoExportImageProblems(validateOtDocumentImages(hydratedDocument));
   const exportDocument = await optimizeOtDocumentImages(hydratedDocument);
+  const expectedImages = collectOtExportImages(exportDocument);
+  assertNoExportImageProblems(validateExportableImageData(expectedImages, "ot"));
   const doc = new Document({
     styles: {
       default: {
@@ -124,12 +156,15 @@ export async function exportOtDocument(documentData: OtDocument): Promise<void> 
     ],
   });
 
-  await downloadDocument(doc, createFileName(exportDocument));
+  await downloadDocument(doc, createFileName(exportDocument), expectedImages, "ot");
 }
 
 export async function exportTeaDocument(documentData: TeaDocument): Promise<void> {
   const hydratedDocument = await hydrateTeaDocumentImages(documentData);
+  assertNoExportImageProblems(validateTeaDocumentImages(hydratedDocument));
   const exportDocument = await optimizeTeaDocumentImages(hydratedDocument);
+  const expectedImages = collectTeaExportImages(exportDocument);
+  assertNoExportImageProblems(validateExportableImageData(expectedImages, "tea"));
   const doc = new Document({
     styles: {
       default: {
@@ -210,11 +245,17 @@ export async function exportTeaDocument(documentData: TeaDocument): Promise<void
     ],
   });
 
-  await downloadDocument(doc, createTeaFileName(exportDocument));
+  await downloadDocument(doc, createTeaFileName(exportDocument), expectedImages, "tea");
 }
 
-async function downloadDocument(doc: Document, fileName: string): Promise<void> {
+async function downloadDocument(
+  doc: Document,
+  fileName: string,
+  expectedImages: LocatedEvidenceImage[],
+  documentKind: DocxExportKind,
+): Promise<void> {
   const blob = await Packer.toBlob(doc);
+  await verifyDocxImageMedia(blob, expectedImages, documentKind);
   const url = URL.createObjectURL(blob);
   const anchor = window.document.createElement("a");
   anchor.href = url;
@@ -223,17 +264,436 @@ async function downloadDocument(doc: Document, fileName: string): Promise<void> 
   URL.revokeObjectURL(url);
 }
 
+type LocatedEvidenceImage = {
+  image: EvidenceImage;
+  location: string;
+};
+
+type ParsedImageDataUrl = {
+  bytes: Uint8Array;
+  extension: "png" | "jpg" | "gif" | "bmp";
+  signature: string;
+};
+type ZipFileMap = Record<
+  string,
+  { dir: boolean; async: (type: "uint8array") => Promise<Uint8Array> }
+>;
+
+function assertNoExportImageProblems(problems: DocxExportImageProblem[]): void {
+  if (problems.length > 0) {
+    throw new DocxExportImageError(problems[0].documentKind, problems);
+  }
+}
+
+function validateOtDocumentImages(documentData: OtDocument): DocxExportImageProblem[] {
+  const problems: DocxExportImageProblem[] = [];
+  const selectedGroups = selectedPermissionGroups(documentData.permissionGroups);
+
+  selectedGroups.forEach((macro) => {
+    macro.microPermissions.forEach((micro) => {
+      const block = documentData.permissionBlocks[createPermissionKey(macro.id, micro.id)] ??
+        createEmptyBlock();
+
+      block.tests.forEach((test, testIndex) => {
+        const testLocation = formatOtTestLocation(macro, micro, test, testIndex);
+
+        if (test.result.legacyImages.length === 0) {
+          problems.push(createImageProblem("ot", {
+            label: "Imagem do legado ausente",
+            detail: "Adicione evidencia em Legado antes de exportar.",
+            location: `${testLocation} > Legado`,
+          }));
+        }
+
+        if (test.result.newImages.length === 0) {
+          problems.push(createImageProblem("ot", {
+            label: "Imagem do novo ausente",
+            detail: "Adicione evidencia em Novo antes de exportar.",
+            location: `${testLocation} > Novo`,
+          }));
+        }
+
+        collectOtTestImages(test, testLocation).forEach((located) => {
+          if (!hasImageData(located.image)) {
+            problems.push(createImageProblem("ot", {
+              label: "Imagem sem dados",
+              detail:
+                `${located.image.name || "Imagem"} nao foi carregada do rascunho. ` +
+                "Recarregue ou substitua a imagem.",
+              location: located.location,
+            }));
+          }
+        });
+      });
+    });
+  });
+
+  return problems;
+}
+
+function validateTeaDocumentImages(documentData: TeaDocument): DocxExportImageProblem[] {
+  const problems: DocxExportImageProblem[] = [];
+
+  documentData.activityImages.forEach((image, imageIndex) => {
+    if (!hasImageData(image)) {
+      problems.push(createImageProblem("tea", {
+        label: "Imagem geral sem dados",
+        detail:
+          `${image.name || "Imagem"} nao foi carregada do rascunho. ` +
+          "Recarregue ou substitua a imagem.",
+        location: `TEA > Imagem geral > Imagem ${imageIndex + 1}`,
+      }));
+    }
+  });
+
+  documentData.activities.forEach((activity, activityIndex) => {
+    const activityLocation = `TEA > Atividade 2.${activityIndex + 1}`;
+
+    activity.blocks.forEach((block, blockIndex) => {
+      addTeaBlockImageProblems(problems, block, {
+        location: `${activityLocation} > Bloco ${blockIndex + 1}`,
+      });
+    });
+
+    activity.subActivities.forEach((subActivity, subActivityIndex) => {
+      const subActivityLocation =
+        `${activityLocation} > Subtopico 2.${activityIndex + 1}.${subActivityIndex + 1}`;
+
+      subActivity.blocks.forEach((block, blockIndex) => {
+        addTeaBlockImageProblems(problems, block, {
+          location: `${subActivityLocation} > Bloco ${blockIndex + 1}`,
+        });
+      });
+    });
+  });
+
+  return problems;
+}
+
+function addTeaBlockImageProblems(
+  problems: DocxExportImageProblem[],
+  block: TeaContentBlock,
+  context: { location: string },
+): void {
+  if (block.type !== "images") {
+    return;
+  }
+
+  if (block.images.length === 0) {
+    problems.push(createImageProblem("tea", {
+      label: "Bloco de imagens vazio",
+      detail: "Adicione uma imagem ou remova o bloco antes de exportar.",
+      location: context.location,
+    }));
+    return;
+  }
+
+  block.images.forEach((image, imageIndex) => {
+    if (!hasImageData(image)) {
+      problems.push(createImageProblem("tea", {
+        label: "Imagem sem dados",
+        detail:
+          `${image.name || "Imagem"} nao foi carregada do rascunho. ` +
+          "Recarregue ou substitua a imagem.",
+        location: `${context.location} > Imagem ${imageIndex + 1}`,
+      }));
+    }
+  });
+}
+
+function validateExportableImageData(
+  expectedImages: LocatedEvidenceImage[],
+  documentKind: DocxExportKind,
+): DocxExportImageProblem[] {
+  return expectedImages.flatMap(({ image, location }) => {
+    if (!hasImageData(image)) {
+      return [
+        createImageProblem(documentKind, {
+          label: "Imagem sem dados",
+          detail: `${image.name || "Imagem"} nao tem dados para exportacao.`,
+          location,
+        }),
+      ];
+    }
+
+    try {
+      parseImageDataUrl(image.dataUrl);
+      return [];
+    } catch (error) {
+      return [
+        createImageProblem(documentKind, {
+          label: "Imagem invalida",
+          detail:
+            `${image.name || "Imagem"} nao pode ser exportada: ` +
+            getErrorMessage(error),
+          location,
+        }),
+      ];
+    }
+  });
+}
+
+function collectOtExportImages(documentData: OtDocument): LocatedEvidenceImage[] {
+  return selectedPermissionGroups(documentData.permissionGroups).flatMap((macro) =>
+    macro.microPermissions.flatMap((micro) => {
+      const block = documentData.permissionBlocks[createPermissionKey(macro.id, micro.id)] ??
+        createEmptyBlock();
+
+      return block.tests.flatMap((test, testIndex) =>
+        collectOtTestImages(test, formatOtTestLocation(macro, micro, test, testIndex)),
+      );
+    }),
+  );
+}
+
+function collectOtTestImages(
+  test: PermissionBlockTest,
+  testLocation: string,
+): LocatedEvidenceImage[] {
+  const images: LocatedEvidenceImage[] = [
+    ...test.result.legacyImages.map((image, imageIndex) => ({
+      image,
+      location: `${testLocation} > Legado > Imagem ${imageIndex + 1}`,
+    })),
+    ...test.result.newImages.map((image, imageIndex) => ({
+      image,
+      location: `${testLocation} > Novo > Imagem ${imageIndex + 1}`,
+    })),
+  ];
+
+  if (test.result.checks.newIssue) {
+    const correction = {
+      ...createEmptyTestCorrection(),
+      ...test.correction,
+      beforeImages: test.correction?.beforeImages ?? [],
+      afterImages: test.correction?.afterImages ?? [],
+    };
+
+    images.push(
+      ...correction.beforeImages.map((image, imageIndex) => ({
+        image,
+        location: `${testLocation} > Antes (com erro) > Imagem ${imageIndex + 1}`,
+      })),
+      ...correction.afterImages.map((image, imageIndex) => ({
+        image,
+        location: `${testLocation} > Depois (corrigido) > Imagem ${imageIndex + 1}`,
+      })),
+    );
+  }
+
+  return images;
+}
+
+function collectTeaExportImages(documentData: TeaDocument): LocatedEvidenceImage[] {
+  return [
+    ...documentData.activityImages.map((image, imageIndex) => ({
+      image,
+      location: `TEA > Imagem geral > Imagem ${imageIndex + 1}`,
+    })),
+    ...documentData.activities.flatMap((activity, activityIndex) => {
+      const activityLocation = `TEA > Atividade 2.${activityIndex + 1}`;
+
+      return [
+        ...collectTeaBlockImages(activity.blocks, activityLocation),
+        ...activity.subActivities.flatMap((subActivity, subActivityIndex) =>
+          collectTeaBlockImages(
+            subActivity.blocks,
+            `${activityLocation} > Subtopico 2.${activityIndex + 1}.${subActivityIndex + 1}`,
+          ),
+        ),
+      ];
+    }),
+  ];
+}
+
+function collectTeaBlockImages(
+  blocks: TeaContentBlock[],
+  parentLocation: string,
+): LocatedEvidenceImage[] {
+  return blocks.flatMap((block, blockIndex) =>
+    block.type === "images"
+      ? block.images.map((image, imageIndex) => ({
+          image,
+          location: `${parentLocation} > Bloco ${blockIndex + 1} > Imagem ${imageIndex + 1}`,
+        }))
+      : [],
+  );
+}
+
+async function verifyDocxImageMedia(
+  blob: Blob,
+  expectedImages: LocatedEvidenceImage[],
+  documentKind: DocxExportKind,
+): Promise<void> {
+  const expectedMedia = collectExpectedMedia(expectedImages);
+
+  if (expectedMedia.length === 0) {
+    return;
+  }
+
+  let zipFiles: ZipFileMap;
+
+  try {
+    const { default: JSZip } = await import("jszip");
+    const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+    zipFiles = zip.files as ZipFileMap;
+  } catch (error) {
+    throw new DocxExportImageError(documentKind, [
+      createImageProblem(documentKind, {
+        label: "Falha ao verificar DOCX",
+        detail:
+          "Nao foi possivel abrir o DOCX gerado para conferir as imagens: " +
+          getErrorMessage(error),
+        location: "DOCX gerado",
+      }),
+    ]);
+  }
+
+  const mediaFiles = Object.entries(zipFiles).filter(
+    ([path, file]) => path.startsWith("word/media/") && !file.dir,
+  );
+  const mediaSignatures = new Set(
+    await mapWithConcurrency(mediaFiles, async ([, file]) =>
+      bytesToBase64(await file.async("uint8array")),
+    ),
+  );
+  const missingMedia = expectedMedia.filter((expected) => !mediaSignatures.has(expected.signature));
+
+  if (missingMedia.length === 0) {
+    return;
+  }
+
+  throw new DocxExportImageError(
+    documentKind,
+    missingMedia.map((expected) =>
+      createImageProblem(documentKind, {
+        label: "Imagem nao encontrada no DOCX gerado",
+        detail:
+          "A imagem foi processada, mas nao apareceu em word/media no arquivo final.",
+        location: expected.locations.join(" | "),
+      }),
+    ),
+  );
+}
+
+function collectExpectedMedia(
+  expectedImages: LocatedEvidenceImage[],
+): Array<{ signature: string; locations: string[] }> {
+  const mediaBySignature = new Map<string, string[]>();
+
+  expectedImages.forEach(({ image, location }) => {
+    if (!hasImageData(image)) {
+      return;
+    }
+
+    const parsed = parseImageDataUrl(image.dataUrl);
+    const locations = mediaBySignature.get(parsed.signature) ?? [];
+    locations.push(location);
+    mediaBySignature.set(parsed.signature, locations);
+  });
+
+  return Array.from(mediaBySignature, ([signature, locations]) => ({ signature, locations }));
+}
+
+function parseImageDataUrl(dataUrl: string): ParsedImageDataUrl {
+  const [header = "", payload = ""] = dataUrl.split(",");
+  const trimmedHeader = header.trim();
+  const typeMatch = /^data:image\/(png|jpe?g|gif|bmp);base64$/i.exec(trimmedHeader);
+
+  if (!trimmedHeader.toLowerCase().startsWith("data:image/")) {
+    throw new Error("o valor nao e uma data URL de imagem.");
+  }
+
+  if (!trimmedHeader.toLowerCase().includes(";base64")) {
+    throw new Error("a imagem precisa estar em base64.");
+  }
+
+  if (!typeMatch) {
+    throw new Error("tipo de imagem nao suportado. Use PNG, JPG, GIF ou BMP.");
+  }
+
+  const normalizedPayload = payload.replace(/\s/g, "");
+
+  if (!normalizedPayload) {
+    throw new Error("payload base64 vazio.");
+  }
+
+  try {
+    const binary = window.atob(normalizedPayload);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    const extensionName = typeMatch[1].toLowerCase();
+
+    return {
+      bytes,
+      extension: extensionName.startsWith("jp")
+        ? "jpg"
+        : (extensionName as ParsedImageDataUrl["extension"]),
+      signature: bytesToBase64(bytes),
+    };
+  } catch {
+    throw new Error("payload base64 invalido.");
+  }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return window.btoa(binary);
+}
+
+function createImageProblem(
+  documentKind: DocxExportKind,
+  problem: Omit<DocxExportImageProblem, "documentKind" | "severity">,
+): DocxExportImageProblem {
+  return {
+    ...problem,
+    severity: "danger",
+    documentKind,
+  };
+}
+
+function formatOtTestLocation(
+  macro: PermissionGroup,
+  micro: PermissionItem,
+  test: PermissionBlockTest,
+  testIndex: number,
+): string {
+  return [
+    "OT",
+    formatPermission(macro),
+    formatPermission(micro),
+    test.title.trim() || `Teste ${testIndex + 1}`,
+  ].join(" > ");
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : "erro desconhecido.";
+}
+
 async function optimizeOtDocumentImages(documentData: OtDocument): Promise<OtDocument> {
   return {
     ...documentData,
     permissionBlocks: Object.fromEntries(
-      await Promise.all(
-        Object.entries(documentData.permissionBlocks).map(async ([blockKey, block]) => [
+      await mapWithConcurrency(
+        Object.entries(documentData.permissionBlocks),
+        async ([blockKey, block]) => [
           blockKey,
           {
             ...block,
-            tests: await Promise.all(
-              block.tests.map(async (test) => ({
+            tests: await mapWithConcurrency(
+              block.tests,
+              async (test) => ({
                 ...test,
                 result: {
                   ...test.result,
@@ -242,10 +702,10 @@ async function optimizeOtDocumentImages(documentData: OtDocument): Promise<OtDoc
                   ),
                   newImages: await optimizeEvidenceImagesForExport(test.result.newImages),
                 },
-              })),
+              }),
             ),
           },
-        ]),
+        ],
       ),
     ),
   };
@@ -265,19 +725,19 @@ async function optimizeTeaDocumentImages(documentData: TeaDocument): Promise<Tea
   return {
     ...documentData,
     activityImages: await optimizeEvidenceImagesForExport(documentData.activityImages),
-    activities: await Promise.all(
-      documentData.activities.map(async (activity) => ({
+    activities: await mapWithConcurrency(
+      documentData.activities,
+      async (activity) => ({
         ...activity,
-        blocks: await Promise.all(activity.blocks.map(optimizeTeaContentBlockImages)),
-        subActivities: await Promise.all(
-          activity.subActivities.map(async (subActivity) => ({
+        blocks: await mapWithConcurrency(activity.blocks, optimizeTeaContentBlockImages),
+        subActivities: await mapWithConcurrency(
+          activity.subActivities,
+          async (subActivity) => ({
             ...subActivity,
-            blocks: await Promise.all(
-              subActivity.blocks.map(optimizeTeaContentBlockImages),
-            ),
-          })),
+            blocks: await mapWithConcurrency(subActivity.blocks, optimizeTeaContentBlockImages),
+          }),
         ),
-      })),
+      }),
     ),
   };
 }
@@ -285,17 +745,13 @@ async function optimizeTeaDocumentImages(documentData: TeaDocument): Promise<Tea
 async function optimizeEvidenceImagesForExport(
   images: EvidenceImage[],
 ): Promise<EvidenceImage[]> {
-  const optimizedImages: EvidenceImage[] = [];
-
-  for (let index = 0; index < images.length; index += 1) {
+  return mapWithConcurrency(images, async (image, index) => {
     if (index > 0 && index % EXPORT_IMAGE_YIELD_INTERVAL === 0) {
       await yieldToBrowser();
     }
 
-    optimizedImages.push(await optimizeEvidenceImageForExport(images[index]));
-  }
-
-  return optimizedImages;
+    return optimizeEvidenceImageForExport(image);
+  });
 }
 
 async function optimizeEvidenceImageForExport(image: EvidenceImage): Promise<EvidenceImage> {
@@ -720,6 +1176,7 @@ function createImageRun(
   image: ExportableEvidenceImage,
   options: { maxWidth?: number; maxHeight?: number } = {},
 ): ImageRun {
+  const parsedImage = parseImageDataUrl(image.dataUrl);
   const maxWidth = options.maxWidth ?? 560;
   const maxHeight = options.maxHeight ?? 420;
   const width = image.width || maxWidth;
@@ -727,45 +1184,17 @@ function createImageRun(
   const scale = Math.min(maxWidth / width, maxHeight / height, 1);
 
   return new ImageRun({
-    data: dataUrlToUint8Array(image.dataUrl),
+    data: parsedImage.bytes,
     transformation: {
       width: Math.max(1, Math.round(width * scale)),
       height: Math.max(1, Math.round(height * scale)),
     },
-    type: imageType(image.dataUrl),
+    type: parsedImage.extension,
   } as never);
 }
 
 function hasImageData(image: EvidenceImage): image is ExportableEvidenceImage {
   return typeof image.dataUrl === "string" && image.dataUrl.trim().length > 0;
-}
-
-function dataUrlToUint8Array(dataUrl: string): Uint8Array {
-  const base64 = dataUrl.split(",")[1] ?? "";
-  const binary = window.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes;
-}
-
-function imageType(dataUrl: string): "png" | "jpg" | "gif" | "bmp" {
-  if (dataUrl.startsWith("data:image/jpeg") || dataUrl.startsWith("data:image/jpg")) {
-    return "jpg";
-  }
-
-  if (dataUrl.startsWith("data:image/gif")) {
-    return "gif";
-  }
-
-  if (dataUrl.startsWith("data:image/bmp")) {
-    return "bmp";
-  }
-
-  return "png";
 }
 
 type CellDefinition = {

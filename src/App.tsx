@@ -47,6 +47,7 @@ import {
   ChevronsUp,
   ClipboardPaste,
   AlertCircle,
+  Archive,
   CheckCircle2,
   CircleHelp,
   ClipboardList,
@@ -55,6 +56,7 @@ import {
   FileSearch,
   FileText,
   FileUp,
+  ImageOff,
   ImagePlus,
   ListChecks,
   Moon,
@@ -62,6 +64,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Search,
   Sun,
   Trash2,
   Wrench,
@@ -73,9 +76,11 @@ import {
   createEmptyTestResult,
   createPermissionKey,
 } from "./defaultDocument";
+import { mapWithConcurrency } from "./asyncUtils";
 import { buildOtPreviewModel, buildTeaPreviewModel } from "./docxPreviewModel";
 import type { DocxPreviewModel } from "./docxPreviewModel";
 import type { DocxImportResult } from "./docxImport";
+import type { DocxExportImageProblem, DocxExportKind } from "./docxExport";
 import { LoadingFeedback } from "./LoadingFeedback";
 import {
   deleteEvidenceImageData,
@@ -234,6 +239,18 @@ type PendingConfirmation = ConfirmationOptions & {
   onConfirm: () => void | Promise<void>;
 };
 
+type ExportImageErrorState = {
+  documentKind: DocxExportKind;
+  problems: DocxExportImageProblem[];
+};
+
+type BackupNoticeState = {
+  title: string;
+  message: string;
+  details: string[];
+  tone: "danger" | "warning";
+};
+
 type TeaSubActivityCopyRequest = {
   sourceActivityId: string;
   subActivityId: string;
@@ -377,6 +394,9 @@ type TeaWorkspaceProps = {
   previewModel: DocxPreviewModel | null;
   isPreviewStale: boolean;
   activeTab: TeaTab;
+  findText: string;
+  replaceText: string;
+  matchCount: number;
   reviewSummary: TeaReviewSummary;
   reviewIssueIndex: TeaReviewIssueIndex;
   collapsedActivities: Record<string, boolean>;
@@ -384,6 +404,9 @@ type TeaWorkspaceProps = {
   collapsedComposers: Record<string, boolean>;
   collapsedContentBlocks: Record<string, boolean>;
   onTabChange: (tab: TeaTab) => void;
+  onFindTextChange: (value: string) => void;
+  onReplaceTextChange: (value: string) => void;
+  onReplaceAll: () => void;
   onMetadataChange: (field: keyof TeaDocument["metadata"], value: string) => void;
   onOverviewChange: (value: string) => void;
   onActivityIntroChange: (value: string) => void;
@@ -692,11 +715,17 @@ export default function App() {
   const [isFaqOpen, setIsFaqOpen] = useState(false);
   const [globalLoading, setGlobalLoading] = useState<LoadingTask | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isBackingUp, setIsBackingUp] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isImportingBackup, setIsImportingBackup] = useState(false);
   const [isConfirmingImport, setIsConfirmingImport] = useState(false);
   const [isConfirmingAction, setIsConfirmingAction] = useState(false);
   const [isCopyingTeaSubActivity, setIsCopyingTeaSubActivity] = useState(false);
+  const [teaFindText, setTeaFindText] = useState("");
+  const [teaReplaceText, setTeaReplaceText] = useState("");
   const [importPreview, setImportPreview] = useState<DocxImportResult | null>(null);
+  const [exportImageError, setExportImageError] = useState<ExportImageErrorState | null>(null);
+  const [backupNotice, setBackupNotice] = useState<BackupNoticeState | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [teaSubActivityCopyRequest, setTeaSubActivityCopyRequest] =
     useState<TeaSubActivityCopyRequest | null>(null);
@@ -998,6 +1027,10 @@ export default function App() {
         ? buildTeaPreviewModel(teaPreviewDocumentData)
         : null,
     [documentKind, teaActiveTab, teaPreviewDocumentData],
+  );
+  const teaFindMatchCount = useMemo(
+    () => countTeaDocumentMatches(teaData, teaFindText),
+    [teaData, teaFindText],
   );
 
   const otOutlineContext: ActiveTab | null =
@@ -1308,6 +1341,21 @@ export default function App() {
       activityImages: updater(current.activityImages),
     }));
   }, [updateTeaDocument]);
+
+  const updateTeaFindText = useCallback((value: string): void => {
+    flushBufferedCommits();
+    setTeaFindText(value);
+  }, [flushBufferedCommits]);
+
+  const replaceAllTeaMatches = useCallback((): void => {
+    flushBufferedCommits();
+
+    if (!teaFindText) {
+      return;
+    }
+
+    updateTeaDocument((current) => replaceTeaDocumentText(current, teaFindText, teaReplaceText));
+  }, [flushBufferedCommits, teaFindText, teaReplaceText, updateTeaDocument]);
 
   function updateMetadata(field: keyof OtDocument["metadata"], value: string): void {
     updateDocument((current) => ({
@@ -2067,6 +2115,126 @@ export default function App() {
     }
   }
 
+  async function handleImportBackupFile(file: File | null): Promise<void> {
+    if (!file || isGlobalLoading) {
+      return;
+    }
+
+    flushBufferedCommits();
+    flushDraft();
+    setIsImportingBackup(true);
+
+    try {
+      await runWithGlobalLoading(
+        {
+          label: "Importando backup...",
+          detail: "Lendo ZIP, restaurando imagens e preparando o rascunho.",
+        },
+        async () => {
+          const { parseBackupFile } = await import("./draftBackup");
+          const backup = await parseBackupFile(file);
+
+          if (backup.kind === "tea") {
+            let nextDocument = backup.document;
+
+            try {
+              nextDocument = await persistEmbeddedTeaImages(backup.document);
+            } catch {
+              backup.warnings.push(
+                "O TEA foi importado, mas algumas imagens podem nao ficar salvas no rascunho.",
+              );
+            }
+
+            setTeaData(nextDocument);
+            setDocumentKind("tea");
+            setCollapsedTeaActivities({});
+            setCollapsedTeaSubActivities({});
+            setCollapsedTeaComposers({});
+            setCollapsedTeaContentBlocks({});
+            setTeaActiveTab("review");
+          } else {
+            let nextDocument = backup.document;
+
+            try {
+              nextDocument = await persistEmbeddedEvidenceImages(backup.document);
+            } catch {
+              backup.warnings.push(
+                "A OT foi importada, mas algumas imagens podem nao ficar salvas no rascunho.",
+              );
+            }
+
+            setDocumentData(nextDocument);
+            setPermissionBulkText(formatPermissionBulk(nextDocument.permissionGroups));
+            setDocumentKind("ot");
+            setExpandedTests({});
+            setActiveTab("review");
+          }
+
+          if (backup.warnings.length > 0) {
+            setBackupNotice({
+              title: "Backup importado com avisos",
+              message: "Algumas imagens ou metadados nao foram restaurados corretamente.",
+              details: backup.warnings,
+              tone: "warning",
+            });
+          }
+        },
+      );
+    } catch (error) {
+      setBackupNotice({
+        title: "Backup invalido",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Nao foi possivel importar este backup.",
+        details: [],
+        tone: "danger",
+      });
+    } finally {
+      setIsImportingBackup(false);
+    }
+  }
+
+  async function handleExportBackup(kind: DocumentKind = documentKindRef.current): Promise<void> {
+    if (isGlobalLoading) {
+      return;
+    }
+
+    flushBufferedCommits();
+    flushDraft();
+    setIsBackingUp(true);
+
+    try {
+      await runWithGlobalLoading(
+        {
+          label: "Salvando backup...",
+          detail: "Preparando ZIP com rascunho e imagens.",
+        },
+        async () => {
+          const { exportOtBackup, exportTeaBackup } = await import("./draftBackup");
+
+          if (kind === "tea") {
+            await exportTeaBackup(teaDataRef.current);
+          } else {
+            await exportOtBackup(documentDataRef.current);
+          }
+        },
+      );
+    } catch (error) {
+      setBackupNotice({
+        title: "Backup nao foi salvo",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Nao foi possivel gerar o arquivo ZIP de backup.",
+        details: [],
+        tone: "danger",
+      });
+    } finally {
+      setIsBackingUp(false);
+    }
+  }
+
   async function handleExport(): Promise<void> {
     if (isGlobalLoading) {
       return;
@@ -2092,6 +2260,22 @@ export default function App() {
           }
         },
       );
+    } catch (error) {
+      const imageError = readDocxExportImageError(error);
+
+      if (imageError) {
+        setExportImageError(imageError);
+
+        if (imageError.documentKind === "tea") {
+          setTeaActiveTab("review");
+        } else {
+          setActiveTab("review");
+        }
+
+        return;
+      }
+
+      throw error;
     } finally {
       setIsExporting(false);
     }
@@ -2131,11 +2315,48 @@ export default function App() {
     );
   }
 
+  async function clearCurrentDocumentImages(): Promise<void> {
+    flushBufferedCommits();
+
+    if (documentKindRef.current === "tea") {
+      const { removeAllTeaImages } = await import("./draftBackup");
+      const result = removeAllTeaImages(teaDataRef.current);
+
+      await deleteEvidenceImageDataBatch(result.imageIds);
+      setTeaData(result.document);
+      setTeaActiveTab("review");
+      return;
+    }
+
+    const { removeAllOtImages } = await import("./draftBackup");
+    const result = removeAllOtImages(documentDataRef.current);
+
+    await deleteEvidenceImageDataBatch(result.imageIds);
+    setDocumentData(result.document);
+    setActiveTab("review");
+  }
+
+  function handleClearCurrentDocumentImages(): void {
+    const kind = documentKindRef.current;
+
+    requestConfirmation(
+      {
+        title: kind === "tea" ? "Apagar imagens do TEA?" : "Apagar imagens da OT?",
+        description:
+          kind === "tea"
+            ? "Todas as imagens do TEA atual serao removidas. Textos, atividades e blocos vazios serao mantidos."
+            : "Todas as imagens da OT atual serao removidas. Textos, testes, checks e observacoes serao mantidos.",
+        confirmLabel: kind === "tea" ? "Apagar imagens do TEA" : "Apagar imagens da OT",
+      },
+      clearCurrentDocumentImages,
+    );
+  }
+
   const topBarStatusText = globalLoading?.label ?? draftStatus;
   const topBarStatusColor = globalLoading ? "blue" : draftStatusColor(draftStatus);
-  const topBarStatusIcon = isImporting ? (
+  const topBarStatusIcon = isImporting || isImportingBackup ? (
     <FileUp size={14} />
-  ) : isExporting ? (
+  ) : isExporting || isBackingUp ? (
     <Download size={14} />
   ) : globalLoading ? (
     <FileSearch size={14} />
@@ -2211,6 +2432,19 @@ export default function App() {
                   )}
                 </FileButton>
               </div>
+              <Button
+                variant="light"
+                color="gray"
+                leftSection={<Archive size={17} />}
+                className="topBarDesktopOnly"
+                onClick={() => {
+                  void handleExportBackup();
+                }}
+                loading={isBackingUp}
+                disabled={isGlobalLoading && !isBackingUp}
+              >
+                Salvar backup
+              </Button>
               {documentKind === "ot" ? (
                 <Button
                   variant="light"
@@ -2281,6 +2515,31 @@ export default function App() {
                       </Menu.Item>
                     )}
                   </FileButton>
+                  <FileButton
+                    onChange={(file) => {
+                      void handleImportBackupFile(file);
+                    }}
+                    accept=".zip,application/zip,application/x-zip-compressed"
+                  >
+                    {(props) => (
+                      <Menu.Item
+                        leftSection={<Archive size={15} />}
+                        disabled={isGlobalLoading}
+                        onClick={props.onClick}
+                      >
+                        Importar backup
+                      </Menu.Item>
+                    )}
+                  </FileButton>
+                  <Menu.Item
+                    leftSection={<Archive size={15} />}
+                    disabled={isGlobalLoading && !isBackingUp}
+                    onClick={() => {
+                      void handleExportBackup();
+                    }}
+                  >
+                    Salvar backup
+                  </Menu.Item>
                   {documentKind === "ot" ? (
                     <Menu.Item
                       leftSection={<CircleHelp size={15} />}
@@ -2302,6 +2561,14 @@ export default function App() {
                     disabled={isGlobalLoading}
                   >
                     Limpar documento
+                  </Menu.Item>
+                  <Menu.Item
+                    color="red"
+                    leftSection={<ImageOff size={15} />}
+                    onClick={handleClearCurrentDocumentImages}
+                    disabled={isGlobalLoading}
+                  >
+                    {documentKind === "tea" ? "Apagar imagens do TEA" : "Apagar imagens da OT"}
                   </Menu.Item>
                 </Menu.Dropdown>
               </Menu>
@@ -2652,6 +2919,9 @@ export default function App() {
             previewModel={teaPreviewModel}
             isPreviewStale={isTeaPreviewStale}
             activeTab={teaActiveTab}
+            findText={teaFindText}
+            replaceText={teaReplaceText}
+            matchCount={teaFindMatchCount}
             reviewSummary={teaReviewSummary}
             reviewIssueIndex={teaReviewIssueIndex}
             collapsedActivities={collapsedTeaActivities}
@@ -2659,6 +2929,9 @@ export default function App() {
             collapsedComposers={collapsedTeaComposers}
             collapsedContentBlocks={collapsedTeaContentBlocks}
             onTabChange={setTeaActiveTab}
+            onFindTextChange={updateTeaFindText}
+            onReplaceTextChange={setTeaReplaceText}
+            onReplaceAll={replaceAllTeaMatches}
             onRefreshPreview={refreshTeaPreview}
             onMetadataChange={updateTeaMetadata}
             onOverviewChange={updateTeaOverview}
@@ -2722,6 +2995,18 @@ export default function App() {
         <FaqPanel />
       </Modal>
     ) : null}
+    <ExportImageErrorModal
+      error={exportImageError}
+      isBackingUp={isBackingUp}
+      onClose={() => setExportImageError(null)}
+      onBackup={(kind) => {
+        void handleExportBackup(kind);
+      }}
+    />
+    <BackupNoticeModal
+      notice={backupNotice}
+      onClose={() => setBackupNotice(null)}
+    />
     <ConfirmationModal
       confirmation={pendingConfirmation}
       isConfirming={isConfirmingAction}
@@ -2758,6 +3043,9 @@ const TeaWorkspace = memo(function TeaWorkspace({
   previewModel,
   isPreviewStale,
   activeTab,
+  findText,
+  replaceText,
+  matchCount,
   reviewSummary,
   reviewIssueIndex,
   collapsedActivities,
@@ -2765,6 +3053,9 @@ const TeaWorkspace = memo(function TeaWorkspace({
   collapsedComposers,
   collapsedContentBlocks,
   onTabChange,
+  onFindTextChange,
+  onReplaceTextChange,
+  onReplaceAll,
   onMetadataChange,
   onOverviewChange,
   onActivityIntroChange,
@@ -2837,6 +3128,16 @@ const TeaWorkspace = memo(function TeaWorkspace({
   }
 
   return (
+    <Stack gap="md">
+      <TeaFindReplacePanel
+        findText={findText}
+        replaceText={replaceText}
+        matchCount={matchCount}
+        onFindTextChange={onFindTextChange}
+        onReplaceTextChange={onReplaceTextChange}
+        onReplaceAll={onReplaceAll}
+      />
+
     <Tabs
       value={activeTab}
       onChange={(value) => {
@@ -3060,8 +3361,66 @@ const TeaWorkspace = memo(function TeaWorkspace({
         ) : null}
       </Tabs.Panel>
     </Tabs>
+    </Stack>
   );
 });
+
+function TeaFindReplacePanel({
+  findText,
+  replaceText,
+  matchCount,
+  onFindTextChange,
+  onReplaceTextChange,
+  onReplaceAll,
+}: {
+  findText: string;
+  replaceText: string;
+  matchCount: number;
+  onFindTextChange: (value: string) => void;
+  onReplaceTextChange: (value: string) => void;
+  onReplaceAll: () => void;
+}) {
+  const isReplaceDisabled = !findText || matchCount === 0;
+  const countLabel =
+    !findText
+      ? "Digite para buscar"
+      : formatTeaCount(matchCount, "ocorrencia", "ocorrencias");
+
+  return (
+    <Paper withBorder p="sm" className="teaFindReplaceBar">
+      <Group gap="sm" align="end" className="teaFindReplaceControls">
+        <TextInput
+          label="Localizar no TEA"
+          value={findText}
+          placeholder="Palavra ou frase"
+          leftSection={<Search size={16} />}
+          onChange={(event) => onFindTextChange(event.currentTarget.value)}
+        />
+        <TextInput
+          label="Substituir por"
+          value={replaceText}
+          placeholder="Novo texto"
+          onChange={(event) => onReplaceTextChange(event.currentTarget.value)}
+        />
+        <Badge
+          variant={findText && matchCount > 0 ? "light" : "outline"}
+          color={findText && matchCount > 0 ? "blue" : "gray"}
+          className="teaFindReplaceCount"
+        >
+          {countLabel}
+        </Badge>
+        <Button
+          variant="light"
+          leftSection={<Search size={16} />}
+          disabled={isReplaceDisabled}
+          onClick={onReplaceAll}
+        >
+          Substituir tudo
+        </Button>
+      </Group>
+    </Paper>
+  );
+}
 
 const TeaActivityEditor = memo(function TeaActivityEditor({
   index,
@@ -5705,8 +6064,9 @@ const EvidenceUploader = memo(function EvidenceUploader({
     setIsProcessingFiles(true);
 
     try {
-      const evidence = await Promise.all(
-        imageFiles.map(async (file) => {
+      const evidence = await mapWithConcurrency(
+        imageFiles,
+        async (file) => {
           const optimized = await optimizeImageFile(file);
           const id = createId();
 
@@ -5721,7 +6081,7 @@ const EvidenceUploader = memo(function EvidenceUploader({
             savedBytes: optimized.savedBytes,
             optimized: optimized.optimized,
           };
-        }),
+        },
       );
 
       try {
@@ -5893,6 +6253,126 @@ function EmptyState({
         </Button>
       </Stack>
     </Paper>
+  );
+}
+
+function ExportImageErrorModal({
+  error,
+  isBackingUp,
+  onClose,
+  onBackup,
+}: {
+  error: ExportImageErrorState | null;
+  isBackingUp: boolean;
+  onClose: () => void;
+  onBackup: (kind: DocxExportKind) => void;
+}) {
+  const problemCount = error?.problems.length ?? 0;
+
+  return (
+    <Modal
+      opened={error !== null}
+      onClose={onClose}
+      title="Exportacao bloqueada por problema nas imagens"
+      size="lg"
+      centered
+    >
+      {error ? (
+        <Stack gap="md" role="alert" aria-live="assertive">
+          <Paper withBorder p="md" className="exportImageErrorSummary">
+            <Group gap="sm" align="flex-start" wrap="nowrap">
+              <AlertCircle size={24} aria-hidden="true" />
+              <div>
+                <Text fw={800}>
+                  O arquivo nao foi baixado.
+                </Text>
+                <Text size="sm">
+                  Corrija {formatOtCount(problemCount, "problema", "problemas")} de imagem e tente exportar novamente.
+                </Text>
+              </div>
+            </Group>
+          </Paper>
+
+          <Stack gap="xs" className="exportImageErrorList">
+            {error.problems.map((problem, index) => (
+              <Paper withBorder p="sm" key={`${problem.location}-${problem.label}-${index}`}>
+                <Text fw={800} size="sm">
+                  {problem.label}
+                </Text>
+                <Text size="sm">{problem.detail}</Text>
+                <Text size="xs" c="dimmed" mt={4}>
+                  {problem.location}
+                </Text>
+              </Paper>
+            ))}
+          </Stack>
+
+          <Group justify="flex-end">
+            <Button
+              variant="light"
+              color="gray"
+              leftSection={<Archive size={17} />}
+              loading={isBackingUp}
+              onClick={() => onBackup(error.documentKind)}
+            >
+              Salvar backup mesmo assim
+            </Button>
+            <Button color="red" onClick={onClose}>
+              Fechar
+            </Button>
+          </Group>
+        </Stack>
+      ) : null}
+    </Modal>
+  );
+}
+
+function BackupNoticeModal({
+  notice,
+  onClose,
+}: {
+  notice: BackupNoticeState | null;
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      opened={notice !== null}
+      onClose={onClose}
+      title={notice?.title ?? "Aviso do backup"}
+      size="lg"
+      centered
+    >
+      {notice ? (
+        <Stack gap="md" role="alert" aria-live="assertive">
+          <Paper
+            withBorder
+            p="md"
+            className={
+              notice.tone === "danger" ? "exportImageErrorSummary" : "backupWarningSummary"
+            }
+          >
+            <Group gap="sm" align="flex-start" wrap="nowrap">
+              <AlertCircle size={24} aria-hidden="true" />
+              <Text fw={800}>{notice.message}</Text>
+            </Group>
+          </Paper>
+          {notice.details.length > 0 ? (
+            <Stack gap="xs">
+              {notice.details.map((detail, index) => (
+                <Paper withBorder p="sm" key={`${detail}-${index}`}>
+                  <Text size="sm">{detail}</Text>
+                </Paper>
+              ))}
+            </Stack>
+          ) : null}
+          <Group justify="flex-end">
+            <Button color={notice.tone === "danger" ? "red" : undefined} onClick={onClose}>
+              Fechar
+            </Button>
+          </Group>
+        </Stack>
+      ) : null}
+    </Modal>
   );
 }
 
@@ -6313,6 +6793,26 @@ function ReviewIssueGroup<TIssue extends {
 
 function getReviewSeverityLabel(severity: ReviewSeverity): string {
   return severity === "danger" ? "Crítica" : "Aviso";
+}
+
+function readDocxExportImageError(error: unknown): ExportImageErrorState | null {
+  const candidate = error as Partial<ExportImageErrorState> & {
+    name?: string;
+  };
+
+  if (
+    error instanceof Error &&
+    candidate.name === "DocxExportImageError" &&
+    (candidate.documentKind === "ot" || candidate.documentKind === "tea") &&
+    Array.isArray(candidate.problems)
+  ) {
+    return {
+      documentKind: candidate.documentKind,
+      problems: candidate.problems,
+    };
+  }
+
+  return null;
 }
 
 function getOutlineTargetIds(groups: DocumentOutlineGroup[]): string[] {
@@ -8107,6 +8607,135 @@ function updateTeaItemsFromBulk(
     id: currentItems[index]?.id ?? createId(),
     text,
   }));
+}
+
+function countTeaDocumentMatches(documentData: TeaDocument, searchText: string): number {
+  const matcher = createLiteralSearchRegex(searchText);
+
+  if (!matcher) {
+    return 0;
+  }
+
+  return getTeaSearchableTextValues(documentData).reduce(
+    (total, value) => total + countTextMatches(value, matcher),
+    0,
+  );
+}
+
+function replaceTeaDocumentText(
+  documentData: TeaDocument,
+  searchText: string,
+  replacementText: string,
+): TeaDocument {
+  const matcher = createLiteralSearchRegex(searchText);
+
+  if (!matcher) {
+    return documentData;
+  }
+
+  const replaceText = (value: string): string =>
+    value.replace(matcher, () => replacementText);
+
+  return {
+    ...documentData,
+    metadata: {
+      serviceOrder: replaceText(documentData.metadata.serviceOrder),
+      phase: replaceText(documentData.metadata.phase),
+      ticket: replaceText(documentData.metadata.ticket),
+      subject: replaceText(documentData.metadata.subject),
+      date: replaceText(documentData.metadata.date),
+      author: replaceText(documentData.metadata.author),
+    },
+    overview: replaceText(documentData.overview),
+    activityIntro: replaceText(documentData.activityIntro),
+    activities: documentData.activities.map((activity) => ({
+      ...activity,
+      title: replaceText(activity.title),
+      blocks: replaceTeaContentBlocks(activity.blocks, replaceText),
+      subActivities: activity.subActivities.map((subActivity) => ({
+        ...subActivity,
+        title: replaceText(subActivity.title),
+        blocks: replaceTeaContentBlocks(subActivity.blocks, replaceText),
+      })),
+    })),
+  };
+}
+
+function replaceTeaContentBlocks(
+  blocks: TeaContentBlock[],
+  replaceText: (value: string) => string,
+): TeaContentBlock[] {
+  return blocks.map((block) => {
+    if (block.type === "text") {
+      return {
+        ...block,
+        text: replaceText(block.text),
+      };
+    }
+
+    if (block.type === "list") {
+      return {
+        ...block,
+        items: block.items.map((item) => ({
+          ...item,
+          text: replaceText(item.text),
+        })),
+      };
+    }
+
+    return block;
+  });
+}
+
+function getTeaSearchableTextValues(documentData: TeaDocument): string[] {
+  return [
+    documentData.metadata.serviceOrder,
+    documentData.metadata.phase,
+    documentData.metadata.ticket,
+    documentData.metadata.subject,
+    documentData.metadata.date,
+    documentData.metadata.author,
+    documentData.overview,
+    documentData.activityIntro,
+    ...documentData.activities.flatMap((activity) => [
+      activity.title,
+      ...getTeaBlockSearchableTextValues(activity.blocks),
+      ...activity.subActivities.flatMap((subActivity) => [
+        subActivity.title,
+        ...getTeaBlockSearchableTextValues(subActivity.blocks),
+      ]),
+    ]),
+  ];
+}
+
+function getTeaBlockSearchableTextValues(blocks: TeaContentBlock[]): string[] {
+  return blocks.flatMap((block) => {
+    if (block.type === "text") {
+      return [block.text];
+    }
+
+    if (block.type === "list") {
+      return block.items.map((item) => item.text);
+    }
+
+    return [];
+  });
+}
+
+function countTextMatches(value: string, matcher: RegExp): number {
+  return value.match(matcher)?.length ?? 0;
+}
+
+function createLiteralSearchRegex(searchText: string): RegExp | null {
+  if (!searchText) {
+    return null;
+  }
+
+  return new RegExp(escapeRegExp(searchText), "gi");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function createTeaContentBlock(type: TeaContentBlockType): TeaContentBlock {

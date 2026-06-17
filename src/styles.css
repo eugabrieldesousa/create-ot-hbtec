@@ -251,7 +251,7 @@ main:focus {
 }
 
 .topBarCompactMenu {
-  display: none;
+  display: inline-flex;
 }
 
 .topBarTitle {
@@ -404,6 +404,25 @@ main:focus {
 .teaActivityCard {
   background: var(--app-card-bg);
   border-color: var(--app-border);
+}
+
+.teaFindReplaceBar {
+  background: var(--app-card-bg);
+  border-color: var(--app-border);
+}
+
+.teaFindReplaceControls {
+  min-width: 0;
+}
+
+.teaFindReplaceControls .mantine-InputWrapper-root {
+  flex: 1 1 13rem;
+  min-width: min(100%, 13rem);
+}
+
+.teaFindReplaceCount {
+  flex: 0 0 auto;
+  min-height: 2.25rem;
 }
 
 .teaActivityCard,
@@ -1341,6 +1360,34 @@ main:focus {
   border-radius: 8px;
 }
 
+.exportImageErrorSummary {
+  color: var(--app-heading);
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.36);
+}
+
+.exportImageErrorSummary svg {
+  color: #dc2626;
+  flex: 0 0 auto;
+}
+
+.backupWarningSummary {
+  color: var(--app-heading);
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.36);
+}
+
+.backupWarningSummary svg {
+  color: #d97706;
+  flex: 0 0 auto;
+}
+
+.exportImageErrorList {
+  max-height: min(48vh, 28rem);
+  overflow: auto;
+  padding-right: 0.125rem;
+}
+
 .importMetrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1760,10 +1807,6 @@ main:focus {
     display: none;
   }
 
-  .topBarCompactMenu {
-    display: inline-flex;
-  }
-
   .documentFields,
   .permissionFields,
   .microPermissionRow {
@@ -1811,6 +1854,19 @@ main:focus {
   .workspaceTabs .mantine-Tabs-list {
     overflow-x: auto;
     flex-wrap: nowrap;
+  }
+
+  .teaFindReplaceControls {
+    align-items: stretch;
+  }
+
+  .teaFindReplaceControls .mantine-InputWrapper-root,
+  .teaFindReplaceControls .mantine-Button-root {
+    flex-basis: 100%;
+  }
+
+  .teaFindReplaceCount {
+    width: fit-content;
   }
 }
 
