@@ -6772,7 +6772,6 @@ function EmptyState({
   );
 }
 
-<<<<<<< HEAD
 function ExportImageErrorModal({
   error,
   isBackingUp,
@@ -6887,7 +6886,12 @@ function BackupNoticeModal({
               Fechar
             </Button>
           </Group>
-=======
+        </Stack>
+      ) : null}
+    </Modal>
+  );
+}
+
 function ImagePreviewModal({
   image,
   onClose,
@@ -6924,7 +6928,6 @@ function ImagePreviewModal({
               <Text c="dimmed">Sem preview disponivel.</Text>
             </Paper>
           )}
->>>>>>> a2ef354d3cfc1c3083b0055d12db92628799b9ca
         </Stack>
       ) : null}
     </Modal>

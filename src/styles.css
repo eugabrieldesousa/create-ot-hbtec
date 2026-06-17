@@ -252,13 +252,10 @@ main:focus {
 
 .topBarCompactMenu {
   display: inline-flex;
-<<<<<<< HEAD
-=======
 }
 
 .topBarOutlineButton {
   white-space: nowrap;
->>>>>>> a2ef354d3cfc1c3083b0055d12db92628799b9ca
 }
 
 .topBarTitle {
