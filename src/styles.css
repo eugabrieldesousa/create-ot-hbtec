@@ -254,10 +254,6 @@ main:focus {
   display: inline-flex;
 }
 
-.topBarOutlineButton {
-  white-space: nowrap;
-}
-
 .topBarTitle {
   min-width: 16rem;
 }
@@ -410,21 +406,21 @@ main:focus {
   border-color: var(--app-border);
 }
 
-.teaFindReplaceBar {
+.findReplaceBar {
   background: var(--app-card-bg);
   border-color: var(--app-border);
 }
 
-.teaFindReplaceControls {
+.findReplaceControls {
   min-width: 0;
 }
 
-.teaFindReplaceControls .mantine-InputWrapper-root {
+.findReplaceControls .mantine-InputWrapper-root {
   flex: 1 1 13rem;
   min-width: min(100%, 13rem);
 }
 
-.teaFindReplaceCount {
+.findReplaceCount {
   flex: 0 0 auto;
   min-height: 2.25rem;
 }
@@ -1472,6 +1468,17 @@ main:focus {
   flex: 0 0 auto;
 }
 
+.backupSuccessSummary {
+  color: var(--app-heading);
+  background: rgba(22, 163, 74, 0.1);
+  border-color: rgba(22, 163, 74, 0.36);
+}
+
+.backupSuccessSummary svg {
+  color: #16a34a;
+  flex: 0 0 auto;
+}
+
 .exportImageErrorList {
   max-height: min(48vh, 28rem);
   overflow: auto;
@@ -1489,80 +1496,6 @@ main:focus {
   background: rgba(217, 119, 6, 0.08);
   border: 1px solid rgba(217, 119, 6, 0.28);
   border-radius: 8px;
-}
-
-.helpIntro {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 0.875rem;
-  align-items: center;
-  padding: 1rem;
-  color: var(--app-text);
-  background: var(--app-card-bg);
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
-}
-
-.helpIntroIcon {
-  display: grid;
-  width: 2.75rem;
-  height: 2.75rem;
-  place-items: center;
-  color: var(--app-primary);
-  background: var(--app-primary-soft);
-  border: 1px solid var(--app-border-soft);
-  border-radius: 8px;
-}
-
-.faqSectionList {
-  display: grid;
-  gap: 1rem;
-}
-
-.faqSection {
-  display: grid;
-  grid-template-columns: minmax(10rem, 13rem) minmax(0, 1fr);
-  gap: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--app-border-soft);
-}
-
-.faqSection:first-child {
-  padding-top: 0;
-  border-top: 0;
-}
-
-.faqSectionTitle {
-  color: var(--app-heading);
-}
-
-.faqItemList {
-  display: grid;
-  gap: 0.75rem;
-}
-
-.faqItem {
-  display: grid;
-  gap: 0.5rem;
-  padding: 0.875rem;
-  background: var(--app-surface-muted);
-  border: 1px solid var(--app-border-soft);
-  border-radius: 8px;
-}
-
-.faqExample {
-  min-width: 0;
-  margin: 0;
-  padding: 0.75rem;
-  overflow-x: auto;
-  color: var(--app-heading);
-  background: var(--app-card-bg);
-  border: 1px solid var(--app-border-soft);
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.8125rem;
-  line-height: 1.55;
-  white-space: pre-wrap;
 }
 
 .previewToolbar {
@@ -1894,10 +1827,6 @@ main:focus {
     flex: 1 1 auto;
   }
 
-  .topBarOutlineButton {
-    flex-basis: 100%;
-  }
-
   .topBarDesktopOnly {
     display: none;
   }
@@ -1905,10 +1834,6 @@ main:focus {
   .documentFields,
   .permissionFields,
   .microPermissionRow {
-    grid-template-columns: 1fr;
-  }
-
-  .faqSection {
     grid-template-columns: 1fr;
   }
 
@@ -1951,25 +1876,21 @@ main:focus {
     flex-wrap: nowrap;
   }
 
-  .teaFindReplaceControls {
+  .findReplaceControls {
     align-items: stretch;
   }
 
-  .teaFindReplaceControls .mantine-InputWrapper-root,
-  .teaFindReplaceControls .mantine-Button-root {
+  .findReplaceControls .mantine-InputWrapper-root,
+  .findReplaceControls .mantine-Button-root {
     flex-basis: 100%;
   }
 
-  .teaFindReplaceCount {
+  .findReplaceCount {
     width: fit-content;
   }
 }
 
 @media (max-width: 520px) {
-  .helpIntro {
-    grid-template-columns: 1fr;
-  }
-
   .reviewMetrics {
     grid-template-columns: 1fr;
   }

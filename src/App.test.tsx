@@ -54,6 +54,8 @@ vi.mock("./imageStorage", () => ({
   persistEmbeddedEvidenceImages: appMocks.persistEmbeddedEvidenceImages,
   persistEmbeddedTeaImages: appMocks.persistEmbeddedTeaImages,
   saveEvidenceImageDataBatch: appMocks.saveEvidenceImageDataBatch,
+  stripImageDataFromDocument: (documentData: OtDocument) => documentData,
+  stripImageDataFromTeaDocument: (documentData: TeaDocument) => documentData,
 }));
 
 const theme = createTheme({
@@ -461,7 +463,8 @@ describe("App OT card UX", () => {
 
     expect(container.textContent ?? "").toContain("Adicionar passo");
 
-    await clickButton("Limpar documento");
+    await openTopBarMenu();
+    await clickMenuItem("Limpar documento");
     await waitForBodyText("Limpar rascunho atual?");
     await waitForBodyText("Limpar documento");
 
@@ -504,16 +507,24 @@ describe("App OT card UX", () => {
     expect(getQuickCheckButton("OK")?.getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("keeps OT FAQ out of the tab flow and opens it from the top help action", async () => {
+  it("removes OT help and keeps the top bar focused on primary actions", async () => {
     await renderApp();
 
     expect(Array.from(container.querySelectorAll('[role="tab"]')).map((tab) => tab.textContent)).not.toContain(
       "FAQ",
     );
+    expect(document.body.textContent ?? "").not.toContain("Ajuda");
+    expect(document.body.textContent ?? "").not.toContain("FAQ do Gerador de OT");
 
-    await clickButton("Ajuda");
+    const topImportButtons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .filter((button) => button.textContent?.includes("Importar DOCX"));
 
-    expect(document.body.textContent ?? "").toContain("FAQ do Gerador de OT");
+    expect(topImportButtons).toHaveLength(1);
+
+    await openTopBarMenu();
+
+    expect(getMenuItem("Ajuda")).toBeUndefined();
+    expect(getMenuItem("Importar DOCX")).toBeUndefined();
   });
 });
 
@@ -755,6 +766,92 @@ describe("App document outline", () => {
     });
 
     expect(document.activeElement?.id).toBe("tea-preview-subactivity-tea-subactivity");
+  });
+});
+
+describe("App OT find and replace", () => {
+  it("counts and replaces OT text across all searchable fields", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createOtFindReplaceDraft()));
+
+    await renderApp();
+
+    await setFieldValue(getInputByLabel("Localizar na OT"), "marcador");
+    expect(container.textContent ?? "").toContain("14 ocorrencias");
+
+    await setFieldValue(getInputByLabel("Substituir por"), "troca");
+    await clickButton("Substituir tudo");
+
+    expect(container.textContent ?? "").toContain("0 ocorrencias");
+
+    await clickElement(getButton("Exportar DOCX"));
+
+    const exported = appMocks.exportOtDocument.mock.calls[0]?.[0] as OtDocument;
+
+    expect(exported.metadata.screen).toBe("Tela troca");
+    expect(exported.metadata.responsible).toBe("Responsavel troca");
+    expect(exported.metadata.environment).toBe("Ambiente troca");
+    expect(exported.metadata.author).toBe("Autor troca");
+    expect(exported.objective).toBe("Objetivo troca e troca.");
+    expect(exported.accessSteps[0].text).toBe("Passo troca");
+    expect(exported.permissionGroups[0].label).toBe("Macro troca");
+    expect(exported.permissionGroups[0].microPermissions[0].label).toBe("Micro troca");
+    expect(exported.permissionBlocks["macro-find:micro-find"].tests[0].title).toBe("Teste troca");
+    expect(exported.permissionBlocks["macro-find:micro-find"].tests[0].result.observations).toBe(
+      "Observacao troca e troca.",
+    );
+    expect(exported.permissionBlocks["macro-find:micro-find"].tests[0].correction?.hotfixTag).toBe(
+      "HOT troca",
+    );
+    expect(exported.permissionBlocks["macro-find:micro-find"].tests[0].correction?.correctedBy).toBe(
+      "Pessoa troca",
+    );
+    expect(exported.permissionBlocks["macro-find:micro-find"].tests[0].result.legacyImages[0].name).toBe(
+      "legacy-marcador-image.png",
+    );
+  });
+
+  it("keeps OT find/replace case-insensitive and accent-sensitive", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createOtFindReplaceDraft()));
+
+    await renderApp();
+
+    await setFieldValue(getInputByLabel("Localizar na OT"), "MARCADOR");
+    expect(container.textContent ?? "").toContain("14 ocorrencias");
+
+    await setFieldValue(getInputByLabel("Substituir por"), "ok");
+    await clickButton("Substituir tudo");
+    await setFieldValue(getInputByLabel("Localizar na OT"), "márcador");
+
+    expect(container.textContent ?? "").toContain("1 ocorrencia");
+  });
+
+  it("disables OT replace all when there is no searchable match", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createOtFindReplaceDraft()));
+
+    await renderApp();
+
+    expect(getButton("Substituir tudo")?.disabled).toBe(true);
+
+    await setFieldValue(getInputByLabel("Localizar na OT"), "nao existe");
+
+    expect(container.textContent ?? "").toContain("0 ocorrencias");
+    expect(getButton("Substituir tudo")?.disabled).toBe(true);
+  });
+
+  it("flushes pending OT field edits before counting and replacing", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createOtFindReplaceDraft()));
+
+    await renderApp();
+
+    await setFieldValue(getInputByLabel("Tela"), "Tela pendente");
+    await setFieldValue(getInputByLabel("Localizar na OT"), "pendente");
+
+    expect(container.textContent ?? "").toContain("1 ocorrencia");
+
+    await setFieldValue(getInputByLabel("Substituir por"), "aplicada");
+    await clickButton("Substituir tudo");
+
+    expect(getInputByLabel("Tela").value).toBe("Tela aplicada");
   });
 });
 
@@ -1309,13 +1406,15 @@ describe("App loading feedback", () => {
     await renderApp();
     await waitForNoBodyText("Preparando imagens...");
 
-    await clickElement(getButton("Salvar backup"));
+    await openTopBarMenu();
+    await clickMenuItem("Salvar backup");
 
     expect(appMocks.exportOtBackup).toHaveBeenCalledTimes(1);
     await waitForNoBodyText("Salvando backup...");
 
     await clickControl("TEA");
-    await clickElement(getButton("Salvar backup"));
+    await openTopBarMenu();
+    await clickMenuItem("Salvar backup");
 
     expect(appMocks.exportTeaBackup).toHaveBeenCalledTimes(1);
   });
@@ -1368,6 +1467,10 @@ describe("App loading feedback", () => {
     expect(appMocks.parseBackupFile).toHaveBeenCalledTimes(1);
     expect(appMocks.persistEmbeddedTeaImages).toHaveBeenCalledWith(teaDocument);
     await waitForBodyText("Gerador de TEA");
+    await waitForBodyText("Backup importado");
+    expect(JSON.parse(window.localStorage.getItem(teaDraftKey) ?? "{}").metadata.subject).toBe(
+      teaDocument.metadata.subject,
+    );
   });
 
   it("clears all OT images after confirmation", async () => {
@@ -2153,6 +2256,65 @@ function createCompleteReviewDraft(): OtDocument {
               observations: "Falha validada para revisao.",
               legacyImages: [createImage("legacy-image")],
               newImages: [createImage("new-image")],
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+function createOtFindReplaceDraft(): OtDocument {
+  return {
+    metadata: {
+      screen: "Tela marcador",
+      responsible: "Responsavel marcador",
+      date: "2026-06-08",
+      environment: "Ambiente marcador",
+      author: "Autor marcador",
+    },
+    objective: "Objetivo marcador e marcador.",
+    accessSteps: [{ id: "step-find", text: "Passo marcador" }],
+    permissionGroups: [
+      {
+        id: "macro-find",
+        code: "MA",
+        label: "Macro marcador",
+        selected: true,
+        microPermissions: [
+          {
+            id: "micro-find",
+            code: "MI",
+            label: "Micro marcador",
+            selected: true,
+          },
+          {
+            id: "micro-accent",
+            code: "AC",
+            label: "Micro márcador",
+            selected: false,
+          },
+        ],
+      },
+    ],
+    permissionBlocks: {
+      "macro-find:micro-find": {
+        tests: [
+          {
+            id: "test-find",
+            title: "Teste marcador",
+            result: {
+              ...createResult({ possibleIssue: true }),
+              observations: "Observacao marcador e MARCADOR.",
+              legacyImages: [createImage("legacy-marcador-image")],
+            },
+            correction: {
+              corrected: false,
+              beforeImages: [createImage("before-marcador-image")],
+              afterImages: [],
+              hotfixTag: "HOT marcador",
+              correctedBy: "Pessoa marcador",
+              cloudStage: "none",
             },
           },
         ],

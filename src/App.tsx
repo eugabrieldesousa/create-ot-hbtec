@@ -250,7 +250,7 @@ type BackupNoticeState = {
   title: string;
   message: string;
   details: string[];
-  tone: "danger" | "warning";
+  tone: "danger" | "warning" | "success";
 };
 
 type TeaSubActivityCopyRequest = {
@@ -323,15 +323,6 @@ type CorrectionMicroGroup = {
 type CorrectionMacroGroup = {
   macro: PermissionGroup;
   entries: CorrectionMicroGroup[];
-};
-
-type FaqSection = {
-  title: string;
-  items: Array<{
-    title: string;
-    description: string;
-    example?: string;
-  }>;
 };
 
 type TestBlockFilter = "all" | "withoutTests" | "withoutImages" | "withPending" | "withProblem";
@@ -635,113 +626,6 @@ const cloudStageOptions: Array<{ value: TestCorrection["cloudStage"]; label: str
 const emptyPermissionBlock: PermissionBlock = { tests: [] };
 const outlineHiddenPreferenceKey = "create-ot:outline-hidden";
 
-const faqSections: FaqSection[] = [
-  {
-    title: "Fluxo recomendado",
-    items: [
-      {
-        title: "Comece pelo Documento",
-        description:
-          "Preencha tela, responsável, data, ambiente, elaborada por e objetivo. Esses campos montam o cabeçalho e ajudam a Revisão a avisar o que falta.",
-      },
-      {
-        title: "Monte as permissões antes dos testes",
-        description:
-          "A aba Testes nasce das macros e micros marcadas como Usar. Se uma permissão não estiver selecionada, ela não aparece nos blocos nem no DOCX.",
-      },
-      {
-        title: "Feche pela Revisão",
-        description:
-          "A Revisão mostra pendências, contadores de testes e imagens para conferir o documento antes da exportação.",
-      },
-    ],
-  },
-  {
-    title: "Documento e passos",
-    items: [
-      {
-        title: "Editar passos em lote",
-        description:
-          "Cada linha do campo vira um passo do documento. Enter cria uma nova linha; passos vazios podem ficar enquanto você edita e são ignorados na exportação.",
-        example:
-          "Acessar o menu Cadastros\nAbrir a tela de usuários\nSelecionar um registro",
-      },
-      {
-        title: "Campos individuais de passo",
-        description:
-          "Servem para ajuste fino, remoção e revisão visual. Ao colar várias linhas em uma etapa, o sistema divide o texto em passos separados.",
-      },
-      {
-        title: "Limpar",
-        description:
-          "Apaga o rascunho salvo no navegador e volta para o documento padrão. Use com cuidado quando quiser começar uma OT do zero.",
-      },
-    ],
-  },
-  {
-    title: "Permissões",
-    items: [
-      {
-        title: "Lista rápida",
-        description:
-          "Permite criar macros e micros em texto. Macro fica sem recuo; micro fica com espaços no começo ou com hífen.",
-        example:
-          "AO - Administrador Geral\n  AT - Atualização\n  SC - Somente Consulta\nUS - Usuário\n  CO - Consulta",
-      },
-      {
-        title: "Carregar atual",
-        description:
-          "Copia as permissões já cadastradas para o campo de Lista rápida. É útil para reorganizar ou corrigir tudo em bloco.",
-      },
-      {
-        title: "Aplicar lista",
-        description:
-          "Substitui a lista de permissões pelo texto informado. Quando os códigos de macro e micro batem com os antigos, os testes existentes são preservados.",
-      },
-    ],
-  },
-  {
-    title: "Testes e evidências",
-    items: [
-      {
-        title: "Adicionar pacote padrão",
-        description:
-          "Faz a mesma lista padrão, mas apenas no bloco de permissão onde o botão foi clicado.",
-      },
-      {
-        title: "Copiar para vazios",
-        description:
-          "Copia os testes do bloco atual para outros blocos que ainda não têm testes. Copia títulos, checks e observações, mas não copia imagens.",
-      },
-      {
-        title: "Checks e imagens",
-        description:
-          "Os botões OK, Possível, Ambos, Novo e Erros marcam rapidamente o resultado. Em Legado e Novo, você pode colar, arrastar ou selecionar imagens.",
-      },
-    ],
-  },
-  {
-    title: "Saída e rascunho",
-    items: [
-      {
-        title: "Importar DOCX",
-        description:
-          "Lê um documento existente, mostra uma prévia e só substitui o rascunho quando você confirma.",
-      },
-      {
-        title: "Exportar DOCX",
-        description:
-          "Salva o rascunho atual e gera o arquivo final com cabeçalho, objetivo, passos, permissões, testes, observações e imagens.",
-      },
-      {
-        title: "Salvamento automático",
-        description:
-          "As alterações ficam salvas no navegador. O selo do topo mostra se há alterações pendentes, salvando, salvo ou rascunho grande demais.",
-      },
-    ],
-  },
-];
-
 export default function App() {
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
   const [documentKind, setDocumentKind] = useState<DocumentKind>("ot");
@@ -767,7 +651,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("document");
   const [teaActiveTab, setTeaActiveTab] = useState<TeaTab>("document");
   const [testBlockFilter, setTestBlockFilter] = useState<TestBlockFilter>("all");
-  const [isFaqOpen, setIsFaqOpen] = useState(false);
   const [isOutlineHidden, setIsOutlineHidden] = useState(loadOutlineHiddenPreference);
   const [previewImage, setPreviewImage] = useState<EvidenceImage | null>(null);
   const [globalLoading, setGlobalLoading] = useState<LoadingTask | null>(null);
@@ -778,6 +661,8 @@ export default function App() {
   const [isConfirmingImport, setIsConfirmingImport] = useState(false);
   const [isConfirmingAction, setIsConfirmingAction] = useState(false);
   const [isCopyingTeaSubActivity, setIsCopyingTeaSubActivity] = useState(false);
+  const [otFindText, setOtFindText] = useState("");
+  const [otReplaceText, setOtReplaceText] = useState("");
   const [teaFindText, setTeaFindText] = useState("");
   const [teaReplaceText, setTeaReplaceText] = useState("");
   const [importPreview, setImportPreview] = useState<DocxImportResult | null>(null);
@@ -794,6 +679,7 @@ export default function App() {
   const teaDataRef = useRef(teaData);
   const documentKindRef = useRef<DocumentKind>(documentKind);
   const permissionBulkTextRef = useRef(permissionBulkText);
+  const backupImportInputRef = useRef<HTMLInputElement | null>(null);
   documentDataRef.current = documentData;
   teaDataRef.current = teaData;
   documentKindRef.current = documentKind;
@@ -1088,6 +974,10 @@ export default function App() {
         ? buildTeaPreviewModel(teaPreviewDocumentData)
         : null,
     [documentKind, teaActiveTab, teaPreviewDocumentData],
+  );
+  const otFindMatchCount = useMemo(
+    () => countOtDocumentMatches(documentData, otFindText),
+    [documentData, otFindText],
   );
   const teaFindMatchCount = useMemo(
     () => countTeaDocumentMatches(teaData, teaFindText),
@@ -1434,6 +1324,29 @@ export default function App() {
       activityImages: updater(current.activityImages),
     }));
   }, [updateTeaDocument]);
+
+  const updateOtFindText = useCallback((value: string): void => {
+    flushBufferedCommits();
+    setOtFindText(value);
+  }, [flushBufferedCommits]);
+
+  const replaceAllOtMatches = useCallback((): void => {
+    flushBufferedCommits();
+
+    if (!otFindText) {
+      return;
+    }
+
+    updateDocument((current) => {
+      const nextDocument = replaceOtDocumentText(current, otFindText, otReplaceText);
+      const nextPermissionBulkText = formatPermissionBulk(nextDocument.permissionGroups);
+
+      permissionBulkTextRef.current = nextPermissionBulkText;
+      setPermissionBulkText(nextPermissionBulkText);
+
+      return nextDocument;
+    });
+  }, [flushBufferedCommits, otFindText, otReplaceText, updateDocument]);
 
   const updateTeaFindText = useCallback((value: string): void => {
     flushBufferedCommits();
@@ -2215,6 +2128,7 @@ export default function App() {
 
     flushBufferedCommits();
     flushDraft();
+    setBackupNotice(null);
     setIsImportingBackup(true);
 
     try {
@@ -2239,12 +2153,15 @@ export default function App() {
             }
 
             setTeaData(nextDocument);
+            teaDataRef.current = nextDocument;
             setDocumentKind("tea");
+            documentKindRef.current = "tea";
             setCollapsedTeaActivities({});
             setCollapsedTeaSubActivities({});
             setCollapsedTeaComposers({});
             setCollapsedTeaContentBlocks({});
             setTeaActiveTab("review");
+            saveTeaDraft(nextDocument);
           } else {
             let nextDocument = backup.document;
 
@@ -2257,11 +2174,16 @@ export default function App() {
             }
 
             setDocumentData(nextDocument);
+            documentDataRef.current = nextDocument;
             setPermissionBulkText(formatPermissionBulk(nextDocument.permissionGroups));
             setDocumentKind("ot");
+            documentKindRef.current = "ot";
             setExpandedTests({});
             setActiveTab("review");
+            saveDraft(nextDocument);
           }
+
+          setDraftStatus("Rascunho salvo");
 
           if (backup.warnings.length > 0) {
             setBackupNotice({
@@ -2269,6 +2191,16 @@ export default function App() {
               message: "Algumas imagens ou metadados nao foram restaurados corretamente.",
               details: backup.warnings,
               tone: "warning",
+            });
+          } else {
+            setBackupNotice({
+              title: "Backup importado",
+              message:
+                backup.kind === "tea"
+                  ? "O backup TEA foi restaurado no rascunho atual."
+                  : "O backup OT foi restaurado no rascunho atual.",
+              details: [],
+              tone: "success",
             });
           }
         },
@@ -2286,6 +2218,13 @@ export default function App() {
     } finally {
       setIsImportingBackup(false);
     }
+  }
+
+  function handleBackupImportInputChange(event: ChangeEvent<HTMLInputElement>): void {
+    const file = event.currentTarget.files?.[0] ?? null;
+
+    event.currentTarget.value = "";
+    void handleImportBackupFile(file);
   }
 
   async function handleExportBackup(kind: DocumentKind = documentKindRef.current): Promise<void> {
@@ -2461,6 +2400,13 @@ export default function App() {
     <ConfirmationContext.Provider value={requestConfirmation}>
     <BufferedCommitContext.Provider value={registerBufferedCommit}>
     <ImagePreviewContext.Provider value={setPreviewImage}>
+    <input
+      ref={backupImportInputRef}
+      type="file"
+      accept=".zip,application/zip,application/x-zip-compressed"
+      hidden
+      onChange={handleBackupImportInputChange}
+    />
     <a href="#main-content" className="skipLink">
       Pular para o conteúdo
     </a>
@@ -2506,81 +2452,24 @@ export default function App() {
               >
                 {topBarStatusText}
               </Badge>
-              <div className="topBarDesktopOnly">
-                <FileButton
-                  onChange={(file) => {
-                    void handleImportFile(file);
-                  }}
-                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                >
-                  {(props) => (
-                    <Button
-                      {...props}
-                      variant="light"
-                      leftSection={<FileUp size={17} />}
-                      loading={isImporting}
-                      disabled={isGlobalLoading && !isImporting}
-                    >
-                      Importar DOCX
-                    </Button>
-                  )}
-                </FileButton>
-              </div>
-              <Button
-                variant="light"
-                color="gray"
-                leftSection={<Archive size={17} />}
-                className="topBarDesktopOnly"
-                onClick={() => {
-                  void handleExportBackup();
+              <FileButton
+                onChange={(file) => {
+                  void handleImportFile(file);
                 }}
-                loading={isBackingUp}
-                disabled={isGlobalLoading && !isBackingUp}
+                accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               >
-                Salvar backup
-              </Button>
-              {documentKind === "ot" ? (
-                <Button
-                  variant="light"
-                  color="gray"
-                  leftSection={<CircleHelp size={17} />}
-                  className="topBarDesktopOnly"
-                  onClick={() => setIsFaqOpen(true)}
-                >
-                  Ajuda
-                </Button>
-              ) : null}
-              <Tooltip label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}>
-                <ActionIcon
-                  variant="light"
-                  color="gray"
-                  size="lg"
-                  className="topBarDesktopOnly"
-                  onClick={toggleColorScheme}
-                  aria-label={isDarkMode ? "Ativar modo claro" : "Ativar modo escuro"}
-                >
-                  {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
-                </ActionIcon>
-              </Tooltip>
-              <Button
-                variant="light"
-                color="gray"
-                leftSection={isOutlineHidden ? <Eye size={17} /> : <EyeOff size={17} />}
-                className="topBarOutlineButton"
-                onClick={() => setIsOutlineHidden((current) => !current)}
-              >
-                {isOutlineHidden ? "Mostrar indice" : "Ocultar indice"}
-              </Button>
-              <Button
-                variant="light"
-                color="gray"
-                leftSection={<RotateCcw size={17} />}
-                className="topBarDesktopOnly"
-                onClick={handleClearDraft}
-                disabled={isGlobalLoading}
-              >
-                Limpar documento
-              </Button>
+                {(props) => (
+                  <Button
+                    {...props}
+                    variant="light"
+                    leftSection={<FileUp size={17} />}
+                    loading={isImporting}
+                    disabled={isGlobalLoading && !isImporting}
+                  >
+                    Importar DOCX
+                  </Button>
+                )}
+              </FileButton>
               <Button
                 leftSection={<Download size={17} />}
                 onClick={handleExport}
@@ -2602,38 +2491,13 @@ export default function App() {
                   </ActionIcon>
                 </Menu.Target>
                 <Menu.Dropdown>
-                  <FileButton
-                    onChange={(file) => {
-                      void handleImportFile(file);
-                    }}
-                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  <Menu.Item
+                    leftSection={<Archive size={15} />}
+                    disabled={isGlobalLoading}
+                    onClick={() => backupImportInputRef.current?.click()}
                   >
-                    {(props) => (
-                      <Menu.Item
-                        leftSection={<FileUp size={15} />}
-                        disabled={isGlobalLoading}
-                        onClick={props.onClick}
-                      >
-                        Importar DOCX
-                      </Menu.Item>
-                    )}
-                  </FileButton>
-                  <FileButton
-                    onChange={(file) => {
-                      void handleImportBackupFile(file);
-                    }}
-                    accept=".zip,application/zip,application/x-zip-compressed"
-                  >
-                    {(props) => (
-                      <Menu.Item
-                        leftSection={<Archive size={15} />}
-                        disabled={isGlobalLoading}
-                        onClick={props.onClick}
-                      >
-                        Importar backup
-                      </Menu.Item>
-                    )}
-                  </FileButton>
+                    Importar backup
+                  </Menu.Item>
                   <Menu.Item
                     leftSection={<Archive size={15} />}
                     disabled={isGlobalLoading && !isBackingUp}
@@ -2643,14 +2507,6 @@ export default function App() {
                   >
                     Salvar backup
                   </Menu.Item>
-                  {documentKind === "ot" ? (
-                    <Menu.Item
-                      leftSection={<CircleHelp size={15} />}
-                      onClick={() => setIsFaqOpen(true)}
-                    >
-                      Ajuda
-                    </Menu.Item>
-                  ) : null}
                   <Menu.Item
                     leftSection={isDarkMode ? <Sun size={15} /> : <Moon size={15} />}
                     onClick={toggleColorScheme}
@@ -2711,6 +2567,17 @@ export default function App() {
           ) : null}
           <div className="workspaceContent">
         {documentKind === "ot" ? (
+        <Stack gap="md">
+          <FindReplacePanel
+            documentLabel="OT"
+            findText={otFindText}
+            replaceText={otReplaceText}
+            matchCount={otFindMatchCount}
+            onFindTextChange={updateOtFindText}
+            onReplaceTextChange={setOtReplaceText}
+            onReplaceAll={replaceAllOtMatches}
+          />
+
         <Tabs
           value={activeTab}
           onChange={(value) => {
@@ -3022,6 +2889,7 @@ export default function App() {
             ) : null}
           </Tabs.Panel>
         </Tabs>
+        </Stack>
         ) : (
           <TeaWorkspace
             documentData={teaData}
@@ -3094,16 +2962,6 @@ export default function App() {
         void confirmImport();
       }}
     />
-    {isFaqOpen ? (
-      <Modal
-        opened
-        onClose={() => setIsFaqOpen(false)}
-        title="Ajuda do Gerador de OT"
-        size="lg"
-      >
-        <FaqPanel />
-      </Modal>
-    ) : null}
     <ExportImageErrorModal
       error={exportImageError}
       isBackingUp={isBackingUp}
@@ -3244,7 +3102,8 @@ const TeaWorkspace = memo(function TeaWorkspace({
 
   return (
     <Stack gap="md">
-      <TeaFindReplacePanel
+      <FindReplacePanel
+        documentLabel="TEA"
         findText={findText}
         replaceText={replaceText}
         matchCount={matchCount}
@@ -3480,7 +3339,8 @@ const TeaWorkspace = memo(function TeaWorkspace({
   );
 });
 
-function TeaFindReplacePanel({
+function FindReplacePanel({
+  documentLabel,
   findText,
   replaceText,
   matchCount,
@@ -3488,6 +3348,7 @@ function TeaFindReplacePanel({
   onReplaceTextChange,
   onReplaceAll,
 }: {
+  documentLabel: string;
   findText: string;
   replaceText: string;
   matchCount: number;
@@ -3496,16 +3357,17 @@ function TeaFindReplacePanel({
   onReplaceAll: () => void;
 }) {
   const isReplaceDisabled = !findText || matchCount === 0;
+  const findLabel = documentLabel === "OT" ? "Localizar na OT" : `Localizar no ${documentLabel}`;
   const countLabel =
     !findText
       ? "Digite para buscar"
       : formatTeaCount(matchCount, "ocorrencia", "ocorrencias");
 
   return (
-    <Paper withBorder p="sm" className="teaFindReplaceBar">
-      <Group gap="sm" align="end" className="teaFindReplaceControls">
+    <Paper withBorder p="sm" className="findReplaceBar">
+      <Group gap="sm" align="end" className="findReplaceControls">
         <TextInput
-          label="Localizar no TEA"
+          label={findLabel}
           value={findText}
           placeholder="Palavra ou frase"
           leftSection={<Search size={16} />}
@@ -3520,7 +3382,7 @@ function TeaFindReplacePanel({
         <Badge
           variant={findText && matchCount > 0 ? "light" : "outline"}
           color={findText && matchCount > 0 ? "blue" : "gray"}
-          className="teaFindReplaceCount"
+          className="findReplaceCount"
         >
           {countLabel}
         </Badge>
@@ -6850,6 +6712,8 @@ function BackupNoticeModal({
   notice: BackupNoticeState | null;
   onClose: () => void;
 }) {
+  const NoticeIcon = notice?.tone === "success" ? CheckCircle2 : AlertCircle;
+
   return (
     <Modal
       opened={notice !== null}
@@ -6864,11 +6728,15 @@ function BackupNoticeModal({
             withBorder
             p="md"
             className={
-              notice.tone === "danger" ? "exportImageErrorSummary" : "backupWarningSummary"
+              notice.tone === "danger"
+                ? "exportImageErrorSummary"
+                : notice.tone === "success"
+                  ? "backupSuccessSummary"
+                  : "backupWarningSummary"
             }
           >
             <Group gap="sm" align="flex-start" wrap="nowrap">
-              <AlertCircle size={24} aria-hidden="true" />
+              <NoticeIcon size={24} aria-hidden="true" />
               <Text fw={800}>{notice.message}</Text>
             </Group>
           </Paper>
@@ -7245,52 +7113,6 @@ function ImportPreviewModal({
         </Stack>
       ) : null}
     </Modal>
-  );
-}
-
-function FaqPanel() {
-  return (
-    <Stack gap="md">
-      <div className="helpIntro">
-        <div className="helpIntroIcon" aria-hidden="true">
-          <CircleHelp size={22} />
-        </div>
-        <div>
-          <Title order={2} size="h4">
-            FAQ do Gerador de OT
-          </Title>
-          <Text c="dimmed" size="sm">
-            Guia rápido para lembrar o que cada ação faz durante o preenchimento da OT.
-          </Text>
-        </div>
-      </div>
-
-      <Section title="Como usar" tone="document">
-        <div className="faqSectionList">
-          {faqSections.map((section) => (
-            <div className="faqSection" key={section.title}>
-              <Text fw={800} className="faqSectionTitle">
-                {section.title}
-              </Text>
-              <div className="faqItemList">
-                {section.items.map((item) => (
-                  <div className="faqItem" key={item.title}>
-                    <div>
-                      <Text fw={750}>{item.title}</Text>
-                      <Text size="sm" c="dimmed">
-                        {item.description}
-                      </Text>
-                    </div>
-                    {item.example ? <pre className="faqExample">{item.example}</pre> : null}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </Section>
-
-    </Stack>
   );
 }
 
@@ -9367,6 +9189,115 @@ function updateTeaItemsFromBulk(
     id: currentItems[index]?.id ?? createId(),
     text,
   }));
+}
+
+function countOtDocumentMatches(documentData: OtDocument, searchText: string): number {
+  const matcher = createLiteralSearchRegex(searchText);
+
+  if (!matcher) {
+    return 0;
+  }
+
+  return getOtSearchableTextValues(documentData).reduce(
+    (total, value) => total + countTextMatches(value, matcher),
+    0,
+  );
+}
+
+function replaceOtDocumentText(
+  documentData: OtDocument,
+  searchText: string,
+  replacementText: string,
+): OtDocument {
+  const matcher = createLiteralSearchRegex(searchText);
+
+  if (!matcher) {
+    return documentData;
+  }
+
+  const replaceText = (value: string): string =>
+    value.replace(matcher, () => replacementText);
+
+  return {
+    ...documentData,
+    metadata: {
+      screen: replaceText(documentData.metadata.screen),
+      responsible: replaceText(documentData.metadata.responsible),
+      date: replaceText(documentData.metadata.date),
+      environment: replaceText(documentData.metadata.environment),
+      author: replaceText(documentData.metadata.author),
+    },
+    objective: replaceText(documentData.objective),
+    accessSteps: documentData.accessSteps.map((step) => ({
+      ...step,
+      text: replaceText(step.text),
+    })),
+    permissionGroups: documentData.permissionGroups.map((macro) => ({
+      ...macro,
+      code: replaceText(macro.code),
+      label: replaceText(macro.label),
+      microPermissions: macro.microPermissions.map((micro) => ({
+        ...micro,
+        code: replaceText(micro.code),
+        label: replaceText(micro.label),
+      })),
+    })),
+    permissionBlocks: Object.fromEntries(
+      Object.entries(documentData.permissionBlocks).map(([blockKey, block]) => [
+        blockKey,
+        replaceOtPermissionBlockText(block, replaceText),
+      ]),
+    ),
+  };
+}
+
+function replaceOtPermissionBlockText(
+  block: PermissionBlock,
+  replaceText: (value: string) => string,
+): PermissionBlock {
+  return {
+    ...block,
+    tests: block.tests.map((test) => ({
+      ...test,
+      title: replaceText(test.title),
+      result: {
+        ...test.result,
+        observations: replaceText(test.result.observations),
+      },
+      correction: test.correction
+        ? {
+            ...test.correction,
+            hotfixTag: replaceText(test.correction.hotfixTag),
+            correctedBy: replaceText(test.correction.correctedBy),
+          }
+        : test.correction,
+    })),
+  };
+}
+
+function getOtSearchableTextValues(documentData: OtDocument): string[] {
+  return [
+    documentData.metadata.screen,
+    documentData.metadata.responsible,
+    documentData.metadata.date,
+    documentData.metadata.environment,
+    documentData.metadata.author,
+    documentData.objective,
+    ...documentData.accessSteps.map((step) => step.text),
+    ...documentData.permissionGroups.flatMap((macro) => [
+      macro.code,
+      macro.label,
+      ...macro.microPermissions.flatMap((micro) => [micro.code, micro.label]),
+    ]),
+    ...Object.values(documentData.permissionBlocks).flatMap((block) =>
+      block.tests.flatMap((test) => [
+        test.title,
+        test.result.observations,
+        test.correction?.hotfixTag ?? "",
+        test.correction?.correctedBy ?? "",
+      ]),
+    ),
+  ];
 }
 
 function countTeaDocumentMatches(documentData: TeaDocument, searchText: string): number {
