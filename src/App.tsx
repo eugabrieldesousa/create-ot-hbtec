@@ -77,6 +77,7 @@ import {
   createEmptyTestCorrection,
   createEmptyTestResult,
   createPermissionKey,
+  getEffectiveChecks,
 } from "./defaultDocument";
 import { mapWithConcurrency } from "./asyncUtils";
 import { buildOtPreviewModel, buildTeaPreviewModel } from "./docxPreviewModel";
@@ -325,7 +326,13 @@ type CorrectionMacroGroup = {
   entries: CorrectionMicroGroup[];
 };
 
-type TestBlockFilter = "all" | "withoutTests" | "withoutImages" | "withPending" | "withProblem";
+type TestBlockFilter =
+  | "all"
+  | "withoutTests"
+  | "withoutImages"
+  | "withPending"
+  | "withProblem"
+  | "withErrorReport";
 
 const standardTestTitles = ["Criação", "Edição", "Consulta", "Exclusão"];
 
@@ -561,9 +568,9 @@ function useImagePreview(): (image: EvidenceImage) => void {
 const quickCheckLabels: Record<CheckKey, string> = {
   sameBehavior: "OK",
   possibleIssue: "Possível",
-  bothIssue: "Ambos",
+  bothIssue: "Legado",
   newIssue: "Novo",
-  errorReport: "Erros",
+  errorReport: "Relatório de Erros",
 };
 
 const quickCheckToneClassNames: Record<CheckKey, string> = {
@@ -573,6 +580,38 @@ const quickCheckToneClassNames: Record<CheckKey, string> = {
   newIssue: "quickCheck--warning",
   errorReport: "quickCheck--danger",
 };
+
+function updateQuickStatusChecks(
+  checks: Record<CheckKey, boolean>,
+  key: CheckKey,
+): Record<CheckKey, boolean> {
+  if (key === "errorReport") {
+    return getEffectiveChecks(checks);
+  }
+
+  const next = { ...checks };
+
+  if (key === "sameBehavior") {
+    next.sameBehavior = !checks.sameBehavior;
+
+    if (next.sameBehavior) {
+      next.bothIssue = false;
+      next.newIssue = false;
+    }
+  } else if (key === "possibleIssue") {
+    next.possibleIssue = !checks.possibleIssue;
+  } else {
+    next[key] = !checks[key];
+
+    if (next[key]) {
+      next.sameBehavior = false;
+    }
+  }
+
+  next.errorReport = next.bothIssue;
+
+  return next;
+}
 
 const teaContentBlockLabels: Record<TeaContentBlockType, string> = {
   text: "Texto",
@@ -586,6 +625,7 @@ const testBlockFilterLabels: Record<TestBlockFilter, string> = {
   withoutImages: "Sem imagens",
   withPending: "Com pendência",
   withProblem: "Com problema",
+  withErrorReport: "Relatório de Erros",
 };
 
 const testBlockFilterOrder: TestBlockFilter[] = [
@@ -594,6 +634,7 @@ const testBlockFilterOrder: TestBlockFilter[] = [
   "withoutImages",
   "withPending",
   "withProblem",
+  "withErrorReport",
 ];
 
 const correctionFilterLabels: Record<CorrectionFilter, string> = {
@@ -5479,15 +5520,16 @@ const BlockTestEditor = memo(function BlockTestEditor({
   const title = useBufferedText(test.title, commitTitle);
 
   function toggleCheck(key: CheckKey): void {
+    if (key === "errorReport") {
+      return;
+    }
+
     onResultChange(
       blockKey,
       test.id,
       (current) => ({
         ...current,
-        checks: {
-          ...current.checks,
-          [key]: !current.checks[key],
-        },
+        checks: updateQuickStatusChecks(current.checks, key),
       }),
     );
   }
@@ -5563,26 +5605,42 @@ const BlockTestEditor = memo(function BlockTestEditor({
                     Status rapido
                   </Text>
                   <Group gap={6} className="quickChecks">
-                    {checkOrder.map((key) => (
-                      <Tooltip key={key} label={checkLabels[key]}>
-                        <button
-                          type="button"
-                          aria-pressed={test.result.checks[key]}
-                          aria-label={`Alternar ${checkLabels[key]}`}
-                          className={[
-                            "quickCheck",
-                            quickCheckToneClassNames[key],
-                            test.result.checks[key] ? "quickCheck--active" : "",
-                          ]
-                            .filter(Boolean)
-                            .join(" ")}
-                          onClick={() => toggleCheck(key)}
-                        >
-                          {renderCheckIcon(key, 14)}
-                          <span>{quickCheckLabels[key]}</span>
-                        </button>
-                      </Tooltip>
-                    ))}
+                    {checkOrder.map((key) => {
+                      const effectiveChecks = getEffectiveChecks(test.result.checks);
+                      const isActive = effectiveChecks[key];
+                      const isDerived = key === "errorReport";
+                      const tooltipLabel = isDerived
+                        ? "Relatório de Erros fica ativo quando Legado está ativo."
+                        : checkLabels[key];
+
+                      return (
+                        <Tooltip key={key} label={tooltipLabel}>
+                          <span className="quickCheckWrapper">
+                            <button
+                              type="button"
+                              aria-pressed={isActive}
+                              aria-label={
+                                isDerived
+                                  ? "Relatório de Erros: ativo quando Legado está ativo"
+                                  : `Alternar ${checkLabels[key]}`
+                              }
+                              className={[
+                                "quickCheck",
+                                quickCheckToneClassNames[key],
+                                isActive ? "quickCheck--active" : "",
+                              ]
+                                .filter(Boolean)
+                                .join(" ")}
+                              disabled={isDerived}
+                              onClick={() => toggleCheck(key)}
+                            >
+                              {renderCheckIcon(key, 14)}
+                              <span>{quickCheckLabels[key]}</span>
+                            </button>
+                          </span>
+                        </Tooltip>
+                      );
+                    })}
                   </Group>
                 </Stack>
               </Paper>
@@ -7763,6 +7821,7 @@ function buildTestBlockFilterCounts(
     withoutImages: 0,
     withPending: 0,
     withProblem: 0,
+    withErrorReport: 0,
   };
 
   entries.forEach((entry) => {
@@ -7783,6 +7842,9 @@ function buildTestBlockFilterCounts(
     ).length;
     counts.withProblem += block.tests.filter((test) =>
       testMatchesFilter(test, "withProblem"),
+    ).length;
+    counts.withErrorReport += block.tests.filter((test) =>
+      testMatchesFilter(test, "withErrorReport"),
     ).length;
   });
 
@@ -7827,7 +7889,13 @@ function testMatchesFilter(
     return testHasPendingReview(test);
   }
 
-  return problemCheckKeys.some((key) => test.result.checks[key]);
+  if (filter === "withErrorReport") {
+    return getEffectiveChecks(test.result.checks).errorReport;
+  }
+
+  const effectiveChecks = getEffectiveChecks(test.result.checks);
+
+  return problemCheckKeys.some((key) => effectiveChecks[key]);
 }
 
 function getTestImageCount(test: PermissionBlockTest): number {
@@ -7835,11 +7903,15 @@ function getTestImageCount(test: PermissionBlockTest): number {
 }
 
 function getSelectedCheckKeys(result: TestResult): CheckKey[] {
-  return checkOrder.filter((key) => result.checks[key]);
+  const effectiveChecks = getEffectiveChecks(result.checks);
+
+  return checkOrder.filter((key) => effectiveChecks[key]);
 }
 
 function hasProblemStatus(result: TestResult): boolean {
-  return problemCheckKeys.some((key) => result.checks[key]);
+  const effectiveChecks = getEffectiveChecks(result.checks);
+
+  return problemCheckKeys.some((key) => effectiveChecks[key]);
 }
 
 function testHasPendingReview(test: PermissionBlockTest): boolean {

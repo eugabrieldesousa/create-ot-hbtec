@@ -319,6 +319,41 @@ describe("exportTeaDocument", () => {
 });
 
 describe("exportOtDocument", () => {
+  it("exports current check labels without deriving error report from Novo", async () => {
+    await exportOtDocument(createOtDocumentForExport());
+
+    const children = docxState.documents[0].options.sections[0].children;
+    const testTable = children.find((child) =>
+      readTableText(child).includes("Teste com observação"),
+    );
+    const rows = readTableRowsText(testTable);
+
+    expect(rows).toContain("(   ) Erro no legado");
+    expect(rows).toContain("( X ) Erro no novo");
+    expect(rows).toContain("(   ) Relatório de Erros");
+  });
+
+  it("derives the error report row from Legado", async () => {
+    const documentData = createOtDocumentForExport();
+    const checks = documentData.permissionBlocks["macro:micro"].tests[0].result.checks;
+    checks.sameBehavior = false;
+    checks.bothIssue = true;
+    checks.newIssue = false;
+    checks.errorReport = false;
+
+    await exportOtDocument(documentData);
+
+    const children = docxState.documents[0].options.sections[0].children;
+    const testTable = children.find((child) =>
+      readTableText(child).includes("Teste com observação"),
+    );
+    const rows = readTableRowsText(testTable);
+
+    expect(rows).toContain("( X ) Erro no legado");
+    expect(rows).toContain("(   ) Erro no novo");
+    expect(rows).toContain("( X ) Relatório de Erros");
+  });
+
   it("preserves line breaks in test observations", async () => {
     await exportOtDocument(createOtDocumentForExport());
 
@@ -416,6 +451,17 @@ function readFullTableText(node: unknown): string {
     .flatMap((row) => row.options?.children ?? [])
     .flatMap((cell) => readCellParagraphs(cell).map(readParagraphText))
     .join(" ");
+}
+
+function readTableRowsText(node: unknown): string[] {
+  const rows = (node as { options?: { rows?: Array<{ options?: { children?: unknown[] } }> } })
+    .options?.rows ?? [];
+
+  return rows.map((row) =>
+    (row.options?.children ?? [])
+      .flatMap((cell) => readCellParagraphs(cell).map(readParagraphText))
+      .join(" "),
+  );
 }
 
 function readSecondCellParagraphTexts(node: unknown): string[] {

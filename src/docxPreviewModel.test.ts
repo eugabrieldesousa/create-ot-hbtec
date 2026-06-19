@@ -51,7 +51,12 @@ describe("buildOtPreviewModel", () => {
       (block): block is Extract<DocxPreviewBlock, { type: "table" }> =>
         block.type === "table" && blockText(block).includes("1 - Filtro"),
     );
+    const testTableText = testTable ? blockText(testTable) : "";
+
     expect(testTable?.anchorId).toBe("ot-preview-test-macro-micro--test");
+    expect(testTableText).toContain("Erro no legado");
+    expect(testTableText).toContain("( X ) Erro no novo");
+    expect(testTableText).toContain("(   ) Relatório de Erros");
 
     const observationsTable = model.blocks.find(
       (block): block is Extract<DocxPreviewBlock, { type: "table" }> =>
@@ -67,6 +72,26 @@ describe("buildOtPreviewModel", () => {
         block.type === "image",
     );
     expect(image).toMatchObject({ width: 560, height: 280, alt: "Novo ok" });
+  });
+
+  it("derives the OT preview error report from Legado", () => {
+    const documentData = createOtPreviewDocument();
+    const checks = documentData.permissionBlocks["macro:micro"].tests[0].result.checks;
+    checks.sameBehavior = false;
+    checks.bothIssue = true;
+    checks.newIssue = false;
+    checks.errorReport = false;
+
+    const model = buildOtPreviewModel(documentData);
+    const testTable = model.blocks.find(
+      (block): block is Extract<DocxPreviewBlock, { type: "table" }> =>
+        block.type === "table" && blockText(block).includes("1 - Filtro"),
+    );
+    const testTableText = testTable ? blockText(testTable) : "";
+
+    expect(testTableText).toContain("( X ) Erro no legado");
+    expect(testTableText).toContain("(   ) Erro no novo");
+    expect(testTableText).toContain("( X ) Relatório de Erros");
   });
 });
 

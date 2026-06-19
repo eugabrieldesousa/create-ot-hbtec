@@ -1,6 +1,6 @@
 import mammoth from "mammoth";
 import {
-  checkLabels,
+  checkLabelAliases,
   checkOrder,
   createEmptyTestCorrection,
   createEmptyTestResult,
@@ -905,13 +905,16 @@ function parseChecks(token: Token, test: PermissionBlockTest | undefined): void 
   }
 
   checkOrder.forEach((key) => {
-    const label = checkLabels[key];
-    const labelIndex = normalizeText(token.text).indexOf(normalizeText(label));
+    const normalizedText = normalizeText(token.text);
+    const matchingLabel = checkLabelAliases[key].find((label) =>
+      normalizedText.includes(normalizeText(label)),
+    );
 
-    if (labelIndex === -1) {
+    if (!matchingLabel) {
       return;
     }
 
+    const labelIndex = normalizedText.indexOf(normalizeText(matchingLabel));
     const beforeLabel = token.text.slice(Math.max(0, labelIndex - 18), labelIndex);
     test.result.checks[key] = hasCheckedMarker(beforeLabel);
   });
@@ -1333,7 +1336,9 @@ function splitLabelValue(text: string): { label: string; value: string } | undef
 function checkKeyFromText(text: string): CheckKey | undefined {
   const normalized = normalizeText(text);
 
-  return checkOrder.find((key) => normalized.includes(normalizeText(checkLabels[key])));
+  return checkOrder.find((key) =>
+    checkLabelAliases[key].some((label) => normalized.includes(normalizeText(label))),
+  );
 }
 
 function hasCheckedMarker(text: string): boolean {

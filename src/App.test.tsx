@@ -169,7 +169,7 @@ afterEach(() => {
 });
 
 describe("App test block filters", () => {
-  it("shows only matching tests inside blocks when the problem filter is selected", async () => {
+  it("shows only matching tests inside blocks when status filters are selected", async () => {
     window.localStorage.setItem(draftKey, JSON.stringify(createFilterDraft()));
 
     await act(async () => {
@@ -182,11 +182,13 @@ describe("App test block filters", () => {
 
     await clickButton("Testes");
 
-    expect(getFilterCount("Todos")).toBe("2");
-    expect(getFilterCount("Sem imagens")).toBe("2");
-    expect(getFilterCount("Com problema")).toBe("1");
+    expect(getFilterCount("Todos")).toBe("3");
+    expect(getFilterCount("Sem imagens")).toBe("3");
+    expect(getFilterCount("Com problema")).toBe("2");
+    expect(getFilterCount("Relatório de Erros")).toBe("1");
     expect(container.textContent ?? "").toContain("teste sem erro");
-    expect(container.textContent ?? "").toContain("teste com problema");
+    expect(container.textContent ?? "").toContain("teste com problema novo");
+    expect(container.textContent ?? "").toContain("teste com relatorio legado");
 
     await clickFilterButton("Com problema");
 
@@ -194,7 +196,22 @@ describe("App test block filters", () => {
       "teste sem erro",
     );
     expect(container.querySelector(".workspaceContent")?.textContent ?? "").toContain(
-      "teste com problema",
+      "teste com problema novo",
+    );
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").toContain(
+      "teste com relatorio legado",
+    );
+
+    await clickFilterButton("Relatório de Erros");
+
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").not.toContain(
+      "teste sem erro",
+    );
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").not.toContain(
+      "teste com problema novo",
+    );
+    expect(container.querySelector(".workspaceContent")?.textContent ?? "").toContain(
+      "teste com relatorio legado",
     );
   });
 });
@@ -260,7 +277,7 @@ describe("App review validations", () => {
 });
 
 describe("App quick status colors", () => {
-  it("marks both, new, and errors with warning and danger tones", async () => {
+  it("marks legado, novo, and error report with warning and danger tones", async () => {
     window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
 
     await act(async () => {
@@ -274,9 +291,57 @@ describe("App quick status colors", () => {
     await clickButton("Testes");
     await clickElement(getToggleByControlPrefix("test-details"));
 
-    expect(getQuickCheckButton("Ambos")?.classList.contains("quickCheck--warning")).toBe(true);
+    expect(getQuickCheckButton("Ambos")).toBeUndefined();
+    expect(getQuickCheckButton("Legado")?.classList.contains("quickCheck--warning")).toBe(true);
     expect(getQuickCheckButton("Novo")?.classList.contains("quickCheck--warning")).toBe(true);
-    expect(getQuickCheckButton("Erros")?.classList.contains("quickCheck--danger")).toBe(true);
+    expect(getQuickCheckButton("Relatório de Erros")?.classList.contains("quickCheck--danger")).toBe(
+      true,
+    );
+    expect(getQuickCheckButton("Relatório de Erros")?.disabled).toBe(true);
+  });
+
+  it("keeps error report derived from legado only and lets OK coexist with possivel", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await clickButton("Testes");
+    await clickElement(getToggleByControlPrefix("test-details"));
+
+    expect(getQuickCheckButton("Legado")?.getAttribute("aria-pressed")).toBe("true");
+    expect(getQuickCheckButton("Novo")?.getAttribute("aria-pressed")).toBe("true");
+    expect(getQuickCheckButton("Relatório de Erros")?.getAttribute("aria-pressed")).toBe("true");
+
+    await clickElement(getQuickCheckButton("OK"));
+
+    expect(getQuickCheckButton("OK")?.getAttribute("aria-pressed")).toBe("true");
+    expect(getQuickCheckButton("Legado")?.getAttribute("aria-pressed")).toBe("false");
+    expect(getQuickCheckButton("Novo")?.getAttribute("aria-pressed")).toBe("false");
+    expect(getQuickCheckButton("Relatório de Erros")?.getAttribute("aria-pressed")).toBe("false");
+    expect(getQuickCheckButton("Relatório de Erros")?.disabled).toBe(true);
+
+    await clickElement(getQuickCheckButton("Possível"));
+
+    expect(getQuickCheckButton("OK")?.getAttribute("aria-pressed")).toBe("true");
+    expect(getQuickCheckButton("Possível")?.getAttribute("aria-pressed")).toBe("true");
+
+    await clickElement(getQuickCheckButton("Legado"));
+
+    expect(getQuickCheckButton("OK")?.getAttribute("aria-pressed")).toBe("false");
+    expect(getQuickCheckButton("Possível")?.getAttribute("aria-pressed")).toBe("true");
+    expect(getQuickCheckButton("Legado")?.getAttribute("aria-pressed")).toBe("true");
+    expect(getQuickCheckButton("Relatório de Erros")?.getAttribute("aria-pressed")).toBe("true");
+
+    await clickElement(getQuickCheckButton("Novo"));
+    await clickElement(getQuickCheckButton("Legado"));
+
+    expect(getQuickCheckButton("Novo")?.getAttribute("aria-pressed")).toBe("true");
+    expect(getQuickCheckButton("Legado")?.getAttribute("aria-pressed")).toBe("false");
+    expect(getQuickCheckButton("Relatório de Erros")?.getAttribute("aria-pressed")).toBe("false");
+
+    await clickElement(getQuickCheckButton("Novo"));
+
+    expect(getQuickCheckButton("Novo")?.getAttribute("aria-pressed")).toBe("false");
+    expect(getQuickCheckButton("Relatório de Erros")?.getAttribute("aria-pressed")).toBe("false");
   });
 });
 
@@ -2153,8 +2218,13 @@ function createFilterDraft(): OtDocument {
           },
           {
             id: "test-problem",
-            title: "teste com problema",
-            result: createResult({ possibleIssue: true }),
+            title: "teste com problema novo",
+            result: createResult({ newIssue: true }),
+          },
+          {
+            id: "test-error-report",
+            title: "teste com relatorio legado",
+            result: createResult({ bothIssue: true }),
           },
         ],
       },

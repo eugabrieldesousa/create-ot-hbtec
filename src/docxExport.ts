@@ -21,6 +21,7 @@ import {
   checkOrder,
   createEmptyTestCorrection,
   createPermissionKey,
+  getEffectiveChecks,
 } from "./defaultDocument";
 import { mapWithConcurrency } from "./asyncUtils";
 import { hydrateDocumentImages, hydrateTeaDocumentImages } from "./imageStorage";
@@ -1089,16 +1090,18 @@ function permissionContextTable(macro: PermissionGroup, micro: PermissionItem): 
 }
 
 function testResultTable(index: number, test: PermissionBlockTest): Table {
+  const effectiveChecks = getEffectiveChecks(test.result.checks);
+
   return simpleTable(
     [
       [cell(`${index} - ${test.title || "Teste"}`, true, { columnSpan: 2, fill: COLORS.testFill })],
       ...checkOrder.map((key) => [
-        cell(test.result.checks[key] ? "( X )" : "(   )", test.result.checks[key], {
+        cell(effectiveChecks[key] ? "( X )" : "(   )", effectiveChecks[key], {
           alignment: AlignmentType.CENTER,
-          fill: test.result.checks[key] ? COLORS.selectedFill : undefined,
+          fill: effectiveChecks[key] ? COLORS.selectedFill : undefined,
         }),
-        cell(checkLabels[key], key === "bothIssue" && test.result.checks[key], {
-          fill: test.result.checks[key] ? COLORS.selectedFill : undefined,
+        cell(checkLabels[key], key === "bothIssue" && effectiveChecks[key], {
+          fill: effectiveChecks[key] ? COLORS.selectedFill : undefined,
         }),
       ]),
     ],

@@ -1240,6 +1240,10 @@ main:focus {
   padding-left: 0;
 }
 
+.quickCheckWrapper {
+  display: inline-flex;
+}
+
 .quickCheck {
   display: inline-flex;
   min-width: 3.25rem;
@@ -1265,6 +1269,24 @@ main:focus {
 .quickCheck:hover {
   color: var(--app-heading);
   border-color: var(--app-border);
+}
+
+.quickCheck:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.quickCheck:disabled.quickCheck--active {
+  opacity: 1;
+}
+
+.quickCheck:disabled:hover {
+  color: var(--app-muted);
+  border-color: var(--app-border-soft);
+}
+
+.quickCheck:disabled.quickCheck--active:hover {
+  color: inherit;
 }
 
 .quickCheck--active {

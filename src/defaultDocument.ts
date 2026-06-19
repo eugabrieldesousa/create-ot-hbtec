@@ -2,10 +2,21 @@ import type { CheckKey, OtDocument, TestCorrection, TestResult } from "./types";
 
 export const checkLabels: Record<CheckKey, string> = {
   sameBehavior: "Funcionou legado e novo estão com o mesmo comportamento",
-  possibleIssue: "Possível problema/Comportamento estranho/Ambiguidade/incoerência",
-  bothIssue: "Problema em AMBOS",
-  newIssue: "Problema só no NOVO",
+  possibleIssue: "Possível problema de lógica ou regra de negócio",
+  bothIssue: "Erro no legado",
+  newIssue: "Erro no novo",
   errorReport: "Relatório de Erros",
+};
+
+export const checkLabelAliases: Record<CheckKey, string[]> = {
+  sameBehavior: [checkLabels.sameBehavior],
+  possibleIssue: [
+    checkLabels.possibleIssue,
+    "Possível problema/Comportamento estranho/Ambiguidade/incoerência",
+  ],
+  bothIssue: [checkLabels.bothIssue, "Problema em AMBOS"],
+  newIssue: [checkLabels.newIssue, "Problema só no NOVO"],
+  errorReport: [checkLabels.errorReport, "Relatorio de Erros"],
 };
 
 export const checkOrder: CheckKey[] = [
@@ -28,6 +39,15 @@ export function createEmptyTestResult(): TestResult {
     observations: "",
     legacyImages: [],
     newImages: [],
+  };
+}
+
+export function getEffectiveChecks(
+  checks: Record<CheckKey, boolean>,
+): Record<CheckKey, boolean> {
+  return {
+    ...checks,
+    errorReport: checks.bothIssue,
   };
 }
 

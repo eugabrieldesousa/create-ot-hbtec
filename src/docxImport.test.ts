@@ -99,6 +99,39 @@ describe("parseOtHtml", () => {
     });
   });
 
+  it("imports current quick status labels without breaking legacy check keys", () => {
+    const result = parseOtHtml(
+      `
+        <h2>TESTES</h2>
+        <table>
+          <tr><td>MACRO-PERMISSÃO</td><td>Tipo de usuário: AO (Administrador Geral)</td></tr>
+          <tr><td>MICRO-PERMISSÃO</td><td>Tipo de permissão: AT (Atualização)</td></tr>
+        </table>
+        <table>
+          <tr><td colspan="2">1 - STATUS ATUAL</td></tr>
+          <tr><td>(   )</td><td>Funcionou legado e novo estão com o mesmo comportamento</td></tr>
+          <tr><td>( X )</td><td>Possível problema de lógica ou regra de negócio</td></tr>
+          <tr><td>( X )</td><td>Erro no legado</td></tr>
+          <tr><td>( X )</td><td>Erro no novo</td></tr>
+          <tr><td>( X )</td><td>Relatório de Erros</td></tr>
+        </table>
+      `,
+      { sourceName: "OT - Status atual.docx" },
+    );
+
+    const macro = result.document.permissionGroups[0];
+    const micro = macro.microPermissions[0];
+    const test = result.document.permissionBlocks[`${macro.id}:${micro.id}`].tests[0];
+
+    expect(test.result.checks).toMatchObject({
+      sameBehavior: false,
+      possibleIssue: true,
+      bothIssue: true,
+      newIssue: true,
+      errorReport: true,
+    });
+  });
+
   it("handles a partial DOCX without images or tests", () => {
     const result = parseOtHtml(
       `

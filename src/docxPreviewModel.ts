@@ -3,6 +3,7 @@ import {
   checkOrder,
   createEmptyTestCorrection,
   createPermissionKey,
+  getEffectiveChecks,
 } from "./defaultDocument";
 import type {
   EvidenceImage,
@@ -296,6 +297,8 @@ function testResultTable(
   test: PermissionBlockTest,
   referenceKey: string,
 ): DocxPreviewTable {
+  const effectiveChecks = getEffectiveChecks(test.result.checks);
+
   return simpleTable(
     [
       [
@@ -305,12 +308,12 @@ function testResultTable(
         }),
       ],
       ...checkOrder.map((key) => [
-        cell(test.result.checks[key] ? "( X )" : "(   )", test.result.checks[key], {
+        cell(effectiveChecks[key] ? "( X )" : "(   )", effectiveChecks[key], {
           alignment: "center",
-          fill: test.result.checks[key] ? COLORS.selectedFill : undefined,
+          fill: effectiveChecks[key] ? COLORS.selectedFill : undefined,
         }),
-        cell(checkLabels[key], key === "bothIssue" && test.result.checks[key], {
-          fill: test.result.checks[key] ? COLORS.selectedFill : undefined,
+        cell(checkLabels[key], key === "bothIssue" && effectiveChecks[key], {
+          fill: effectiveChecks[key] ? COLORS.selectedFill : undefined,
         }),
       ]),
     ],
