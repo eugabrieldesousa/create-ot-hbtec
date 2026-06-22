@@ -243,6 +243,70 @@ describe("parseOtHtml", () => {
     expect(correction?.afterImages[0].label).toBe("Ok depois");
     expect(result.summary.images).toBe(2);
   });
+
+  it("imports current OT error cards with error prints and correction evidence", () => {
+    const result = parseOtHtml(
+      `
+        <h2>TESTES</h2>
+        <table>
+          <tr><td>MACRO-PERMISSÃO</td><td>Tipo de usuário: AO (Administrador Geral)</td></tr>
+          <tr><td>MICRO-PERMISSÃO</td><td>Tipo de permissão: AT (Atualização)</td></tr>
+        </table>
+        <table>
+          <tr><td colspan="2">1 - QUESTIONARIO</td></tr>
+          <tr><td>(   )</td><td>Funcionou legado e novo estão com o mesmo comportamento</td></tr>
+          <tr><td>(   )</td><td>Possível problema de lógica ou regra de negócio</td></tr>
+          <tr><td>(   )</td><td>Erro no legado</td></tr>
+          <tr><td>( X )</td><td>Erro no novo</td></tr>
+          <tr><td>( X )</td><td>Relatório de Erros</td></tr>
+        </table>
+        <p><strong>Erros encontrados:</strong></p>
+        <p><strong>Erro 1 - Novo</strong></p>
+        <table>
+          <tr><td>Origem</td><td>Novo</td></tr>
+          <tr><td>Observacao</td><td>Falha ao salvar no novo.</td></tr>
+        </table>
+        <p><strong>Prints do erro:</strong></p>
+        <p>Falha visivel<img src="${pngDataUrl}" /></p>
+        <p><strong>Correcao:</strong></p>
+        <table>
+          <tr><td>Corrigido</td><td>Sim</td></tr>
+          <tr><td>Hotfix</td><td>hotfix 2.0.0</td></tr>
+          <tr><td>Corrigido por</td><td>Gabriel Sousa</td></tr>
+          <tr><td>Nuvem</td><td>Ate homolog</td></tr>
+        </table>
+        <p><strong>Antes (com erro):</strong></p>
+        <p>Antes da correcao<img src="${pngDataUrl}" /></p>
+        <p><strong>Depois (corrigido):</strong></p>
+        <p>Depois da correcao<img src="${pngDataUrl}" /></p>
+      `,
+      { sourceName: "OT - Questionario.docx" },
+    );
+
+    const macro = result.document.permissionGroups[0];
+    const micro = macro.microPermissions[0];
+    const test = result.document.permissionBlocks[`${macro.id}:${micro.id}`].tests[0];
+    const error = test.result.errors[0];
+
+    expect(test.result.legacyImages).toHaveLength(0);
+    expect(test.result.newImages).toHaveLength(0);
+    expect(test.result.errors).toHaveLength(1);
+    expect(error).toMatchObject({
+      origin: "new",
+      observation: "Falha ao salvar no novo.",
+    });
+    expect(error.images).toHaveLength(1);
+    expect(error.images[0].label).toBe("Falha visivel");
+    expect(error.correction).toMatchObject({
+      corrected: true,
+      hotfixTag: "hotfix 2.0.0",
+      correctedBy: "Gabriel Sousa",
+      cloudStage: "homolog",
+    });
+    expect(error.correction.beforeImages[0].label).toBe("Antes da correcao");
+    expect(error.correction.afterImages[0].label).toBe("Depois da correcao");
+    expect(result.summary.images).toBe(3);
+  });
 });
 
 describe("parseTeaHtml", () => {

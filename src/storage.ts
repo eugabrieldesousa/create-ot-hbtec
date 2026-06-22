@@ -314,7 +314,10 @@ function normalizeTestResult(
   normalizedResult.errors = normalizeTestErrors(
     {
       ...result,
-      ...normalizedResult,
+      checks: normalizedResult.checks,
+      observations: normalizedResult.observations,
+      legacyImages: normalizedResult.legacyImages,
+      newImages: normalizedResult.newImages,
     },
     legacyCorrection,
     testId,

@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MantineProvider, createTheme } from "@mantine/core";
 import App from "./App";
 import type { OtDocxImportResult } from "./docxImport";
-import type { CheckKey, EvidenceImage, OtDocument, TeaDocument, TestResult } from "./types";
+import type { CheckKey, EvidenceImage, OtDocument, TeaDocument, TestError, TestResult } from "./types";
 
 const appMocks = vi.hoisted(() => ({
   deleteEvidenceImageData: vi.fn(),
@@ -242,13 +242,30 @@ describe("App review validations", () => {
 
     const text = container.textContent ?? "";
 
-    expect(container.querySelector(".reviewTabBadge")?.textContent).toBe("7");
+    expect(container.querySelector(".reviewTabBadge")?.textContent).toBe("6");
     expect(container.querySelector(".reviewIssueGroup--danger")).toBeTruthy();
     expect(text).toContain("Status do teste vazio");
     expect(text).toContain("Imagem do legado ausente");
     expect(text).toContain("Imagem do novo ausente");
-    expect(text).toContain("Observacao obrigatoria");
     expect(text).toContain("Permissao sem teste");
+  });
+
+  it("does not require general Legado/Novo evidence when test errors have prints", async () => {
+    const documentData = createCompleteReviewDraft();
+    const test = documentData.permissionBlocks["macro-a:micro-at"].tests[0];
+    test.result.legacyImages = [];
+    test.result.newImages = [];
+    test.result.errors = [createTestError("new")];
+    window.localStorage.setItem(draftKey, JSON.stringify(documentData));
+
+    await renderApp();
+    await clickButton("Revis");
+
+    const text = container.textContent ?? "";
+
+    expect(text).not.toContain("Imagem do legado ausente");
+    expect(text).not.toContain("Imagem do novo ausente");
+    expect(text).not.toContain("Print do erro ausente");
   });
 
   it("does not complain when more than one status is selected", async () => {
@@ -300,7 +317,7 @@ describe("App quick status colors", () => {
     expect(getQuickCheckButton("Relatório de Erros")?.disabled).toBe(true);
   });
 
-  it("keeps error report derived from legado only and lets OK coexist with possivel", async () => {
+  it("keeps derived problem statuses read-only and lets OK coexist with possivel", async () => {
     window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
 
     await renderApp();
@@ -323,25 +340,9 @@ describe("App quick status colors", () => {
 
     expect(getQuickCheckButton("OK")?.getAttribute("aria-pressed")).toBe("true");
     expect(getQuickCheckButton("Possível")?.getAttribute("aria-pressed")).toBe("true");
-
-    await clickElement(getQuickCheckButton("Legado"));
-
-    expect(getQuickCheckButton("OK")?.getAttribute("aria-pressed")).toBe("false");
-    expect(getQuickCheckButton("Possível")?.getAttribute("aria-pressed")).toBe("true");
-    expect(getQuickCheckButton("Legado")?.getAttribute("aria-pressed")).toBe("true");
-    expect(getQuickCheckButton("Relatório de Erros")?.getAttribute("aria-pressed")).toBe("true");
-
-    await clickElement(getQuickCheckButton("Novo"));
-    await clickElement(getQuickCheckButton("Legado"));
-
-    expect(getQuickCheckButton("Novo")?.getAttribute("aria-pressed")).toBe("true");
-    expect(getQuickCheckButton("Legado")?.getAttribute("aria-pressed")).toBe("false");
-    expect(getQuickCheckButton("Relatório de Erros")?.getAttribute("aria-pressed")).toBe("false");
-
-    await clickElement(getQuickCheckButton("Novo"));
-
-    expect(getQuickCheckButton("Novo")?.getAttribute("aria-pressed")).toBe("false");
-    expect(getQuickCheckButton("Relatório de Erros")?.getAttribute("aria-pressed")).toBe("false");
+    expect(getQuickCheckButton("Legado")?.disabled).toBe(true);
+    expect(getQuickCheckButton("Novo")?.disabled).toBe(true);
+    expect(getQuickCheckButton("Relatório de Erros")?.disabled).toBe(true);
   });
 });
 
@@ -358,7 +359,7 @@ describe("App OT card UX", () => {
     expect(microCard?.textContent ?? "").toContain("2 testes");
     expect(microCard?.textContent ?? "").toContain("2 pendentes");
     expect(microCard?.textContent ?? "").toContain("1 com problema");
-    expect(microCard?.textContent ?? "").toContain("6 pendencias");
+    expect(microCard?.textContent ?? "").toContain("5 pendencias");
     expect(microCard?.querySelector(".summaryChip--red")).toBeTruthy();
 
     expect(firstTestCard?.textContent ?? "").toContain("0/5 checks");
@@ -382,15 +383,33 @@ describe("App OT card UX", () => {
     await clickElement(getToggleByControlPrefix("test-details"));
 
     expect(hasInputValue("teste com varios status")).toBe(true);
-    expect(container.textContent ?? "").toContain("Status rapido");
-    expect(container.textContent ?? "").not.toContain("Status detalhado");
+    expect(container.textContent ?? "").toContain("Status geral");
+    expect(container.textContent ?? "").not.toContain("Status rapido");
     expect(container.querySelector(".evidenceGrid")).toBeTruthy();
+  });
+
+  it("hides general evidence uploaders while a test has errors", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+
+    await renderApp();
+    await clickButton("Testes");
+    await clickElement(getToggleByControlPrefix("test-details"));
+
+    expect(container.querySelector(".evidenceGrid")).toBeTruthy();
+
+    await clickButton("Adicionar erro no Novo");
+
+    expect(container.querySelector(".evidenceGrid")).toBeNull();
+    expect(container.textContent ?? "").toContain("Prints do erro no Novo");
+
   });
 
   it("groups Novo tests in Para corrigir and reflects corrected state on test cards", async () => {
     const documentData = createCompleteReviewDraft();
     const test = documentData.permissionBlocks["macro-a:micro-at"].tests[0];
-    test.correction = {
+    const error = createTestError("new");
+    error.observation = "Falha validada para revisao.";
+    error.correction = {
       corrected: false,
       hotfixTag: "hotfix 1.2.2",
       correctedBy: "Gabriel",
@@ -398,6 +417,7 @@ describe("App OT card UX", () => {
       beforeImages: [createImage("before-fix")],
       afterImages: [createImage("after-fix")],
     };
+    test.result.errors = [error];
     window.localStorage.setItem(draftKey, JSON.stringify(documentData));
 
     await renderApp();
@@ -410,7 +430,7 @@ describe("App OT card UX", () => {
     expect(correctionCard?.textContent ?? "").toContain("Depois 1");
     expect(correctionCard?.textContent ?? "").not.toContain("Falha validada para revisao.");
     expect(correctionCard?.textContent ?? "").not.toContain("Status rapido");
-    expect(correctionCard?.textContent ?? "").not.toContain("Status detalhado");
+    expect(correctionCard?.textContent ?? "").not.toContain("Status geral");
 
     await clickElement(getToggleByControlPrefix("correction-details"));
     expect(correctionCard?.textContent ?? "").toContain("Falha validada para revisao.");
@@ -426,6 +446,8 @@ describe("App OT card UX", () => {
   it("preserves multiline observations and groups Para corrigir by macro and micro", async () => {
     const documentData = createCorrectionDraft();
     documentData.permissionBlocks["macro-a:micro-at"].tests[0].result.observations =
+      "Primeira linha\nSegunda linha";
+    documentData.permissionBlocks["macro-a:micro-at"].tests[0].result.errors[0].observation =
       "Primeira linha\nSegunda linha";
     window.localStorage.setItem(draftKey, JSON.stringify(documentData));
 
@@ -632,7 +654,7 @@ describe("App document outline", () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
     });
 
-    expect(container.textContent ?? "").toContain("Status rapido");
+    expect(container.textContent ?? "").toContain("Status geral");
     expect(document.activeElement?.id).toBe("test-card-macro-a-micro-at--test-missing-status");
   });
 
@@ -2466,6 +2488,28 @@ function createOtFindReplaceDraft(): OtDocument {
 function createCorrectionDraft(): OtDocument {
   const documentData = createCompleteReviewDraft();
   const macro = documentData.permissionGroups[0];
+  const pendingError = createTestError("new");
+  pendingError.observation = "Falha pendente.";
+  pendingError.images = [createImage("new-pending")];
+  pendingError.correction = {
+    corrected: false,
+    hotfixTag: "",
+    correctedBy: "",
+    cloudStage: "none",
+    beforeImages: [],
+    afterImages: [],
+  };
+  const correctedError = createTestError("new");
+  correctedError.observation = "Falha corrigida.";
+  correctedError.images = [createImage("new-corrected")];
+  correctedError.correction = {
+    corrected: true,
+    hotfixTag: "",
+    correctedBy: "",
+    cloudStage: "none",
+    beforeImages: [createImage("before-corrected")],
+    afterImages: [createImage("after-corrected")],
+  };
 
   macro.microPermissions.push({
     id: "micro-co",
@@ -2480,18 +2524,11 @@ function createCorrectionDraft(): OtDocument {
         id: "pending-correction",
         title: "pendente visivel",
         result: {
-          ...createResult({ newIssue: true }),
+          ...createResult({}),
           observations: "Falha pendente.",
           legacyImages: [createImage("legacy-pending")],
           newImages: [createImage("new-pending")],
-        },
-        correction: {
-          corrected: false,
-          hotfixTag: "",
-          correctedBy: "",
-          cloudStage: "none",
-          beforeImages: [],
-          afterImages: [],
+          errors: [pendingError],
         },
       },
     ],
@@ -2503,18 +2540,11 @@ function createCorrectionDraft(): OtDocument {
         id: "corrected-correction",
         title: "corrigido oculto",
         result: {
-          ...createResult({ newIssue: true }),
+          ...createResult({}),
           observations: "Falha corrigida.",
           legacyImages: [createImage("legacy-corrected")],
           newImages: [createImage("new-corrected")],
-        },
-        correction: {
-          corrected: true,
-          hotfixTag: "",
-          correctedBy: "",
-          cloudStage: "none",
-          beforeImages: [createImage("before-corrected")],
-          afterImages: [createImage("after-corrected")],
+          errors: [correctedError],
         },
       },
     ],
@@ -2880,5 +2910,22 @@ function createImageWithoutData(id: string, label: string): EvidenceImage {
   return {
     ...image,
     label,
+  };
+}
+
+function createTestError(origin: "legacy" | "new"): TestError {
+  return {
+    id: `error-${origin}`,
+    origin,
+    observation: origin === "new" ? "Falha no novo." : "Falha no legado.",
+    images: [createImage(`error-${origin}-image`)],
+    correction: {
+      corrected: false,
+      beforeImages: [],
+      afterImages: [],
+      hotfixTag: "",
+      correctedBy: "",
+      cloudStage: "none",
+    },
   };
 }

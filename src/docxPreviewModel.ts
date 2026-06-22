@@ -217,8 +217,10 @@ function buildPermissionBlock(
       blocks.push(labeledBox("Observações", test.result.observations.trim()));
     }
 
-    blocks.push(...evidenceSection("Legado:", test.result.legacyImages));
-    blocks.push(...evidenceSection("Novo:", test.result.newImages));
+    if (test.result.errors.length === 0) {
+      blocks.push(...evidenceSection("Legado:", test.result.legacyImages));
+      blocks.push(...evidenceSection("Novo:", test.result.newImages));
+    }
     blocks.push(...testErrorsSection(test));
   });
 

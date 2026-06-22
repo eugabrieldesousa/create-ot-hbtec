@@ -98,22 +98,34 @@ describe("imageStorage batch APIs", () => {
     expect(databases.every((database) => database.close.mock.calls.length === 1)).toBe(true);
   });
 
-  it("persists, hydrates and strips OT correction images", async () => {
+  it("persists, hydrates and strips OT error and correction images", async () => {
     const documentData = createOtImageDocument();
 
     await persistEmbeddedEvidenceImages(documentData);
 
     const stripped = stripImageDataFromDocument(documentData);
+    const strippedError = stripped.permissionBlocks["macro:micro"].tests[0].result.errors[0];
     const strippedCorrection =
       stripped.permissionBlocks["macro:micro"].tests[0].correction;
 
+    expect(strippedError.images[0].dataUrl).toBeUndefined();
+    expect(strippedError.correction.beforeImages[0].dataUrl).toBeUndefined();
+    expect(strippedError.correction.afterImages[0].dataUrl).toBeUndefined();
     expect(strippedCorrection?.beforeImages[0].dataUrl).toBeUndefined();
     expect(strippedCorrection?.afterImages[0].dataUrl).toBeUndefined();
 
     const hydrated = await hydrateDocumentImages(stripped);
+    const hydratedError = hydrated.permissionBlocks["macro:micro"].tests[0].result.errors[0];
     const hydratedCorrection =
       hydrated.permissionBlocks["macro:micro"].tests[0].correction;
 
+    expect(hydratedError.images[0].dataUrl).toBe("data:image/png;base64,ZXJyb3I=");
+    expect(hydratedError.correction.beforeImages[0].dataUrl).toBe(
+      "data:image/png;base64,ZXJyb3ItYmVmb3Jl",
+    );
+    expect(hydratedError.correction.afterImages[0].dataUrl).toBe(
+      "data:image/png;base64,ZXJyb3ItYWZ0ZXI=",
+    );
     expect(hydratedCorrection?.beforeImages[0].dataUrl).toBe("data:image/png;base64,YmVmb3Jl");
     expect(hydratedCorrection?.afterImages[0].dataUrl).toBe("data:image/png;base64,YWZ0ZXI=");
   });
@@ -246,7 +258,26 @@ function createOtImageDocument(): OtDocument {
               observations: "",
               legacyImages: [],
               newImages: [],
-              errors: [],
+              errors: [
+                {
+                  id: "error",
+                  origin: "new",
+                  observation: "Falha no novo.",
+                  images: [createImage("error-image", "data:image/png;base64,ZXJyb3I=")],
+                  correction: {
+                    corrected: true,
+                    hotfixTag: "hotfix erro",
+                    correctedBy: "Gabriel",
+                    cloudStage: "homolog",
+                    beforeImages: [
+                      createImage("error-before", "data:image/png;base64,ZXJyb3ItYmVmb3Jl"),
+                    ],
+                    afterImages: [
+                      createImage("error-after", "data:image/png;base64,ZXJyb3ItYWZ0ZXI="),
+                    ],
+                  },
+                },
+              ],
             },
             correction: {
               corrected: true,

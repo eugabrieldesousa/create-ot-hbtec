@@ -47,7 +47,7 @@ export function getEffectiveChecks(
   checks: Record<CheckKey, boolean>,
   errors?: TestError[],
 ): Record<CheckKey, boolean> {
-  if (errors) {
+  if (errors && errors.length > 0) {
     const hasLegacyError = errors.some((error) => error.origin === "legacy");
     const hasNewError = errors.some((error) => error.origin === "new");
 

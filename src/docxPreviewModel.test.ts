@@ -6,7 +6,7 @@ import {
   type DocxPreviewCell,
   type DocxPreviewRun,
 } from "./docxPreviewModel";
-import type { CheckKey, EvidenceImage, OtDocument, TeaDocument } from "./types";
+import type { CheckKey, EvidenceImage, OtDocument, TeaDocument, TestError } from "./types";
 
 describe("buildOtPreviewModel", () => {
   it("mirrors the exported OT section order, tables, checks, observations and missing images", () => {
@@ -32,17 +32,6 @@ describe("buildOtPreviewModel", () => {
     expect(texts.some((text) => text.includes("AO (Administrador)"))).toBe(true);
     expect(texts.some((text) => text.includes("AT (Atualização)"))).toBe(true);
     expect(texts.some((text) => text.includes("1 - Filtro") && text.includes("( X )"))).toBe(
-      true,
-    );
-    expect(texts.some((text) => text.includes("Correcao:"))).toBe(true);
-    expect(texts.some((text) => text.includes("Corrigido") && text.includes("Sim"))).toBe(true);
-    expect(texts.some((text) => text.includes("Hotfix") && text.includes("hotfix 1.2.2"))).toBe(
-      true,
-    );
-    expect(texts.some((text) => text.includes("Corrigido por") && text.includes("Gabriel"))).toBe(
-      true,
-    );
-    expect(texts.some((text) => text.includes("Nuvem") && text.includes("Ate homolog"))).toBe(
       true,
     );
     expect(texts.some((text) => text.includes("legado.png nao encontrada"))).toBe(true);
@@ -92,6 +81,45 @@ describe("buildOtPreviewModel", () => {
     expect(testTableText).toContain("( X ) Erro no legado");
     expect(testTableText).toContain("(   ) Erro no novo");
     expect(testTableText).toContain("( X ) Relatório de Erros");
+  });
+
+  it("renders error cards instead of general evidence when a test has errors", () => {
+    const documentData = createOtPreviewDocument();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.legacyImages = [
+      {
+        id: "hidden-legacy",
+        label: "",
+        name: "legado-antigo.png",
+        width: 100,
+        height: 80,
+      },
+    ];
+    test.result.newImages = [createImage("hidden-new", "Novo antigo", 100, 80)];
+    test.result.errors = [createPreviewError("new")];
+
+    const model = buildOtPreviewModel(documentData);
+    const texts = model.blocks.map(blockText);
+
+    expect(texts).not.toContain("Legado:");
+    expect(texts).not.toContain("Novo:");
+    expect(texts).toContain("Erros encontrados:");
+    expect(texts).toContain("Prints do erro:");
+    expect(texts.some((text) => text.includes("Origem") && text.includes("Novo"))).toBe(true);
+    expect(texts.some((text) => text.includes("Observacao") && text.includes("Falha no novo."))).toBe(
+      true,
+    );
+    expect(texts.some((text) => text.includes("Correcao:"))).toBe(true);
+    expect(texts.some((text) => text.includes("Corrigido") && text.includes("Sim"))).toBe(true);
+    expect(texts.some((text) => text.includes("Hotfix") && text.includes("hotfix 2.0.0"))).toBe(
+      true,
+    );
+    expect(texts.some((text) => text.includes("Corrigido por") && text.includes("Gabriel"))).toBe(
+      true,
+    );
+    expect(texts.some((text) => text.includes("Nuvem") && text.includes("Ate homolog"))).toBe(
+      true,
+    );
   });
 });
 
@@ -312,5 +340,22 @@ function createImage(
     dataUrl: "data:image/png;base64,AAAA",
     width,
     height,
+  };
+}
+
+function createPreviewError(origin: "legacy" | "new"): TestError {
+  return {
+    id: `error-${origin}`,
+    origin,
+    observation: origin === "new" ? "Falha no novo." : "Falha no legado.",
+    images: [createImage(`error-${origin}`, "Print do erro", 100, 80)],
+    correction: {
+      corrected: true,
+      hotfixTag: "hotfix 2.0.0",
+      correctedBy: "Gabriel",
+      cloudStage: "homolog",
+      beforeImages: [createImage(`error-${origin}-before`, "Antes", 100, 80)],
+      afterImages: [createImage(`error-${origin}-after`, "Depois", 100, 80)],
+    },
   };
 }

@@ -823,7 +823,9 @@ function parseTestSection(tokens: Token[], state: ParserState): void {
       parseObservation(token, state.currentTest);
       const parsedError = parseTestError(token, state);
       const parsedCorrection = parseCorrection(token, state);
-      parseEvidence(token, state);
+      if (!parsedError) {
+        parseEvidence(token, state);
+      }
 
       if (
         !startedTest &&
@@ -886,6 +888,10 @@ function resetCurrentOtTest(state: ParserState): void {
 }
 
 function parseTestStart(token: Token, state: ParserState): boolean {
+  if (normalizeText(token.text).startsWith("erro ")) {
+    return false;
+  }
+
   const match = token.text.match(/(?:^|\s)(\d{1,3})\s*[-–]\s*([^()]+)/);
 
   if (!match) {
@@ -1241,7 +1247,7 @@ function isCorrectionEvidenceHeading(text: string): boolean {
 }
 
 function isErrorEvidenceHeading(text: string): boolean {
-  const normalized = normalizeText(text);
+  const normalized = normalizeText(text).replace(/:$/, "");
 
   return (
     normalized === "prints do erro" ||
@@ -1254,19 +1260,19 @@ function isErrorEvidenceHeading(text: string): boolean {
 }
 
 function isCorrectionBeforeHeading(text: string): boolean {
-  const normalized = normalizeText(text);
+  const normalized = normalizeText(text).replace(/:$/, "");
 
-  return normalized === "antes" || normalized.startsWith("antes ");
+  return normalized === "antes" || normalized.startsWith("antes (");
 }
 
 function isCorrectionAfterHeading(text: string): boolean {
-  const normalized = normalizeText(text);
+  const normalized = normalizeText(text).replace(/:$/, "");
 
   return (
     normalized === "depois" ||
-    normalized.startsWith("depois ") ||
+    normalized.startsWith("depois (") ||
     normalized === "corrigido" ||
-    normalized.startsWith("corrigido ")
+    normalized.startsWith("corrigido (")
   );
 }
 
@@ -1498,8 +1504,14 @@ function extractEvidenceLabel(text: string, heading: "legado" | "novo"): string 
 
 function extractCorrectionEvidenceLabel(text: string, heading: "antes" | "depois"): string {
   const normalized = normalizeText(text);
+  const isHeadingLine =
+    normalized === heading ||
+    normalized.startsWith(`${heading}:`) ||
+    normalized.startsWith(`${heading} (`) ||
+    normalized === "corrigido" ||
+    normalized.startsWith("corrigido:");
   const cleaned = cleanText(
-    normalized === heading || normalized.startsWith(`${heading} `)
+    isHeadingLine
       ? text
           .replace(new RegExp(`^${heading}\\s*(?:\\([^)]*\\))?:?`, "i"), "")
           .replace(/^corrigido:?/i, "")
@@ -1559,6 +1571,14 @@ function buildImportSummary(documentData: OtDocument): OtDocxImportSummary {
           testTotal +
           test.result.legacyImages.length +
           test.result.newImages.length +
+          test.result.errors.reduce(
+            (errorTotal, error) =>
+              errorTotal +
+              error.images.length +
+              error.correction.beforeImages.length +
+              error.correction.afterImages.length,
+            0,
+          ) +
           (test.correction?.beforeImages.length ?? 0) +
           (test.correction?.afterImages.length ?? 0),
         0,

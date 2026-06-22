@@ -6569,6 +6569,8 @@ const TestResultEditor = memo(function TestResultEditor({
     }));
   }
 
+  const hasErrors = result.errors.length > 0;
+
   return (
     <Stack gap="md">
       <Textarea
@@ -6638,20 +6640,22 @@ const TestResultEditor = memo(function TestResultEditor({
         </Stack>
       </Paper>
 
-      <div className="evidenceGrid">
-        <EvidenceUploader
-          title="Legado"
-          tone="legacy"
-          images={result.legacyImages}
-          onChange={(updater) => updateImages("legacyImages", updater)}
-        />
-        <EvidenceUploader
-          title="Novo"
-          tone="new"
-          images={result.newImages}
-          onChange={(updater) => updateImages("newImages", updater)}
-        />
-      </div>
+      {!hasErrors ? (
+        <div className="evidenceGrid">
+          <EvidenceUploader
+            title="Legado"
+            tone="legacy"
+            images={result.legacyImages}
+            onChange={(updater) => updateImages("legacyImages", updater)}
+          />
+          <EvidenceUploader
+            title="Novo"
+            tone="new"
+            images={result.newImages}
+            onChange={(updater) => updateImages("newImages", updater)}
+          />
+        </div>
+      ) : null}
     </Stack>
   );
 });
@@ -8193,18 +8197,20 @@ function testMatchesFilter(
 }
 
 function getTestImageCount(test: PermissionBlockTest): number {
-  return (
-    test.result.legacyImages.length +
-    test.result.newImages.length +
-    test.result.errors.reduce(
-      (total, error) =>
-        total +
-        error.images.length +
-        error.correction.beforeImages.length +
-        error.correction.afterImages.length,
-      0,
-    )
+  const errorImageCount = test.result.errors.reduce(
+    (total, error) =>
+      total +
+      error.images.length +
+      error.correction.beforeImages.length +
+      error.correction.afterImages.length,
+    0,
   );
+
+  if (test.result.errors.length > 0) {
+    return errorImageCount;
+  }
+
+  return test.result.legacyImages.length + test.result.newImages.length;
 }
 
 function getSelectedCheckKeys(result: TestResult): CheckKey[] {
@@ -8221,12 +8227,13 @@ function hasProblemStatus(result: TestResult): boolean {
 
 function testHasPendingReview(test: PermissionBlockTest): boolean {
   const selectedCheckCount = getSelectedCheckKeys(test.result).length;
+  const hasErrors = test.result.errors.length > 0;
 
   return (
     !test.title.trim() ||
     selectedCheckCount === 0 ||
-    test.result.legacyImages.length === 0 ||
-    test.result.newImages.length === 0 ||
+    (!hasErrors && test.result.legacyImages.length === 0) ||
+    (!hasErrors && test.result.newImages.length === 0) ||
     test.result.errors.some((error) => !error.observation.trim() || error.images.length === 0)
   );
 }
@@ -9070,7 +9077,7 @@ function buildReviewSummary(
         });
       }
 
-      if (test.result.legacyImages.length === 0) {
+      if (test.result.errors.length === 0 && test.result.legacyImages.length === 0) {
         summary.issues.push({
           id: `missing-legacy-image-${referenceKey}`,
           severity: "danger",
@@ -9083,7 +9090,7 @@ function buildReviewSummary(
         });
       }
 
-      if (test.result.newImages.length === 0) {
+      if (test.result.errors.length === 0 && test.result.newImages.length === 0) {
         summary.issues.push({
           id: `missing-new-image-${referenceKey}`,
           severity: "danger",

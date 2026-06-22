@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { exportOtDocument, exportTeaDocument } from "./docxExport";
-import type { CheckKey, EvidenceImage, OtDocument, TeaDocument } from "./types";
+import type { CheckKey, EvidenceImage, OtDocument, TeaDocument, TestError } from "./types";
 
 const docxState = vi.hoisted(() => ({
   documents: [] as Array<{ options: { sections: Array<{ children: unknown[] }> } }>,
@@ -383,7 +383,11 @@ describe("exportOtDocument", () => {
   });
 
   it("exports correction details for Novo tests", async () => {
-    await exportOtDocument(createOtDocumentForExport());
+    const documentData = createOtDocumentForExport();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.errors = [createExportError("new")];
+
+    await exportOtDocument(documentData);
 
     const children = docxState.documents[0].options.sections[0].children;
     const correctionTable = children.find((child) =>
@@ -393,11 +397,33 @@ describe("exportOtDocument", () => {
     const correctionText = readFullTableText(correctionTable);
 
     expect(correctionText).toContain("Corrigido Sim");
-    expect(correctionText).toContain("Hotfix hotfix 1.2.2");
+    expect(correctionText).toContain("Hotfix hotfix 2.0.0");
     expect(correctionText).toContain("Corrigido por Gabriel");
-    expect(correctionText).toContain("Nuvem Ate dev");
+    expect(correctionText).toContain("Nuvem Ate homolog");
     expect(paragraphTexts).toContain("Antes (com erro):");
     expect(paragraphTexts).toContain("Depois (corrigido):");
+  });
+
+  it("exports OT error cards without requiring or rendering hidden general images", async () => {
+    const documentData = createOtDocumentForExport();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.legacyImages = [createExportImageWithoutData("hidden-legacy", "Legado oculto")];
+    test.result.newImages = [createExportImageWithoutData("hidden-new", "Novo oculto")];
+    test.result.errors = [createExportError("new")];
+
+    await exportOtDocument(documentData);
+
+    const children = docxState.documents[0].options.sections[0].children;
+    const paragraphTexts = children.map(readParagraphText).filter(Boolean);
+    const allTableText = children.map(readFullTableText).join(" ");
+
+    expect(paragraphTexts).not.toContain("Legado:");
+    expect(paragraphTexts).not.toContain("Novo:");
+    expect(paragraphTexts).toContain("Erros encontrados:");
+    expect(paragraphTexts).toContain("Prints do erro:");
+    expect(allTableText).toContain("Origem Novo");
+    expect(allTableText).toContain("Observacao Falha ao salvar no novo.");
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
   });
 
   it("blocks OT export when Legado or Novo images are empty", async () => {
@@ -616,4 +642,21 @@ function createExportImage(id: string, label: string) {
 function createExportImageWithoutData(id: string, label: string): EvidenceImage {
   const { dataUrl: _dataUrl, ...image } = createExportImage(id, label);
   return image;
+}
+
+function createExportError(origin: "legacy" | "new"): TestError {
+  return {
+    id: `error-${origin}`,
+    origin,
+    observation: origin === "new" ? "Falha ao salvar no novo." : "Falha no legado.",
+    images: [createExportImage(`error-${origin}-image`, "Print do erro")],
+    correction: {
+      corrected: true,
+      hotfixTag: "hotfix 2.0.0",
+      correctedBy: "Gabriel",
+      cloudStage: "homolog",
+      beforeImages: [createExportImage(`error-${origin}-before`, "Antes")],
+      afterImages: [createExportImage(`error-${origin}-after`, "Depois")],
+    },
+  };
 }

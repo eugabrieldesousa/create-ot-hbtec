@@ -297,8 +297,9 @@ function validateOtDocumentImages(documentData: OtDocument): DocxExportImageProb
 
       block.tests.forEach((test, testIndex) => {
         const testLocation = formatOtTestLocation(macro, micro, test, testIndex);
+        const hasErrors = test.result.errors.length > 0;
 
-        if (test.result.legacyImages.length === 0) {
+        if (!hasErrors && test.result.legacyImages.length === 0) {
           problems.push(createImageProblem("ot", {
             label: "Imagem do legado ausente",
             detail: "Adicione evidencia em Legado antes de exportar.",
@@ -306,7 +307,7 @@ function validateOtDocumentImages(documentData: OtDocument): DocxExportImageProb
           }));
         }
 
-        if (test.result.newImages.length === 0) {
+        if (!hasErrors && test.result.newImages.length === 0) {
           problems.push(createImageProblem("ot", {
             label: "Imagem do novo ausente",
             detail: "Adicione evidencia em Novo antes de exportar.",
@@ -463,16 +464,8 @@ function collectOtTestImages(
   test: PermissionBlockTest,
   testLocation: string,
 ): LocatedEvidenceImage[] {
-  const images: LocatedEvidenceImage[] = [
-    ...test.result.legacyImages.map((image, imageIndex) => ({
-      image,
-      location: `${testLocation} > Legado > Imagem ${imageIndex + 1}`,
-    })),
-    ...test.result.newImages.map((image, imageIndex) => ({
-      image,
-      location: `${testLocation} > Novo > Imagem ${imageIndex + 1}`,
-    })),
-    ...test.result.errors.flatMap((error, errorIndex) => [
+  if (test.result.errors.length > 0) {
+    return test.result.errors.flatMap((error, errorIndex) => [
       ...error.images.map((image, imageIndex) => ({
         image,
         location:
@@ -491,7 +484,18 @@ function collectOtTestImages(
           `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} > ` +
           `Depois (corrigido) > Imagem ${imageIndex + 1}`,
       })),
-    ]),
+    ]);
+  }
+
+  const images: LocatedEvidenceImage[] = [
+    ...test.result.legacyImages.map((image, imageIndex) => ({
+      image,
+      location: `${testLocation} > Legado > Imagem ${imageIndex + 1}`,
+    })),
+    ...test.result.newImages.map((image, imageIndex) => ({
+      image,
+      location: `${testLocation} > Novo > Imagem ${imageIndex + 1}`,
+    })),
   ];
 
   return images;
@@ -1093,8 +1097,10 @@ function buildPermissionBlock(
       children.push(labeledBox("Observações", test.result.observations.trim()));
     }
 
-    children.push(...evidenceSection("Legado:", test.result.legacyImages));
-    children.push(...evidenceSection("Novo:", test.result.newImages));
+    if (test.result.errors.length === 0) {
+      children.push(...evidenceSection("Legado:", test.result.legacyImages));
+      children.push(...evidenceSection("Novo:", test.result.newImages));
+    }
     children.push(...testErrorsSection(test));
   });
 

@@ -149,6 +149,16 @@ export async function hydrateDocumentImages(documentData: OtDocument): Promise<O
             ...test.result,
             legacyImages: hydrateImages(test.result.legacyImages),
             newImages: hydrateImages(test.result.newImages),
+            errors: test.result.errors.map((error) => ({
+              ...error,
+              images: hydrateImages(error.images),
+              correction: {
+                ...createEmptyTestCorrection(),
+                ...error.correction,
+                beforeImages: hydrateImages(error.correction.beforeImages),
+                afterImages: hydrateImages(error.correction.afterImages),
+              },
+            })),
           },
           correction: {
             ...createEmptyTestCorrection(),
@@ -207,6 +217,11 @@ function getDocumentImages(documentData: OtDocument): EvidenceImage[] {
     block.tests.flatMap((test) => [
       ...test.result.legacyImages,
       ...test.result.newImages,
+      ...test.result.errors.flatMap((error) => [
+        ...error.images,
+        ...error.correction.beforeImages,
+        ...error.correction.afterImages,
+      ]),
       ...(test.correction?.beforeImages ?? []),
       ...(test.correction?.afterImages ?? []),
     ]),
@@ -295,6 +310,16 @@ export function stripImageDataFromDocument(documentData: OtDocument): OtDocument
     ...result,
     legacyImages: result.legacyImages.map(stripImageData),
     newImages: result.newImages.map(stripImageData),
+    errors: result.errors.map((error) => ({
+      ...error,
+      images: error.images.map(stripImageData),
+      correction: {
+        ...createEmptyTestCorrection(),
+        ...error.correction,
+        beforeImages: error.correction.beforeImages.map(stripImageData),
+        afterImages: error.correction.afterImages.map(stripImageData),
+      },
+    })),
   });
 
   return {
