@@ -72,7 +72,7 @@ describe("parseOtHtml", () => {
     const macro = result.document.permissionGroups[0];
     expect(macro.code).toBe("AO");
     expect(macro.label).toBe("Administrador Geral");
-    expect(macro.microPermissions.map((micro) => micro.code)).toEqual(["AT", "SC"]);
+    expect(macro.microPermissions.map((micro) => micro.code)).toEqual(["AT"]);
 
     const activeMicro = macro.microPermissions[0];
     const block = result.document.permissionBlocks[`${macro.id}:${activeMicro.id}`];
@@ -93,7 +93,7 @@ describe("parseOtHtml", () => {
     expect(result.summary).toMatchObject({
       accessSteps: 3,
       permissionGroups: 1,
-      selectedPermissions: 2,
+      selectedPermissions: 1,
       tests: 1,
       images: 2,
     });
@@ -130,6 +130,38 @@ describe("parseOtHtml", () => {
       newIssue: true,
       errorReport: true,
     });
+  });
+
+  it("does not add summary-only micro permissions to a tested OT macro", () => {
+    const result = parseOtHtml(
+      `
+        <h2>Tipos de Permissão para Testar</h2>
+        <p><strong>Micro-permissões:</strong></p>
+        <ul>
+          <li>AT (Atualização)</li>
+          <li>SC (Somente Consulta)</li>
+          <li>SA (Sem Acesso)</li>
+        </ul>
+        <p><strong>Macro-permissões (Tipo de Usuário):</strong></p>
+        <p>AO</p>
+        <h2>TESTES</h2>
+        <table>
+          <tr><td>MACRO-PERMISSÃO</td><td>Tipo de usuário: AO (Administrador Geral)</td></tr>
+          <tr><td>MICRO-PERMISSÃO</td><td>Tipo de permissão: AT (Atualização)</td></tr>
+        </table>
+        <table>
+          <tr><td colspan="2">1 - CADASTRO</td></tr>
+          <tr><td>( X )</td><td>Funcionou legado e novo estão com o mesmo comportamento</td></tr>
+        </table>
+      `,
+      { sourceName: "OT - Permissoes.docx" },
+    );
+
+    const macro = result.document.permissionGroups[0];
+
+    expect(macro.code).toBe("AO");
+    expect(macro.microPermissions.map((micro) => micro.code)).toEqual(["AT"]);
+    expect(result.summary.selectedPermissions).toBe(1);
   });
 
   it("handles a partial DOCX without images or tests", () => {
@@ -335,6 +367,43 @@ describe("parseTeaHtml", () => {
       type: "list",
       items: [{ text: "Item da **atividade**" }],
     });
+  });
+
+  it("imports externally added TEA activity blocks with unique editable identities", () => {
+    const result = parseTeaHtml(
+      `
+        <h1>1. VISAO GERAL</h1>
+        <p>Visao geral importada.</p>
+        <h1>2. ATIVIDADES REALIZADAS</h1>
+        <p>Texto inicial.</p>
+        <h2>2.1 - Atividade repetida:</h2>
+        <p>Primeiro paragrafo externo.</p>
+        <p>Segundo paragrafo externo.</p>
+        <ul>
+          <li>Item externo</li>
+        </ul>
+        <h2>2.2 - Atividade repetida:</h2>
+        <p>Outro bloco externo.</p>
+      `,
+      { sourceName: "TEA - Atividade Externa.docx" },
+    );
+
+    const [firstActivity, secondActivity] = result.document.activities;
+    const firstBlockIds = firstActivity.blocks.map((block) => block.id);
+    const activityIds = result.document.activities.map((activity) => activity.id);
+
+    expect(firstActivity.blocks.map((block) => block.type)).toEqual(["text", "text", "list"]);
+    expect(firstActivity.blocks[0]).toMatchObject({
+      type: "text",
+      text: "Primeiro paragrafo externo.",
+    });
+    expect(firstActivity.blocks[1]).toMatchObject({
+      type: "text",
+      text: "Segundo paragrafo externo.",
+    });
+    expect(new Set(firstBlockIds).size).toBe(firstBlockIds.length);
+    expect(new Set(activityIds).size).toBe(activityIds.length);
+    expect(secondActivity.title).toBe("Atividade repetida");
   });
 
   it("ignores Mammoth's built-in Title style warning", () => {

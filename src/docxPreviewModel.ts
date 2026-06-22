@@ -1,7 +1,6 @@
 import {
   checkLabels,
   checkOrder,
-  createEmptyTestCorrection,
   createPermissionKey,
   getEffectiveChecks,
 } from "./defaultDocument";
@@ -16,6 +15,7 @@ import type {
   TeaContentBlock,
   TeaDocument,
   TeaSubActivity,
+  TestError,
 } from "./types";
 
 export type DocxPreviewKind = "ot" | "tea";
@@ -219,10 +219,7 @@ function buildPermissionBlock(
 
     blocks.push(...evidenceSection("Legado:", test.result.legacyImages));
     blocks.push(...evidenceSection("Novo:", test.result.newImages));
-
-    if (test.result.checks.newIssue) {
-      blocks.push(...correctionSection(test));
-    }
+    blocks.push(...testErrorsSection(test));
   });
 
   return blocks;
@@ -297,7 +294,7 @@ function testResultTable(
   test: PermissionBlockTest,
   referenceKey: string,
 ): DocxPreviewTable {
-  const effectiveChecks = getEffectiveChecks(test.result.checks);
+  const effectiveChecks = getEffectiveChecks(test.result.checks, test.result.errors);
 
   return simpleTable(
     [
@@ -322,14 +319,42 @@ function testResultTable(
   );
 }
 
-function correctionSection(test: PermissionBlockTest): DocxPreviewBlock[] {
-  const correction = {
-    ...createEmptyTestCorrection(),
-    ...test.correction,
-    beforeImages: test.correction?.beforeImages ?? [],
-    afterImages: test.correction?.afterImages ?? [],
-  };
+function testErrorsSection(test: PermissionBlockTest): DocxPreviewBlock[] {
+  if (test.result.errors.length === 0) {
+    return [];
+  }
 
+  return [
+    paragraph("ot-label", "Erros encontrados:", {
+      runs: [{ text: "Erros encontrados:", bold: true }],
+    }),
+    ...test.result.errors.flatMap((error, index) => testErrorSection(error, index)),
+  ];
+}
+
+function testErrorSection(error: TestError, index: number): DocxPreviewBlock[] {
+  return [
+    paragraph("ot-label", "Correcao:", {
+      runs: [
+        {
+          text: `Erro ${index + 1} - ${formatTestErrorOrigin(error.origin)}`,
+          bold: true,
+        },
+      ],
+    }),
+    simpleTable(
+      [
+        [cell("Origem", true), cell(formatTestErrorOrigin(error.origin))],
+        [cell("Observacao", true), cell(error.observation.trim() || " ")],
+      ],
+      [28, 72],
+    ),
+    ...evidenceSection("Prints do erro:", error.images),
+    ...(error.origin === "new" ? correctionSection(error.correction) : []),
+  ];
+}
+
+function correctionSection(correction: TestError["correction"]): DocxPreviewBlock[] {
   return [
     paragraph("ot-label", "Correcao:", {
       runs: [{ text: "Correcao:", bold: true }],
@@ -674,6 +699,10 @@ function formatCloudStage(value: string): string {
   }
 
   return "Nao enviado";
+}
+
+function formatTestErrorOrigin(origin: TestError["origin"]): string {
+  return origin === "legacy" ? "Legado" : "Novo";
 }
 
 function createEmptyBlock(): PermissionBlock {

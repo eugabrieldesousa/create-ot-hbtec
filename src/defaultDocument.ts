@@ -1,4 +1,4 @@
-import type { CheckKey, OtDocument, TestCorrection, TestResult } from "./types";
+import type { CheckKey, OtDocument, TestCorrection, TestError, TestResult } from "./types";
 
 export const checkLabels: Record<CheckKey, string> = {
   sameBehavior: "Funcionou legado e novo estão com o mesmo comportamento",
@@ -39,12 +39,27 @@ export function createEmptyTestResult(): TestResult {
     observations: "",
     legacyImages: [],
     newImages: [],
+    errors: [],
   };
 }
 
 export function getEffectiveChecks(
   checks: Record<CheckKey, boolean>,
+  errors?: TestError[],
 ): Record<CheckKey, boolean> {
+  if (errors) {
+    const hasLegacyError = errors.some((error) => error.origin === "legacy");
+    const hasNewError = errors.some((error) => error.origin === "new");
+
+    return {
+      ...checks,
+      sameBehavior: checks.sameBehavior && errors.length === 0,
+      bothIssue: hasLegacyError,
+      newIssue: hasNewError,
+      errorReport: errors.length > 0,
+    };
+  }
+
   return {
     ...checks,
     errorReport: checks.bothIssue,
@@ -59,6 +74,16 @@ export function createEmptyTestCorrection(): TestCorrection {
     hotfixTag: "",
     correctedBy: "",
     cloudStage: "none",
+  };
+}
+
+export function createEmptyTestError(id: string, origin: TestError["origin"]): TestError {
+  return {
+    id,
+    origin,
+    observation: "",
+    images: [],
+    correction: createEmptyTestCorrection(),
   };
 }
 

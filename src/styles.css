@@ -636,9 +636,16 @@ main:focus {
 }
 
 .quickChecksPanel,
-.detailedChecksPanel {
+.detailedChecksPanel,
+.testErrorsPanel {
   background: var(--app-surface-muted);
   border-color: var(--app-border-soft);
+}
+
+.testErrorCard {
+  background: var(--app-card-bg);
+  border-color: var(--app-border-soft);
+  border-left: 2px solid #d97706;
 }
 
 .correctionCard {

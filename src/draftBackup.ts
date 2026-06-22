@@ -158,6 +158,15 @@ export function removeAllOtImages(documentData: OtDocument): ClearImagesResult<O
     ...result,
     legacyImages: [],
     newImages: [],
+    errors: (result.errors ?? []).map((error) => ({
+      ...error,
+      images: [],
+      correction: {
+        ...error.correction,
+        beforeImages: [],
+        afterImages: [],
+      },
+    })),
   });
 
   return {
@@ -305,6 +314,22 @@ function collectOtImages(documentData: OtDocument): LocatedImage[] {
         image,
         location: `${test.title || "Teste"} > Novo > Imagem ${index + 1}`,
       })),
+      ...(test.result.errors ?? []).flatMap((error, errorIndex) => [
+        ...error.images.map((image, imageIndex) => ({
+          image,
+          location:
+            `${test.title || "Teste"} > Erro ${errorIndex + 1} > ` +
+            `${error.origin === "legacy" ? "Legado" : "Novo"} > Imagem ${imageIndex + 1}`,
+        })),
+        ...error.correction.beforeImages.map((image, imageIndex) => ({
+          image,
+          location: `${test.title || "Teste"} > Erro ${errorIndex + 1} > Antes > Imagem ${imageIndex + 1}`,
+        })),
+        ...error.correction.afterImages.map((image, imageIndex) => ({
+          image,
+          location: `${test.title || "Teste"} > Erro ${errorIndex + 1} > Depois > Imagem ${imageIndex + 1}`,
+        })),
+      ]),
       ...(test.correction?.beforeImages ?? []).map((image, index) => ({
         image,
         location: `${test.title || "Teste"} > Antes > Imagem ${index + 1}`,
@@ -359,6 +384,15 @@ function attachOtImageData(
     ...result,
     legacyImages: hydrateImages(result.legacyImages),
     newImages: hydrateImages(result.newImages),
+    errors: (result.errors ?? []).map((error) => ({
+      ...error,
+      images: hydrateImages(error.images),
+      correction: {
+        ...error.correction,
+        beforeImages: hydrateImages(error.correction.beforeImages),
+        afterImages: hydrateImages(error.correction.afterImages),
+      },
+    })),
   });
 
   return {

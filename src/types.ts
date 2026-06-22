@@ -22,6 +22,8 @@ export type EvidenceImage = {
   optimized?: boolean;
 };
 
+export type TestErrorOrigin = "legacy" | "new";
+
 export type PermissionItem = {
   id: string;
   code: string;
@@ -38,6 +40,7 @@ export type TestResult = {
   observations: string;
   legacyImages: EvidenceImage[];
   newImages: EvidenceImage[];
+  errors: TestError[];
 };
 
 export type CorrectionCloudStage = "none" | "dev" | "homolog" | "production";
@@ -51,10 +54,19 @@ export type TestCorrection = {
   cloudStage: CorrectionCloudStage;
 };
 
+export type TestError = {
+  id: string;
+  origin: TestErrorOrigin;
+  observation: string;
+  images: EvidenceImage[];
+  correction: TestCorrection;
+};
+
 export type PermissionBlockTest = {
   id: string;
   title: string;
   result: TestResult;
+  /** Compatibility with older drafts. New corrections live on TestResult.errors[]. */
   correction?: TestCorrection;
 };
 

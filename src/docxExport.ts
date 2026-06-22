@@ -19,7 +19,6 @@ import {
 import {
   checkLabels,
   checkOrder,
-  createEmptyTestCorrection,
   createPermissionKey,
   getEffectiveChecks,
 } from "./defaultDocument";
@@ -37,6 +36,7 @@ import type {
   TeaContentBlock,
   TeaDocument,
   TeaSubActivity,
+  TestError,
   TestResult,
 } from "./types";
 
@@ -314,6 +314,18 @@ function validateOtDocumentImages(documentData: OtDocument): DocxExportImageProb
           }));
         }
 
+        test.result.errors.forEach((error, errorIndex) => {
+          if (error.images.length === 0) {
+            problems.push(createImageProblem("ot", {
+              label: "Print do erro ausente",
+              detail: "Adicione ao menos um print do erro antes de exportar.",
+              location:
+                `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} ` +
+                `(${formatTestErrorOrigin(error.origin)})`,
+            }));
+          }
+        });
+
         collectOtTestImages(test, testLocation).forEach((located) => {
           if (!hasImageData(located.image)) {
             problems.push(createImageProblem("ot", {
@@ -460,27 +472,27 @@ function collectOtTestImages(
       image,
       location: `${testLocation} > Novo > Imagem ${imageIndex + 1}`,
     })),
+    ...test.result.errors.flatMap((error, errorIndex) => [
+      ...error.images.map((image, imageIndex) => ({
+        image,
+        location:
+          `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} ` +
+          `(${formatTestErrorOrigin(error.origin)}) > Imagem ${imageIndex + 1}`,
+      })),
+      ...error.correction.beforeImages.map((image, imageIndex) => ({
+        image,
+        location:
+          `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} > ` +
+          `Antes (com erro) > Imagem ${imageIndex + 1}`,
+      })),
+      ...error.correction.afterImages.map((image, imageIndex) => ({
+        image,
+        location:
+          `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} > ` +
+          `Depois (corrigido) > Imagem ${imageIndex + 1}`,
+      })),
+    ]),
   ];
-
-  if (test.result.checks.newIssue) {
-    const correction = {
-      ...createEmptyTestCorrection(),
-      ...test.correction,
-      beforeImages: test.correction?.beforeImages ?? [],
-      afterImages: test.correction?.afterImages ?? [],
-    };
-
-    images.push(
-      ...correction.beforeImages.map((image, imageIndex) => ({
-        image,
-        location: `${testLocation} > Antes (com erro) > Imagem ${imageIndex + 1}`,
-      })),
-      ...correction.afterImages.map((image, imageIndex) => ({
-        image,
-        location: `${testLocation} > Depois (corrigido) > Imagem ${imageIndex + 1}`,
-      })),
-    );
-  }
 
   return images;
 }
@@ -702,6 +714,19 @@ async function optimizeOtDocumentImages(documentData: OtDocument): Promise<OtDoc
                     test.result.legacyImages,
                   ),
                   newImages: await optimizeEvidenceImagesForExport(test.result.newImages),
+                  errors: await mapWithConcurrency(test.result.errors, async (error) => ({
+                    ...error,
+                    images: await optimizeEvidenceImagesForExport(error.images),
+                    correction: {
+                      ...error.correction,
+                      beforeImages: await optimizeEvidenceImagesForExport(
+                        error.correction.beforeImages,
+                      ),
+                      afterImages: await optimizeEvidenceImagesForExport(
+                        error.correction.afterImages,
+                      ),
+                    },
+                  })),
                 },
               }),
             ),
@@ -1070,10 +1095,7 @@ function buildPermissionBlock(
 
     children.push(...evidenceSection("Legado:", test.result.legacyImages));
     children.push(...evidenceSection("Novo:", test.result.newImages));
-
-    if (test.result.checks.newIssue) {
-      children.push(...correctionSection(test));
-    }
+    children.push(...testErrorsSection(test));
   });
 
   return children;
@@ -1090,7 +1112,7 @@ function permissionContextTable(macro: PermissionGroup, micro: PermissionItem): 
 }
 
 function testResultTable(index: number, test: PermissionBlockTest): Table {
-  const effectiveChecks = getEffectiveChecks(test.result.checks);
+  const effectiveChecks = getEffectiveChecks(test.result.checks, test.result.errors);
 
   return simpleTable(
     [
@@ -1109,14 +1131,44 @@ function testResultTable(index: number, test: PermissionBlockTest): Table {
   );
 }
 
-function correctionSection(test: PermissionBlockTest) {
-  const correction = {
-    ...createEmptyTestCorrection(),
-    ...test.correction,
-    beforeImages: test.correction?.beforeImages ?? [],
-    afterImages: test.correction?.afterImages ?? [],
-  };
+function testErrorsSection(test: PermissionBlockTest) {
+  if (test.result.errors.length === 0) {
+    return [];
+  }
 
+  return [
+    new Paragraph({
+      spacing: { before: 120, after: 60 },
+      children: [run("Erros encontrados:", { bold: true, color: COLORS.title })],
+    }),
+    ...test.result.errors.flatMap((error, index) => testErrorSection(error, index)),
+  ];
+}
+
+function testErrorSection(error: TestError, index: number) {
+  return [
+    new Paragraph({
+      spacing: { before: 120, after: 60 },
+      children: [
+        run(`Erro ${index + 1} - ${formatTestErrorOrigin(error.origin)}`, {
+          bold: true,
+          color: COLORS.title,
+        }),
+      ],
+    }),
+    simpleTable(
+      [
+        [cell("Origem", true), cell(formatTestErrorOrigin(error.origin))],
+        [cell("Observacao", true), cell(error.observation.trim() || " ")],
+      ],
+      [28, 72],
+    ),
+    ...evidenceSection("Prints do erro:", error.images),
+    ...(error.origin === "new" ? correctionSection(error.correction) : []),
+  ];
+}
+
+function correctionSection(correction: TestError["correction"]) {
   return [
     new Paragraph({
       spacing: { before: 120, after: 60 },
@@ -1470,6 +1522,10 @@ function formatCloudStage(value: string): string {
   return "Nao enviado";
 }
 
+function formatTestErrorOrigin(origin: TestError["origin"]): string {
+  return origin === "legacy" ? "Legado" : "Novo";
+}
+
 function createEmptyBlock(): PermissionBlock {
   return { tests: [] };
 }
@@ -1499,9 +1555,7 @@ function createTeaFileName(documentData: TeaDocument): string {
 
 function sanitizeFileName(value: string): string {
   return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/[\x00-\x1f\\/:*?"<>|]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }

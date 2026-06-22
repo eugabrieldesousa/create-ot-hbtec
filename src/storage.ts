@@ -24,6 +24,8 @@ import type {
   TeaSubActivity,
   TeaTextItem,
   TestCorrection,
+  TestError,
+  TestErrorOrigin,
   TestResult,
 } from "./types";
 
@@ -261,7 +263,11 @@ function normalizeBlockTests(tests: PermissionBlockTest[]): PermissionBlockTest[
   return tests.map((test, index) => ({
     id: textOrFallback(test.id, `test-${index + 1}`),
     title: textOrFallback(test.title, ""),
-    result: normalizeTestResult(test.result),
+    result: normalizeTestResult(
+      test.result,
+      test.correction,
+      textOrFallback(test.id, `test-${index + 1}`),
+    ),
     correction: normalizeTestCorrection(test.correction),
   }));
 }
@@ -282,22 +288,94 @@ function normalizeLegacyTests(
   }));
 }
 
-function normalizeTestResult(result: TestResult | undefined): TestResult {
+function normalizeTestResult(
+  result: TestResult | undefined,
+  legacyCorrection?: TestCorrection,
+  testId = "test",
+): TestResult {
   const fallback = createEmptyTestResult();
 
   if (!result) {
     return fallback;
   }
 
-  return {
-    checks: {
-      ...fallback.checks,
-      ...(result.checks ?? {}),
-    },
+  const checks = {
+    ...fallback.checks,
+    ...(result.checks ?? {}),
+  };
+  const normalizedResult = {
+    checks,
     observations: textOrFallback(result.observations, ""),
     legacyImages: normalizeEvidenceImages(result.legacyImages),
     newImages: normalizeEvidenceImages(result.newImages),
+    errors: [] as TestError[],
   };
+
+  normalizedResult.errors = normalizeTestErrors(
+    {
+      ...result,
+      ...normalizedResult,
+    },
+    legacyCorrection,
+    testId,
+  );
+
+  return normalizedResult;
+}
+
+function normalizeTestErrors(
+  result: TestResult,
+  legacyCorrection: TestCorrection | undefined,
+  testId: string,
+): TestError[] {
+  const candidateErrors = (result as Partial<TestResult>).errors;
+
+  if (Array.isArray(candidateErrors)) {
+    return candidateErrors.map((error, index) =>
+      normalizeTestError(error, `${testId}-error-${index + 1}`),
+    );
+  }
+
+  const migratedErrors: TestError[] = [];
+  const checks = result.checks ?? createEmptyTestResult().checks;
+
+  if (checks.bothIssue || checks.errorReport) {
+    migratedErrors.push({
+      id: `${testId}-legacy-error`,
+      origin: "legacy",
+      observation: textOrFallback(result.observations, ""),
+      images: normalizeEvidenceImages(result.legacyImages),
+      correction: createEmptyTestCorrection(),
+    });
+  }
+
+  if (checks.newIssue) {
+    migratedErrors.push({
+      id: `${testId}-new-error`,
+      origin: "new",
+      observation: textOrFallback(result.observations, ""),
+      images: normalizeEvidenceImages(result.newImages),
+      correction: normalizeTestCorrection(legacyCorrection),
+    });
+  }
+
+  return migratedErrors;
+}
+
+function normalizeTestError(error: TestError, fallbackId: string): TestError {
+  const origin = normalizeTestErrorOrigin(error.origin);
+
+  return {
+    id: textOrFallback(error.id, fallbackId),
+    origin,
+    observation: textOrFallback(error.observation, ""),
+    images: normalizeEvidenceImages(error.images),
+    correction: normalizeTestCorrection(error.correction),
+  };
+}
+
+function normalizeTestErrorOrigin(origin: unknown): TestErrorOrigin {
+  return origin === "legacy" ? "legacy" : "new";
 }
 
 function normalizeTestCorrection(correction: TestCorrection | undefined): TestCorrection {
@@ -531,6 +609,11 @@ function getOtImageIds(document: OtDocument): string[] {
     block.tests.flatMap((test) => [
       ...test.result.legacyImages.map((image) => image.id),
       ...test.result.newImages.map((image) => image.id),
+      ...test.result.errors.flatMap((error) => [
+        ...error.images.map((image) => image.id),
+        ...error.correction.beforeImages.map((image) => image.id),
+        ...error.correction.afterImages.map((image) => image.id),
+      ]),
       ...(test.correction?.beforeImages ?? []).map((image) => image.id),
       ...(test.correction?.afterImages ?? []).map((image) => image.id),
     ]),

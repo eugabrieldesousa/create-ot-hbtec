@@ -19,6 +19,7 @@ import type {
   TeaDocument,
   TeaSubActivity,
   TestCorrection,
+  TestError,
 } from "./types";
 
 export type DocxImportKind = "ot" | "tea";
@@ -84,7 +85,9 @@ type ParserState = {
   currentMacro?: PermissionGroup;
   currentMicro?: PermissionItem;
   currentTest?: PermissionBlockTest;
+  currentError?: TestError;
   currentEvidence?: "legacyImages" | "newImages";
+  currentErrorEvidence?: boolean;
   currentCorrectionEvidence?: "beforeImages" | "afterImages";
   pendingImageLabel?: string;
   imageCount: number;
@@ -99,6 +102,7 @@ type TeaParserState = {
   imageCount: number;
   blockCount: number;
   itemCount: number;
+  usedIds: Set<string>;
 };
 
 const metadataFields: Array<{
@@ -134,8 +138,8 @@ export function parseOtHtml(html: string, options: ParseOptions = {}): OtDocxImp
   applyMammothWarnings(state, options.mammothMessages);
   parseDocumentFields(tokens, state.document);
   parseAccessSteps(tokens, state.document);
-  parsePermissionSummary(tokens, state);
   parseTestSection(tokens, state);
+  parsePermissionSummary(tokens, state);
   finishDocument(state, options.sourceName ?? "documento-importado.docx");
 
   return {
@@ -211,6 +215,7 @@ function createTeaParserState(): TeaParserState {
     imageCount: 0,
     blockCount: 0,
     itemCount: 0,
+    usedIds: new Set(),
   };
 }
 
@@ -513,7 +518,8 @@ function parseTeaActivityHeading(token: Token, state: TeaParserState): boolean {
   }
 
   const activity: TeaActivity = {
-    id: createImportId(
+    id: createTeaImportId(
+      state,
       "tea-activity",
       `${state.document.activities.length + 1}-${heading.title}`,
     ),
@@ -541,7 +547,8 @@ function parseTeaSubActivityHeading(token: Token, state: TeaParserState): boolea
     state.currentActivity ??
     ensureTeaActivity(state, `Atividade ${heading.activityIndex}`);
   const subActivity: TeaSubActivity = {
-    id: createImportId(
+    id: createTeaImportId(
+      state,
       "tea-subactivity",
       `${activity.id}-${activity.subActivities.length + 1}-${heading.title}`,
     ),
@@ -638,15 +645,7 @@ function appendTeaTextBlock(state: TeaParserState, text: string): void {
     return;
   }
 
-  const blocks = getTeaCurrentBlocks(state);
-  const lastBlock = blocks[blocks.length - 1];
-
-  if (lastBlock?.type === "text") {
-    lastBlock.text = [lastBlock.text, text].filter(Boolean).join("\n");
-    return;
-  }
-
-  blocks.push({
+  getTeaCurrentBlocks(state).push({
     id: createTeaBlockId(state, "text"),
     type: "text",
     text,
@@ -700,7 +699,11 @@ function createTeaImages(state: TeaParserState, images: EvidenceImage[]): Eviden
 
     return {
       ...image,
-      id: createImportId("tea-image", `${state.imageCount}-${image.dataUrl ?? image.name}`),
+      id: createTeaImportId(
+        state,
+        "tea-image",
+        `${state.imageCount}-${image.dataUrl ?? image.name}`,
+      ),
       name: `imagem-importada-${state.imageCount}`,
       label: image.label ?? "",
     };
@@ -713,7 +716,11 @@ function ensureTeaContentTarget(state: TeaParserState): TeaActivity {
 
 function ensureTeaActivity(state: TeaParserState, title: string): TeaActivity {
   const activity: TeaActivity = {
-    id: createImportId("tea-activity", `${state.document.activities.length + 1}-${title}`),
+    id: createTeaImportId(
+      state,
+      "tea-activity",
+      `${state.document.activities.length + 1}-${title}`,
+    ),
     title,
     blocks: [],
     subActivities: [],
@@ -735,13 +742,13 @@ function getTeaCurrentBlocks(state: TeaParserState): TeaContentBlock[] {
 function createTeaBlockId(state: TeaParserState, type: TeaContentBlock["type"]): string {
   state.blockCount += 1;
 
-  return createImportId("tea-block", `${state.blockCount}-${type}`);
+  return createTeaImportId(state, "tea-block", `${state.blockCount}-${type}`);
 }
 
 function createTeaItemId(state: TeaParserState, text: string): string {
   state.itemCount += 1;
 
-  return createImportId("tea-item", `${state.itemCount}-${text}`);
+  return createTeaImportId(state, "tea-item", `${state.itemCount}-${text}`);
 }
 
 function parsePermissionSummary(tokens: Token[], state: ParserState): void {
@@ -813,10 +820,17 @@ function parseTestSection(tokens: Token[], state: ParserState): void {
       const startedTest = parseTestStart(token, state);
       parseChecks(token, state.currentTest);
       parseObservation(token, state.currentTest);
+      const parsedError = parseTestError(token, state);
       const parsedCorrection = parseCorrection(token, state);
       parseEvidence(token, state);
 
-      if (!startedTest && !parsedCorrection && !state.currentCorrectionEvidence) {
+      if (
+        !startedTest &&
+        !parsedError &&
+        !parsedCorrection &&
+        !state.currentCorrectionEvidence &&
+        !state.currentErrorEvidence
+      ) {
         parseFreeObservation(token, state.currentTest, state.currentEvidence);
       }
     });
@@ -832,14 +846,14 @@ function parsePermissionContext(token: Token, state: ParserState): boolean {
     if (label.includes("macro-permissao") || normalizeText(value).includes("tipo de usuario")) {
       state.currentMacro = ensureMacro(state, parsePermission(value));
       state.currentMicro = undefined;
-      state.currentTest = undefined;
+      resetCurrentOtTest(state);
       return true;
     }
 
     if (label.includes("micro-permissao") || normalizeText(value).includes("tipo de permissao")) {
       const macro = state.currentMacro ?? ensureMacro(state, { code: "MACRO", label: "" });
       state.currentMicro = ensureMicro(state, macro, parsePermission(value));
-      state.currentTest = undefined;
+      resetCurrentOtTest(state);
       return true;
     }
   }
@@ -847,18 +861,27 @@ function parsePermissionContext(token: Token, state: ParserState): boolean {
   if (normalized.includes("tipo de usuario")) {
     state.currentMacro = ensureMacro(state, parsePermission(token.text));
     state.currentMicro = undefined;
-    state.currentTest = undefined;
+    resetCurrentOtTest(state);
     return true;
   }
 
   if (normalized.includes("tipo de permissao")) {
     const macro = state.currentMacro ?? ensureMacro(state, { code: "MACRO", label: "" });
     state.currentMicro = ensureMicro(state, macro, parsePermission(token.text));
-    state.currentTest = undefined;
+    resetCurrentOtTest(state);
     return true;
   }
 
   return false;
+}
+
+function resetCurrentOtTest(state: ParserState): void {
+  state.currentTest = undefined;
+  state.currentError = undefined;
+  state.currentEvidence = undefined;
+  state.currentErrorEvidence = undefined;
+  state.currentCorrectionEvidence = undefined;
+  state.pendingImageLabel = undefined;
 }
 
 function parseTestStart(token: Token, state: ParserState): boolean {
@@ -881,7 +904,9 @@ function parseTestStart(token: Token, state: ParserState): boolean {
 
   block.tests.push(test);
   state.currentTest = test;
+  state.currentError = undefined;
   state.currentEvidence = undefined;
+  state.currentErrorEvidence = undefined;
   state.currentCorrectionEvidence = undefined;
   state.pendingImageLabel = undefined;
 
@@ -1510,6 +1535,20 @@ function teaSubjectFromFile(fileName: string): string {
     .replace(/\.docx$/i, "")
     .replace(/^TEA\s*-\s*/i, "")
     .trim();
+}
+
+function createTeaImportId(state: TeaParserState, prefix: string, value: string): string {
+  const baseId = createImportId(prefix, value);
+  let id = baseId;
+  let suffix = 2;
+
+  while (state.usedIds.has(id)) {
+    id = `${baseId}-${suffix}`;
+    suffix += 1;
+  }
+
+  state.usedIds.add(id);
+  return id;
 }
 
 function createImportId(prefix: string, value: string): string {

@@ -1337,6 +1337,66 @@ describe("App TEA content blocks", () => {
     expect(destinationActivity?.textContent ?? "").toContain("copy-source-image.png");
   });
 
+  it("duplicates a TEA subtopic inside the same activity", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftForSubActivityCopy()));
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    await clickAriaButtonAt("Mais ações do subtópico");
+    await waitForBodyText("Duplicar subtópico");
+    await clickMenuItem("Duplicar subtópico");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 160));
+    });
+
+    const activityCards = Array.from(container.querySelectorAll<HTMLElement>(".teaActivityCard"));
+    const sourceActivity = activityCards.find((activityCard) =>
+      activityCard.textContent?.includes("2.1 Atividade origem"),
+    );
+    const sourceSubActivities = Array.from(
+      sourceActivity?.querySelectorAll<HTMLElement>(".teaSubActivityCard") ?? [],
+    );
+
+    expect(sourceSubActivities).toHaveLength(2);
+    expect(sourceSubActivities[0]?.textContent ?? "").toContain("2.1.1 Subtopico origem");
+    expect(sourceSubActivities[1]?.textContent ?? "").toContain("2.1.2 Subtopico origem");
+    expect(sourceSubActivities[1]?.textContent ?? "").toContain("Texto copiado");
+    expect(sourceSubActivities[1]?.textContent ?? "").toContain("Item copiado");
+
+    const duplicateTitle = sourceSubActivities[1]?.querySelector<HTMLInputElement>("input");
+    expect(duplicateTitle).toBeTruthy();
+    await setFieldValue(duplicateTitle as HTMLInputElement, "Subtopico duplicado");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 160));
+    });
+
+    expect(sourceSubActivities[0]?.textContent ?? "").toContain("Subtopico origem");
+    expect(container.textContent ?? "").toContain("Subtopico duplicado");
+  });
+
+  it("preserves TEA list item spaces while editing", async () => {
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(createTeaDraftForSubActivityCopy()));
+
+    await renderApp();
+    await clickControl("TEA");
+    await clickButton("Atividades");
+
+    const listTextarea = getTextareaByLabel("Itens em lista");
+    const editedValue = "Item copiado \n  Item com espaco";
+
+    await setFieldValue(listTextarea, editedValue);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 160));
+    });
+
+    expect(getTextareaByLabel("Itens em lista").value).toBe(editedValue);
+  });
+
   it("copies multiple TEA subtopics to one target activity", async () => {
     window.localStorage.setItem(
       teaDraftKey,
@@ -2086,6 +2146,16 @@ function getInputByLabel(label: string): HTMLInputElement {
 
   expect(input).toBeTruthy();
   return input as HTMLInputElement;
+}
+
+function getTextareaByLabel(label: string): HTMLTextAreaElement {
+  const textarea = Array.from(container.querySelectorAll<HTMLTextAreaElement>("textarea")).find(
+    (candidate) =>
+      candidate.closest(".mantine-InputWrapper-root")?.textContent?.includes(label),
+  );
+
+  expect(textarea).toBeTruthy();
+  return textarea as HTMLTextAreaElement;
 }
 
 async function setFieldValue(

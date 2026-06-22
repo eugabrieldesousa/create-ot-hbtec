@@ -4,6 +4,7 @@ import type { CheckKey, EvidenceImage, OtDocument, TeaDocument } from "./types";
 
 const docxState = vi.hoisted(() => ({
   documents: [] as Array<{ options: { sections: Array<{ children: unknown[] }> } }>,
+  downloads: [] as string[],
 }));
 const jszipState = vi.hoisted(() => ({
   media: [new Uint8Array([0, 0, 0])] as Uint8Array[],
@@ -136,6 +137,7 @@ vi.mock("./imageOptimizer", () => ({
 
 beforeEach(() => {
   docxState.documents.length = 0;
+  docxState.downloads.length = 0;
   jszipState.media = [new Uint8Array([0, 0, 0])];
   jszipState.loadAsync.mockClear();
 
@@ -151,7 +153,9 @@ beforeEach(() => {
 
   Object.defineProperty(HTMLAnchorElement.prototype, "click", {
     configurable: true,
-    value: vi.fn(),
+    value: vi.fn(function (this: HTMLAnchorElement) {
+      docxState.downloads.push(this.download);
+    }),
   });
 });
 
@@ -319,6 +323,15 @@ describe("exportTeaDocument", () => {
 });
 
 describe("exportOtDocument", () => {
+  it("preserves accents in exported OT file names", async () => {
+    const documentData = createOtDocumentForExport();
+    documentData.metadata.screen = "Situação do Beneficiário";
+
+    await exportOtDocument(documentData);
+
+    expect(docxState.downloads).toContain("OT - Situação do Beneficiário - 2026-06-08.docx");
+  });
+
   it("exports current check labels without deriving error report from Novo", async () => {
     await exportOtDocument(createOtDocumentForExport());
 

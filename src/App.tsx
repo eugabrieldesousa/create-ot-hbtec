@@ -74,6 +74,7 @@ import {
 import {
   checkLabels,
   checkOrder,
+  createEmptyTestError,
   createEmptyTestCorrection,
   createEmptyTestResult,
   createPermissionKey,
@@ -117,6 +118,8 @@ import type {
   TeaDocument,
   TeaSubActivity,
   TestCorrection,
+  TestError,
+  TestErrorOrigin,
   TestResult,
 } from "./types";
 
@@ -294,6 +297,7 @@ type DocumentOutlineGroup = {
 
 type CorrectionOccurrence = PermissionBlockEntry & {
   test: PermissionBlockTest;
+  error: TestError;
   testIndex: number;
   referenceKey: string;
 };
@@ -302,6 +306,7 @@ type CorrectionGroup = {
   key: string;
   title: string;
   occurrences: CorrectionOccurrence[];
+  error: TestError;
   correction: TestCorrection;
 };
 
@@ -452,6 +457,7 @@ type TeaWorkspaceProps = {
     subActivityId: string,
     direction: MoveDirection,
   ) => void;
+  onSubActivityDuplicate: (activityId: string, subActivityId: string) => void;
   onSubActivityCopy: (activityId: string, subActivityIds: string[]) => void;
   onActivityCollapseChange: (activityId: string, collapsed: boolean) => void;
   onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
@@ -480,6 +486,7 @@ type TeaActivityEditorProps = {
   ) => void;
   onSubActivityRemove: (subActivityId: string) => void;
   onSubActivityMove: (subActivityId: string, direction: MoveDirection) => void;
+  onSubActivityDuplicate: (subActivityId: string) => void;
   onSubActivityCopy: (subActivityIds: string[]) => void;
   onCollapseChange: (collapsed: boolean) => void;
   onSubActivityCollapseChange: (subActivityId: string, collapsed: boolean) => void;
@@ -499,6 +506,7 @@ type TeaSubActivityEditorProps = {
   onChange: (updater: (subActivity: TeaSubActivity) => TeaSubActivity) => void;
   onRemove: () => void;
   onMove: (direction: MoveDirection) => void;
+  onDuplicate: () => void;
   onCopy: () => void;
   onCollapseChange: (collapsed: boolean) => void;
   onComposerCollapseChange: (collapsed: boolean) => void;
@@ -585,8 +593,8 @@ function updateQuickStatusChecks(
   checks: Record<CheckKey, boolean>,
   key: CheckKey,
 ): Record<CheckKey, boolean> {
-  if (key === "errorReport") {
-    return getEffectiveChecks(checks);
+  if (key !== "sameBehavior" && key !== "possibleIssue") {
+    return checks;
   }
 
   const next = { ...checks };
@@ -598,19 +606,26 @@ function updateQuickStatusChecks(
       next.bothIssue = false;
       next.newIssue = false;
     }
-  } else if (key === "possibleIssue") {
-    next.possibleIssue = !checks.possibleIssue;
   } else {
-    next[key] = !checks[key];
-
-    if (next[key]) {
-      next.sameBehavior = false;
-    }
+    next.possibleIssue = !checks.possibleIssue;
   }
 
-  next.errorReport = next.bothIssue;
-
   return next;
+}
+
+function applyDerivedStatus(result: TestResult): TestResult {
+  const effectiveChecks = getEffectiveChecks(result.checks, result.errors);
+
+  return {
+    ...result,
+    checks: {
+      ...result.checks,
+      sameBehavior: effectiveChecks.sameBehavior,
+      bothIssue: effectiveChecks.bothIssue,
+      newIssue: effectiveChecks.newIssue,
+      errorReport: effectiveChecks.errorReport,
+    },
+  };
 }
 
 const teaContentBlockLabels: Record<TeaContentBlockType, string> = {
@@ -1245,6 +1260,56 @@ export default function App() {
     }));
   }, [updateTeaActivity]);
 
+  const duplicateTeaSubActivityInPlace = useCallback(async (
+    activityId: string,
+    subActivityId: string,
+  ): Promise<void> => {
+    const activity = teaDataRef.current.activities.find((candidate) => candidate.id === activityId);
+    const sourceSubActivity = activity?.subActivities.find(
+      (candidate) => candidate.id === subActivityId,
+    );
+
+    if (!activity || !sourceSubActivity) {
+      return;
+    }
+
+    const duplicatedSubActivity = await duplicateTeaSubActivity(sourceSubActivity);
+
+    setTeaActiveTab("activities");
+    setTeaActivityCollapsed(activityId, false);
+    setTeaSubActivityCollapsed(duplicatedSubActivity.id, false);
+    setTeaComposerCollapsed(duplicatedSubActivity.id, false);
+    duplicatedSubActivity.blocks.forEach((block) => {
+      setTeaContentBlockCollapsed(block.id, false);
+    });
+
+    updateTeaActivity(activityId, (currentActivity) => {
+      const sourceIndex = currentActivity.subActivities.findIndex(
+        (candidate) => candidate.id === subActivityId,
+      );
+      const insertIndex = sourceIndex >= 0 ? sourceIndex + 1 : currentActivity.subActivities.length;
+
+      return {
+        ...currentActivity,
+        subActivities: [
+          ...currentActivity.subActivities.slice(0, insertIndex),
+          duplicatedSubActivity,
+          ...currentActivity.subActivities.slice(insertIndex),
+        ],
+      };
+    });
+
+    window.setTimeout(() => {
+      scrollAndFocusReviewTarget(`tea-subactivity-${toDomId(duplicatedSubActivity.id)}`);
+    }, 80);
+  }, [
+    setTeaActivityCollapsed,
+    setTeaComposerCollapsed,
+    setTeaContentBlockCollapsed,
+    setTeaSubActivityCollapsed,
+    updateTeaActivity,
+  ]);
+
   const openTeaSubActivityCopyModal = useCallback((
     sourceActivityId: string,
     subActivityIds: string[],
@@ -1773,6 +1838,7 @@ export default function App() {
                     observations: test.result.observations,
                     legacyImages: [],
                     newImages: [],
+                    errors: [],
                   },
                   correction: createEmptyTestCorrection(),
                 })),
@@ -1805,6 +1871,7 @@ export default function App() {
           observations: source.result.observations,
           legacyImages: [],
           newImages: [],
+          errors: [],
         },
         correction: createEmptyTestCorrection(),
       };
@@ -1882,7 +1949,7 @@ export default function App() {
     updateBlock(blockKey, (block) => ({
       ...block,
       tests: block.tests.map((test) =>
-        test.id === testId ? { ...test, result: updater(test.result) } : test,
+        test.id === testId ? { ...test, result: applyDerivedStatus(updater(test.result)) } : test,
       ),
     }));
   }, [updateBlock]);
@@ -1899,8 +1966,20 @@ export default function App() {
           {
             ...block,
             tests: block.tests.map((test) =>
-              test.result.checks.newIssue && getCorrectionGroupKey(blockKey, test) === groupKey
-                ? { ...test, correction: updater(getTestCorrection(test)) }
+              test.result.errors.some(
+                (error) => error.origin === "new" && getCorrectionGroupKey(blockKey, test, error) === groupKey,
+              )
+                ? {
+                    ...test,
+                    result: {
+                      ...test.result,
+                      errors: test.result.errors.map((error) =>
+                        error.origin === "new" && getCorrectionGroupKey(blockKey, test, error) === groupKey
+                          ? { ...error, correction: updater(error.correction) }
+                          : error,
+                      ),
+                    },
+                  }
                 : test,
             ),
           },
@@ -2963,6 +3042,9 @@ export default function App() {
             onSubActivityChange={updateTeaSubActivity}
             onSubActivityRemove={removeTeaSubActivity}
             onSubActivityMove={moveTeaSubActivity}
+            onSubActivityDuplicate={(activityId, subActivityId) => {
+              void duplicateTeaSubActivityInPlace(activityId, subActivityId);
+            }}
             onSubActivityCopy={openTeaSubActivityCopyModal}
             onActivityCollapseChange={setTeaActivityCollapsed}
             onSubActivityCollapseChange={setTeaSubActivityCollapsed}
@@ -3082,6 +3164,7 @@ const TeaWorkspace = memo(function TeaWorkspace({
   onSubActivityChange,
   onSubActivityRemove,
   onSubActivityMove,
+  onSubActivityDuplicate,
   onSubActivityCopy,
   onActivityCollapseChange,
   onSubActivityCollapseChange,
@@ -3339,6 +3422,9 @@ const TeaWorkspace = memo(function TeaWorkspace({
                 onSubActivityMove={(subActivityId, direction) =>
                   onSubActivityMove(activity.id, subActivityId, direction)
                 }
+                onSubActivityDuplicate={(subActivityId) =>
+                  onSubActivityDuplicate(activity.id, subActivityId)
+                }
                 onSubActivityCopy={(subActivityIds) =>
                   onSubActivityCopy(activity.id, subActivityIds)
                 }
@@ -3456,6 +3542,7 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
   onSubActivityChange,
   onSubActivityRemove,
   onSubActivityMove,
+  onSubActivityDuplicate,
   onSubActivityCopy,
   onCollapseChange,
   onSubActivityCollapseChange,
@@ -3630,6 +3717,7 @@ const TeaActivityEditor = memo(function TeaActivityEditor({
               onChange={(updater) => onSubActivityChange(subActivity.id, updater)}
               onRemove={() => onSubActivityRemove(subActivity.id)}
               onMove={(direction) => onSubActivityMove(subActivity.id, direction)}
+              onDuplicate={() => onSubActivityDuplicate(subActivity.id)}
               onCopy={() => onSubActivityCopy([subActivity.id])}
               onCollapseChange={(collapsed) =>
                 onSubActivityCollapseChange(subActivity.id, collapsed)
@@ -3661,6 +3749,7 @@ const TeaSubActivityEditor = memo(function TeaSubActivityEditor({
   onChange,
   onRemove,
   onMove,
+  onDuplicate,
   onCopy,
   onCollapseChange,
   onComposerCollapseChange,
@@ -3743,6 +3832,7 @@ const TeaSubActivityEditor = memo(function TeaSubActivityEditor({
             canMoveUp={index > 0}
             canMoveDown={index < totalSubActivities - 1}
             onMove={onMove}
+            onDuplicate={onDuplicate}
             onCopy={onCopy}
             onRemove={confirmAndRemove}
           />
@@ -4310,12 +4400,14 @@ function TeaSubActivityActionsMenu({
   canMoveUp,
   canMoveDown,
   onMove,
+  onDuplicate,
   onCopy,
   onRemove,
 }: {
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMove: (direction: MoveDirection) => void;
+  onDuplicate: () => void;
   onCopy: () => void;
   onRemove: () => void;
 }) {
@@ -4328,6 +4420,8 @@ function TeaSubActivityActionsMenu({
       canMoveUp={canMoveUp}
       canMoveDown={canMoveDown}
       onMove={onMove}
+      duplicateLabel="Duplicar subtópico"
+      onDuplicate={onDuplicate}
       copyLabel="Copiar subtópico"
       onCopy={onCopy}
       onRemove={onRemove}
@@ -4339,26 +4433,35 @@ function TeaMoveRemoveMenu({
   ariaLabel,
   upLabel,
   downLabel,
+  duplicateLabel,
   copyLabel,
   removeLabel,
   canMoveUp,
   canMoveDown,
   onMove,
+  onDuplicate,
   onCopy,
   onRemove,
 }: {
   ariaLabel: string;
   upLabel: string;
   downLabel: string;
+  duplicateLabel?: string;
   copyLabel?: string;
   removeLabel: string;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMove: (direction: MoveDirection) => void;
+  onDuplicate?: () => void;
   onCopy?: () => void;
   onRemove: () => void;
 }) {
   const [opened, setOpened] = useState(false);
+
+  function duplicate(): void {
+    onDuplicate?.();
+    setOpened(false);
+  }
 
   function copy(): void {
     onCopy?.();
@@ -4393,8 +4496,14 @@ function TeaMoveRemoveMenu({
         </span>
       </Menu.Target>
       <Menu.Dropdown>
+        {onDuplicate ? (
+          <Menu.Item leftSection={<Copy size={15} />} onClick={duplicate}>
+            {duplicateLabel ?? "Duplicar"}
+          </Menu.Item>
+        ) : null}
         {onCopy ? (
           <>
+            {onDuplicate ? <Menu.Divider /> : null}
             <Menu.Item leftSection={<Copy size={15} />} onClick={copy}>
               {copyLabel ?? "Copiar"}
             </Menu.Item>
@@ -5520,7 +5629,7 @@ const BlockTestEditor = memo(function BlockTestEditor({
   const title = useBufferedText(test.title, commitTitle);
 
   function toggleCheck(key: CheckKey): void {
-    if (key === "errorReport") {
+    if (key !== "sameBehavior" && key !== "possibleIssue") {
       return;
     }
 
@@ -5602,15 +5711,23 @@ const BlockTestEditor = memo(function BlockTestEditor({
               <Paper withBorder p="sm" className="quickChecksPanel">
                 <Stack gap="xs">
                   <Text fw={750} size="sm">
-                    Status rapido
+                    Status geral
                   </Text>
                   <Group gap={6} className="quickChecks">
                     {checkOrder.map((key) => {
-                      const effectiveChecks = getEffectiveChecks(test.result.checks);
+                      const effectiveChecks = getEffectiveChecks(
+                        test.result.checks,
+                        test.result.errors,
+                      );
                       const isActive = effectiveChecks[key];
-                      const isDerived = key === "errorReport";
+                      const isDerived =
+                        key === "bothIssue" || key === "newIssue" || key === "errorReport";
+                      const isDisabled =
+                        isDerived || (key === "sameBehavior" && test.result.errors.length > 0);
                       const tooltipLabel = isDerived
-                        ? "Relatório de Erros fica ativo quando Legado está ativo."
+                        ? "Status derivado dos erros adicionados."
+                        : isDisabled
+                          ? "OK fica indisponivel enquanto houver erro adicionado."
                         : checkLabels[key];
 
                       return (
@@ -5621,7 +5738,7 @@ const BlockTestEditor = memo(function BlockTestEditor({
                               aria-pressed={isActive}
                               aria-label={
                                 isDerived
-                                  ? "Relatório de Erros: ativo quando Legado está ativo"
+                                  ? `${checkLabels[key]}: derivado dos erros adicionados`
                                   : `Alternar ${checkLabels[key]}`
                               }
                               className={[
@@ -5631,7 +5748,7 @@ const BlockTestEditor = memo(function BlockTestEditor({
                               ]
                                 .filter(Boolean)
                                 .join(" ")}
-                              disabled={isDerived}
+                              disabled={isDisabled}
                               onClick={() => toggleCheck(key)}
                             >
                               {renderCheckIcon(key, 14)}
@@ -5783,7 +5900,7 @@ function CorrectionPanel({
         </Stack>
       ) : (
         <Paper withBorder p="md" ta="center" className="softEmpty">
-          <Text c="dimmed">Nenhum teste marcado como Novo.</Text>
+          <Text c="dimmed">Nenhum erro marcado como Novo.</Text>
         </Paper>
       )}
     </Section>
@@ -6077,11 +6194,8 @@ function CorrectionGroupCard({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const panelId = `correction-details-${toDomId(group.key)}`;
-  const legacyImages = group.occurrences.flatMap((occurrence) => occurrence.test.result.legacyImages);
-  const newImages = group.occurrences.flatMap((occurrence) => occurrence.test.result.newImages);
-  const observations = group.occurrences
-    .map((occurrence) => occurrence.test.result.observations.trim())
-    .filter(Boolean);
+  const errorImages = group.error.images;
+  const observations = [group.error.observation.trim()].filter(Boolean);
   const hasBeforeImage = group.correction.beforeImages.length > 0;
   const hasAfterImage = group.correction.afterImages.length > 0;
   const canToggleCorrected = hasBeforeImage && hasAfterImage;
@@ -6147,8 +6261,9 @@ function CorrectionGroupCard({
                 )}
               </Group>
               <Text c="dimmed" size="xs">
-                {formatOtCount(group.occurrences.length, "ocorrencia", "ocorrencias")}{" "}
-                {group.occurrences.length === 1 ? "agrupada" : "agrupadas"}
+                {group.occurrences[0]
+                  ? `${formatPermission(group.occurrences[0].macro)} / ${formatPermission(group.occurrences[0].micro)}`
+                  : "Erro no novo"}
               </Text>
               <SummaryChips items={correctionSummaryItems} />
             </div>
@@ -6177,10 +6292,13 @@ function CorrectionGroupCard({
                   )}
                 </CorrectionReadonlyField>
                 <CorrectionReadonlyField title="Legado">
-                  <ReadonlyImageStrip images={legacyImages} emptyLabel="Sem imagens do legado." />
+                  <ReadonlyImageStrip
+                    images={group.occurrences[0]?.test.result.legacyImages ?? []}
+                    emptyLabel="Sem evidencias gerais do legado."
+                  />
                 </CorrectionReadonlyField>
-                <CorrectionReadonlyField title="Novo">
-                  <ReadonlyImageStrip images={newImages} emptyLabel="Sem imagens do novo." />
+                <CorrectionReadonlyField title="Erro no Novo">
+                  <ReadonlyImageStrip images={errorImages} emptyLabel="Sem prints do erro." />
                 </CorrectionReadonlyField>
               </div>
 
@@ -6412,7 +6530,6 @@ const TestResultEditor = memo(function TestResultEditor({
     [onChange],
   );
   const observations = useBufferedText(result.observations, commitObservations);
-  const needsProblemObservation = hasProblemStatus(result) && !observations.value.trim();
 
   function updateImages(
     field: "legacyImages" | "newImages",
@@ -6424,15 +6541,38 @@ const TestResultEditor = memo(function TestResultEditor({
     }));
   }
 
+  function addError(origin: TestErrorOrigin): void {
+    onChange((current) => ({
+      ...current,
+      checks: {
+        ...current.checks,
+        sameBehavior: false,
+      },
+      errors: [...current.errors, createEmptyTestError(createId(), origin)],
+    }));
+  }
+
+  function updateError(
+    errorId: string,
+    updater: (error: TestError) => TestError,
+  ): void {
+    onChange((current) => ({
+      ...current,
+      errors: current.errors.map((error) => (error.id === errorId ? updater(error) : error)),
+    }));
+  }
+
+  function removeError(errorId: string): void {
+    onChange((current) => ({
+      ...current,
+      errors: current.errors.filter((error) => error.id !== errorId),
+    }));
+  }
+
   return (
     <Stack gap="md">
       <Textarea
         label="Observações"
-        error={
-          needsProblemObservation
-            ? "Obrigatoria quando o status indica problema ou erro."
-            : undefined
-        }
         minRows={4}
         styles={{ input: { resize: "vertical" } }}
         value={observations.value}
@@ -6442,6 +6582,61 @@ const TestResultEditor = memo(function TestResultEditor({
           observations.setValue(value);
         }}
       />
+
+      <Paper withBorder p="sm" className="testErrorsPanel">
+        <Stack gap="sm">
+          <Group justify="space-between" align="center" gap="sm">
+            <div>
+              <Text fw={750} size="sm">
+                Erros encontrados
+              </Text>
+              <Text c="dimmed" size="xs">
+                Cada erro deve indicar onde aconteceu e conter observacao e print.
+              </Text>
+            </div>
+            <Group gap="xs">
+              <Button
+                size="xs"
+                variant="light"
+                color="yellow"
+                leftSection={<AlertCircle size={15} />}
+                onClick={() => addError("legacy")}
+              >
+                Adicionar erro no Legado
+              </Button>
+              <Button
+                size="xs"
+                variant="light"
+                color="red"
+                leftSection={<AlertCircle size={15} />}
+                onClick={() => addError("new")}
+              >
+                Adicionar erro no Novo
+              </Button>
+            </Group>
+          </Group>
+
+          {result.errors.length > 0 ? (
+            <Stack gap="sm">
+              {result.errors.map((error, index) => (
+                <TestErrorEditor
+                  key={error.id}
+                  error={error}
+                  index={index}
+                  onChange={(updater) => updateError(error.id, updater)}
+                  onRemove={() => removeError(error.id)}
+                />
+              ))}
+            </Stack>
+          ) : (
+            <Paper withBorder p="sm" className="softEmpty">
+              <Text c="dimmed" size="sm">
+                Nenhum erro adicionado.
+              </Text>
+            </Paper>
+          )}
+        </Stack>
+      </Paper>
 
       <div className="evidenceGrid">
         <EvidenceUploader
@@ -6460,6 +6655,105 @@ const TestResultEditor = memo(function TestResultEditor({
     </Stack>
   );
 });
+
+const errorOriginOptions: Array<{ value: TestErrorOrigin; label: string }> = [
+  { value: "legacy", label: "Legado" },
+  { value: "new", label: "Novo" },
+];
+
+function TestErrorEditor({
+  error,
+  index,
+  onChange,
+  onRemove,
+}: {
+  error: TestError;
+  index: number;
+  onChange: (updater: (error: TestError) => TestError) => void;
+  onRemove: () => void;
+}) {
+  const confirmAction = useConfirmAction();
+  const originLabel = formatTestErrorOrigin(error.origin);
+  const hasObservationError = !error.observation.trim();
+  const hasImageError = error.images.length === 0;
+
+  function updateImages(updater: (images: EvidenceImage[]) => EvidenceImage[]): void {
+    onChange((current) => ({ ...current, images: updater(current.images) }));
+  }
+
+  function confirmRemove(): void {
+    confirmAction(
+      {
+        title: "Remover erro?",
+        description: `O erro ${index + 1} e seus prints serao removidos deste teste.`,
+        confirmLabel: "Remover erro",
+      },
+      () => {
+        void deleteEvidenceImageDataBatch([
+          ...error.images.map((image) => image.id),
+          ...error.correction.beforeImages.map((image) => image.id),
+          ...error.correction.afterImages.map((image) => image.id),
+        ]);
+        onRemove();
+      },
+    );
+  }
+
+  return (
+    <Paper withBorder p="sm" className="testErrorCard">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center" gap="sm">
+          <Group gap="xs" align="center">
+            <Badge color={error.origin === "new" ? "red" : "yellow"} variant="light">
+              Erro {index + 1}
+            </Badge>
+            <Text fw={750} size="sm">
+              {originLabel}
+            </Text>
+          </Group>
+          <Tooltip label="Remover erro">
+            <ActionIcon color="red" variant="subtle" onClick={confirmRemove} aria-label="Remover erro">
+              <Trash2 size={16} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+
+        <SegmentedControl
+          size="xs"
+          data={errorOriginOptions}
+          value={error.origin}
+          onChange={(value) =>
+            onChange((current) => ({
+              ...current,
+              origin: value === "legacy" ? "legacy" : "new",
+            }))
+          }
+        />
+
+        <BufferedTextarea
+          label="Observacao do erro"
+          value={error.observation}
+          minRows={3}
+          error={hasObservationError ? "Obrigatoria para cada erro." : undefined}
+          styles={{ input: { resize: "vertical" } }}
+          onCommit={(value) => onChange((current) => ({ ...current, observation: value }))}
+        />
+
+        <EvidenceUploader
+          title={`Prints do erro no ${originLabel}`}
+          tone={error.origin === "legacy" ? "legacy" : "new"}
+          images={error.images}
+          onChange={updateImages}
+        />
+        {hasImageError ? (
+          <Text c="red" size="xs" fw={700}>
+            Adicione ao menos um print para este erro.
+          </Text>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+}
 
 const EvidenceUploader = memo(function EvidenceUploader({
   title,
@@ -7890,26 +8184,37 @@ function testMatchesFilter(
   }
 
   if (filter === "withErrorReport") {
-    return getEffectiveChecks(test.result.checks).errorReport;
+    return getEffectiveChecks(test.result.checks, test.result.errors).errorReport;
   }
 
-  const effectiveChecks = getEffectiveChecks(test.result.checks);
+  const effectiveChecks = getEffectiveChecks(test.result.checks, test.result.errors);
 
   return problemCheckKeys.some((key) => effectiveChecks[key]);
 }
 
 function getTestImageCount(test: PermissionBlockTest): number {
-  return test.result.legacyImages.length + test.result.newImages.length;
+  return (
+    test.result.legacyImages.length +
+    test.result.newImages.length +
+    test.result.errors.reduce(
+      (total, error) =>
+        total +
+        error.images.length +
+        error.correction.beforeImages.length +
+        error.correction.afterImages.length,
+      0,
+    )
+  );
 }
 
 function getSelectedCheckKeys(result: TestResult): CheckKey[] {
-  const effectiveChecks = getEffectiveChecks(result.checks);
+  const effectiveChecks = getEffectiveChecks(result.checks, result.errors);
 
   return checkOrder.filter((key) => effectiveChecks[key]);
 }
 
 function hasProblemStatus(result: TestResult): boolean {
-  const effectiveChecks = getEffectiveChecks(result.checks);
+  const effectiveChecks = getEffectiveChecks(result.checks, result.errors);
 
   return problemCheckKeys.some((key) => effectiveChecks[key]);
 }
@@ -7922,7 +8227,7 @@ function testHasPendingReview(test: PermissionBlockTest): boolean {
     selectedCheckCount === 0 ||
     test.result.legacyImages.length === 0 ||
     test.result.newImages.length === 0 ||
-    (hasProblemStatus(test.result) && !test.result.observations.trim())
+    test.result.errors.some((error) => !error.observation.trim() || error.images.length === 0)
   );
 }
 
@@ -8094,6 +8399,7 @@ function buildTestSummaryItems(test: PermissionBlockTest): string[] {
     `${getSelectedCheckKeys(test.result).length}/${checkOrder.length} checks`,
     `Legado ${test.result.legacyImages.length}`,
     `Novo ${test.result.newImages.length}`,
+    formatOtCount(test.result.errors.length, "erro", "erros"),
   ];
 
   if (getTestCorrection(test).corrected) {
@@ -8113,30 +8419,26 @@ function buildCorrectionGroups(
     const block = documentData.permissionBlocks[entry.key] ?? emptyPermissionBlock;
 
     block.tests.forEach((test, testIndex) => {
-      if (!test.result.checks.newIssue) {
-        return;
-      }
-
-      const key = getCorrectionGroupKey(entry.key, test);
       const referenceKey = createTestReferenceKey(entry.key, test.id);
-      const occurrence: CorrectionOccurrence = {
-        ...entry,
-        test,
-        testIndex,
-        referenceKey,
-      };
-      const existing = groups.get(key);
+      const newErrors = test.result.errors.filter((error) => error.origin === "new");
 
-      if (existing) {
-        existing.occurrences.push(occurrence);
-        return;
-      }
+      newErrors.forEach((error, errorIndex) => {
+        const key = getCorrectionGroupKey(entry.key, test, error);
+        const occurrence: CorrectionOccurrence = {
+          ...entry,
+          test,
+          error,
+          testIndex,
+          referenceKey,
+        };
 
-      groups.set(key, {
-        key,
-        title: test.title.trim() || `Teste ${testIndex + 1} sem nome`,
-        occurrences: [occurrence],
-        correction: getTestCorrection(test),
+        groups.set(key, {
+          key,
+          title: `${test.title.trim() || `Teste ${testIndex + 1} sem nome`} - Erro ${errorIndex + 1}`,
+          occurrences: [occurrence],
+          error,
+          correction: error.correction,
+        });
       });
     });
   });
@@ -8144,18 +8446,42 @@ function buildCorrectionGroups(
   return Array.from(groups.values());
 }
 
-function getCorrectionGroupKey(blockKey: string, test: PermissionBlockTest): string {
-  const normalizedTitle = normalizeTextKey(test.title);
-  return normalizedTitle ? `block:${blockKey}:title:${normalizedTitle}` : `single:${blockKey}:${test.id}`;
+function getCorrectionGroupKey(
+  blockKey: string,
+  test: PermissionBlockTest,
+  error: TestError,
+): string {
+  return `block:${blockKey}:test:${test.id}:error:${error.id}`;
 }
 
 function getTestCorrection(test: PermissionBlockTest): TestCorrection {
+  const newErrors = test.result.errors.filter((error) => error.origin === "new");
+
+  if (newErrors.length > 0) {
+    const corrections = newErrors.map((error) => error.correction);
+    const firstCloudStage =
+      corrections.find((correction) => correction.cloudStage !== "none")?.cloudStage ?? "none";
+
+    return {
+      corrected: corrections.every((correction) => correction.corrected),
+      beforeImages: corrections.flatMap((correction) => correction.beforeImages),
+      afterImages: corrections.flatMap((correction) => correction.afterImages),
+      hotfixTag: joinUnique(corrections.map((correction) => correction.hotfixTag.trim())),
+      correctedBy: joinUnique(corrections.map((correction) => correction.correctedBy.trim())),
+      cloudStage: firstCloudStage,
+    };
+  }
+
   return {
     ...createEmptyTestCorrection(),
     ...test.correction,
     beforeImages: test.correction?.beforeImages ?? [],
     afterImages: test.correction?.afterImages ?? [],
   };
+}
+
+function joinUnique(values: string[]): string {
+  return Array.from(new Set(values.filter(Boolean))).join(", ");
 }
 
 function buildCorrectionFilterCounts(groups: CorrectionGroup[]): Record<CorrectionFilter, number> {
@@ -8269,6 +8595,10 @@ function parseCloudStage(value: string | null): TestCorrection["cloudStage"] {
 
 function formatCloudStage(value: TestCorrection["cloudStage"]): string {
   return cloudStageOptions.find((option) => option.value === value)?.label ?? "Nao enviado";
+}
+
+function formatTestErrorOrigin(origin: TestErrorOrigin): string {
+  return origin === "legacy" ? "Legado" : "Novo";
 }
 
 function loadOutlineHiddenPreference(): boolean {
@@ -8712,7 +9042,7 @@ function buildReviewSummary(
       }`;
 
       summary.testCount += 1;
-      summary.imageCount += test.result.legacyImages.length + test.result.newImages.length;
+      summary.imageCount += getTestImageCount(test);
 
       if (!test.title.trim()) {
         summary.issues.push({
@@ -8766,18 +9096,35 @@ function buildReviewSummary(
         });
       }
 
-      if (hasProblemStatus(test.result) && !test.result.observations.trim()) {
-        summary.issues.push({
-          id: `missing-problem-observation-${referenceKey}`,
-          severity: "warning",
-          label: "Observacao obrigatoria",
-          detail: `${testLabel}: status com problema ou erro exige observacao.`,
-          tab: "tests",
-          targetId,
-          blockKey: entry.key,
-          testId: test.id,
-        });
-      }
+      test.result.errors.forEach((error, errorIndex) => {
+        const errorLabel = `${testLabel} / Erro ${errorIndex + 1} (${formatTestErrorOrigin(error.origin)})`;
+
+        if (!error.observation.trim()) {
+          summary.issues.push({
+            id: `missing-error-observation-${referenceKey}-${error.id}`,
+            severity: "warning",
+            label: "Observacao do erro obrigatoria",
+            detail: `${errorLabel}: descreva o erro encontrado.`,
+            tab: "tests",
+            targetId,
+            blockKey: entry.key,
+            testId: test.id,
+          });
+        }
+
+        if (error.images.length === 0) {
+          summary.issues.push({
+            id: `missing-error-image-${referenceKey}-${error.id}`,
+            severity: "danger",
+            label: "Print do erro ausente",
+            detail: `${errorLabel}: adicione ao menos um print do erro.`,
+            tab: "tests",
+            targetId,
+            blockKey: entry.key,
+            testId: test.id,
+          });
+        }
+      });
     });
   });
 
@@ -9250,7 +9597,11 @@ function splitBulkLines(value: string): string[] {
 }
 
 function teaItemsFromBulk(value: string): string[] {
-  return splitBulkLines(value).filter(Boolean);
+  if (!value) {
+    return [];
+  }
+
+  return value.replace(/\r\n/g, "\n").split("\n");
 }
 
 function updateTeaItemsFromBulk(
