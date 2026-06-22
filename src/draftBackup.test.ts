@@ -332,6 +332,7 @@ function createResult(checks: Partial<Record<CheckKey, boolean>>): TestResult {
     observations: "",
     legacyImages: [],
     newImages: [],
+    errors: [],
   };
 }
 

@@ -2,6 +2,7 @@ import mammoth from "mammoth";
 import {
   checkLabelAliases,
   checkOrder,
+  createEmptyTestError,
   createEmptyTestCorrection,
   createEmptyTestResult,
   createPermissionKey,
@@ -957,15 +958,70 @@ function parseObservation(token: Token, test: PermissionBlockTest | undefined): 
   }
 }
 
-function parseCorrection(token: Token, state: ParserState): boolean {
+function parseTestError(token: Token, state: ParserState): boolean {
   if (!state.currentTest) {
     return false;
   }
 
   const normalized = normalizeText(token.text);
 
+  if (normalized === "erros encontrados" || normalized === "erros encontrados:") {
+    state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+    state.pendingImageLabel = undefined;
+    return true;
+  }
+
+  const headingMatch = token.text.match(/^\s*Erro\s+\d+\s*[-–]\s*(.+)$/i);
+
+  if (headingMatch) {
+    const origin = parseTestErrorOrigin(headingMatch[1]);
+    const error = createEmptyTestError(
+      createImportId("error", `${state.currentTest.id}-${state.currentTest.result.errors.length + 1}`),
+      origin,
+    );
+
+    state.currentTest.result.errors.push(error);
+    state.currentError = error;
+    state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+    state.pendingImageLabel = undefined;
+    return true;
+  }
+
+  if (!state.currentError || !token.cells || token.cells.length < 2) {
+    return false;
+  }
+
+  const label = normalizeText(token.cells[0]);
+  const value = cleanText(token.cells.slice(1).join(" "));
+
+  if (label.includes("origem")) {
+    state.currentError.origin = parseTestErrorOrigin(value);
+    return true;
+  }
+
+  if (label.includes("observacao") || label.includes("observacoes")) {
+    state.currentError.observation = value;
+    return true;
+  }
+
+  return false;
+}
+
+function parseCorrection(token: Token, state: ParserState): boolean {
+  if (!state.currentTest) {
+    return false;
+  }
+
+  const normalized = normalizeText(token.text);
+  const correction = state.currentError?.correction ?? getImportCorrection(state.currentTest);
+
   if (normalized === "correcao:" || normalized === "correcao") {
     state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = undefined;
     return true;
@@ -974,7 +1030,6 @@ function parseCorrection(token: Token, state: ParserState): boolean {
   if (token.cells && token.cells.length >= 2) {
     const label = normalizeText(token.cells[0]);
     const value = cleanText(token.cells.slice(1).join(" "));
-    const correction = getImportCorrection(state.currentTest);
 
     if (label.includes("corrigido por")) {
       correction.correctedBy = value;
@@ -1006,17 +1061,26 @@ function parseEvidence(token: Token, state: ParserState): void {
   if (isCorrectionBeforeHeading(token.text)) {
     state.currentCorrectionEvidence = "beforeImages";
     state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
     state.pendingImageLabel = extractCorrectionEvidenceLabel(token.text, "antes");
   } else if (isCorrectionAfterHeading(token.text)) {
     state.currentCorrectionEvidence = "afterImages";
     state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
     state.pendingImageLabel = extractCorrectionEvidenceLabel(token.text, "depois");
+  } else if (isErrorEvidenceHeading(token.text)) {
+    state.currentErrorEvidence = true;
+    state.currentEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+    state.pendingImageLabel = extractErrorEvidenceLabel(token.text);
   } else if (normalized.includes("legado")) {
     state.currentEvidence = "legacyImages";
+    state.currentErrorEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = extractEvidenceLabel(token.text, "legado");
   } else if (normalized.includes("novo")) {
     state.currentEvidence = "newImages";
+    state.currentErrorEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = extractEvidenceLabel(token.text, "novo");
   }
@@ -1034,7 +1098,7 @@ function parseEvidence(token: Token, state: ParserState): void {
 
   if (state.currentCorrectionEvidence) {
     const field = state.currentCorrectionEvidence;
-    const correction = getImportCorrection(state.currentTest);
+    const correction = state.currentError?.correction ?? getImportCorrection(state.currentTest);
     const label = extractCorrectionEvidenceLabel(
       token.text,
       field === "beforeImages" ? "antes" : "depois",
@@ -1043,6 +1107,23 @@ function parseEvidence(token: Token, state: ParserState): void {
     token.images.forEach((image) => {
       state.imageCount += 1;
       correction[field].push({
+        ...image,
+        id: createImportId("image", `${state.imageCount}-${image.dataUrl ?? image.name}`),
+        name: `imagem-importada-${state.imageCount}`,
+        label: label || state.pendingImageLabel || "",
+      });
+    });
+
+    state.pendingImageLabel = undefined;
+    return;
+  }
+
+  if (state.currentErrorEvidence && state.currentError) {
+    const label = extractErrorEvidenceLabel(token.text);
+
+    token.images.forEach((image) => {
+      state.imageCount += 1;
+      state.currentError?.images.push({
         ...image,
         id: createImportId("image", `${state.imageCount}-${image.dataUrl ?? image.name}`),
         name: `imagem-importada-${state.imageCount}`,
@@ -1145,8 +1226,31 @@ function parseCloudStageText(value: string): TestCorrection["cloudStage"] {
   return "none";
 }
 
+function parseTestErrorOrigin(value: string): TestError["origin"] {
+  const normalized = normalizeText(value);
+
+  if (normalized.includes("legado")) {
+    return "legacy";
+  }
+
+  return "new";
+}
+
 function isCorrectionEvidenceHeading(text: string): boolean {
   return isCorrectionBeforeHeading(text) || isCorrectionAfterHeading(text);
+}
+
+function isErrorEvidenceHeading(text: string): boolean {
+  const normalized = normalizeText(text);
+
+  return (
+    normalized === "prints do erro" ||
+    normalized === "print do erro" ||
+    normalized.startsWith("prints do erro ") ||
+    normalized.startsWith("print do erro ") ||
+    normalized === "evidencias do erro" ||
+    normalized.startsWith("evidencias do erro ")
+  );
 }
 
 function isCorrectionBeforeHeading(text: string): boolean {
@@ -1409,6 +1513,16 @@ function extractCorrectionEvidenceLabel(text: string, heading: "antes" | "depois
   return cleaned;
 }
 
+function extractErrorEvidenceLabel(text: string): string {
+  const cleaned = cleanText(text.replace(/^prints?\s+do\s+erro\s*:?\s*/i, ""));
+
+  if (!cleaned || isErrorEvidenceHeading(cleaned)) {
+    return "";
+  }
+
+  return cleaned;
+}
+
 function isEvidenceHeading(text: string): boolean {
   const normalized = normalizeText(text);
 
@@ -1417,6 +1531,7 @@ function isEvidenceHeading(text: string): boolean {
     normalized === "legado:" ||
     normalized === "novo" ||
     normalized === "novo:" ||
+    isErrorEvidenceHeading(text) ||
     isCorrectionEvidenceHeading(text)
   );
 }

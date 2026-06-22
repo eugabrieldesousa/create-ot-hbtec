@@ -246,6 +246,7 @@ function createOtImageDocument(): OtDocument {
               observations: "",
               legacyImages: [],
               newImages: [],
+              errors: [],
             },
             correction: {
               corrected: true,

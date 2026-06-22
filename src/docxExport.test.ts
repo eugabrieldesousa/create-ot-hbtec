@@ -585,6 +585,7 @@ function createOtDocumentForExport(): OtDocument {
               observations: "Primeira linha\nSegunda linha\nTerceira linha",
               legacyImages: [createExportImage("legacy", "Legado")],
               newImages: [createExportImage("new", "Novo")],
+              errors: [],
             },
             correction: {
               corrected: true,

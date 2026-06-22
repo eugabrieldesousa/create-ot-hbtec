@@ -236,6 +236,7 @@ function createOtPreviewDocument(): OtDocument {
                 },
               ],
               newImages: [createImage("new", "Novo ok", 1000, 500)],
+              errors: [],
             },
             correction: {
               corrected: true,
