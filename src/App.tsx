@@ -84,6 +84,15 @@ import { mapWithConcurrency } from "./asyncUtils";
 import { buildOtPreviewModel, buildTeaPreviewModel } from "./docxPreviewModel";
 import type { DocxPreviewModel } from "./docxPreviewModel";
 import type { DocxImportResult } from "./docxImport";
+import {
+  applyOtDocxMerge,
+  applyTeaDocxMerge,
+  findMatchingOtMergeTarget,
+  type MergeInsertPosition,
+  type OtDocxMergeSelection,
+  type OtDocxMergeTarget,
+  type TeaDocxMergeSelection,
+} from "./docxMerge";
 import type { DocxExportImageProblem, DocxExportKind } from "./docxExport";
 import { LoadingFeedback } from "./LoadingFeedback";
 import {
@@ -132,6 +141,13 @@ type PermissionBlockEntry = {
 type FilteredPermissionBlockEntry = PermissionBlockEntry & {
   block: PermissionBlock;
   sourceBlock: PermissionBlock;
+};
+
+type OtMergeSourceGroup = {
+  key: string;
+  macro: PermissionGroup;
+  micro: PermissionItem;
+  tests: PermissionBlockTest[];
 };
 
 type PermissionGroupEditorProps = {
@@ -713,8 +729,10 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isMergingImport, setIsMergingImport] = useState(false);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
   const [isConfirmingImport, setIsConfirmingImport] = useState(false);
+  const [isConfirmingMergeImport, setIsConfirmingMergeImport] = useState(false);
   const [isConfirmingAction, setIsConfirmingAction] = useState(false);
   const [isCopyingTeaSubActivity, setIsCopyingTeaSubActivity] = useState(false);
   const [otFindText, setOtFindText] = useState("");
@@ -722,6 +740,7 @@ export default function App() {
   const [teaFindText, setTeaFindText] = useState("");
   const [teaReplaceText, setTeaReplaceText] = useState("");
   const [importPreview, setImportPreview] = useState<DocxImportResult | null>(null);
+  const [mergeImportPreview, setMergeImportPreview] = useState<DocxImportResult | null>(null);
   const [exportImageError, setExportImageError] = useState<ExportImageErrorState | null>(null);
   const [backupNotice, setBackupNotice] = useState<BackupNoticeState | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
@@ -736,6 +755,7 @@ export default function App() {
   const documentKindRef = useRef<DocumentKind>(documentKind);
   const permissionBulkTextRef = useRef(permissionBulkText);
   const backupImportInputRef = useRef<HTMLInputElement | null>(null);
+  const mergeImportInputRef = useRef<HTMLInputElement | null>(null);
   documentDataRef.current = documentData;
   teaDataRef.current = teaData;
   documentKindRef.current = documentKind;
@@ -2199,6 +2219,150 @@ export default function App() {
     }
   }
 
+  async function handleMergeImportFile(file: File | null): Promise<void> {
+    if (!file || isGlobalLoading) {
+      return;
+    }
+
+    flushBufferedCommits();
+    flushDraft();
+    setIsMergingImport(true);
+
+    try {
+      await runWithGlobalLoading(
+        {
+          label: "Lendo DOCX para juntar...",
+          detail: "Reconhecendo os blocos disponiveis para selecao.",
+        },
+        async () => {
+          const { parseDocxFile } = await import("./docxImport");
+
+          setMergeImportPreview(await parseDocxFile(file, documentKindRef.current));
+        },
+      );
+    } catch {
+      window.alert("Nao foi possivel ler este DOCX para juntar.");
+    } finally {
+      setIsMergingImport(false);
+    }
+  }
+
+  async function confirmTeaMergeImport(selection: TeaDocxMergeSelection): Promise<void> {
+    if (!mergeImportPreview || mergeImportPreview.kind !== "tea" || isConfirmingMergeImport) {
+      return;
+    }
+
+    setIsConfirmingMergeImport(true);
+
+    try {
+      const mergeResult = applyTeaDocxMerge(
+        teaDataRef.current,
+        mergeImportPreview.document,
+        selection,
+        createId,
+      );
+      let nextDocument = mergeResult.document;
+
+      try {
+        nextDocument = await persistEmbeddedTeaImages(nextDocument);
+      } catch {
+        window.alert("O TEA foi juntado, mas algumas imagens podem nao ficar salvas no rascunho.");
+      }
+
+      setTeaData(nextDocument);
+      mergeResult.insertedActivityIds.forEach((activityId) => {
+        setTeaActivityCollapsed(activityId, false);
+        setTeaComposerCollapsed(activityId, false);
+      });
+      mergeResult.insertedSubActivityIds.forEach((subActivityId) => {
+        setTeaSubActivityCollapsed(subActivityId, false);
+        setTeaComposerCollapsed(subActivityId, false);
+      });
+      setTeaActiveTab("activities");
+      setMergeImportPreview(null);
+
+      window.setTimeout(() => {
+        const firstActivityId = mergeResult.insertedActivityIds[0];
+        const firstSubActivityId = mergeResult.insertedSubActivityIds[0];
+        const targetId = firstActivityId
+          ? `tea-activity-${toDomId(firstActivityId)}`
+          : firstSubActivityId
+            ? `tea-subactivity-${toDomId(firstSubActivityId)}`
+            : null;
+
+        if (targetId) {
+          scrollAndFocusReviewTarget(targetId);
+        }
+      }, 80);
+    } finally {
+      setIsConfirmingMergeImport(false);
+    }
+  }
+
+  async function confirmOtMergeImport(selection: OtDocxMergeSelection): Promise<void> {
+    if (!mergeImportPreview || mergeImportPreview.kind !== "ot" || isConfirmingMergeImport) {
+      return;
+    }
+
+    setIsConfirmingMergeImport(true);
+
+    try {
+      const mergeResult = applyOtDocxMerge(
+        documentDataRef.current,
+        mergeImportPreview.document,
+        selection,
+        createId,
+      );
+      let nextDocument = mergeResult.document;
+
+      try {
+        nextDocument = await persistEmbeddedEvidenceImages(nextDocument);
+      } catch {
+        window.alert("A OT foi juntada, mas algumas imagens podem nao ficar salvas no rascunho.");
+      }
+
+      setDocumentData(nextDocument);
+      setPermissionBulkText(formatPermissionBulk(nextDocument.permissionGroups));
+      setCollapsedPermissionBlocks((current) => {
+        let next = current;
+        mergeResult.insertedBlockKeys.forEach((blockKey) => {
+          next = setCollapsedMapValue(next, blockKey, false);
+        });
+        return next;
+      });
+      setCollapsedMacros((current) => {
+        let next = current;
+        mergeResult.insertedBlockKeys.forEach((blockKey) => {
+          next = setCollapsedMapValue(next, getMacroIdFromBlockKey(blockKey), false);
+        });
+        return next;
+      });
+      setExpandedTests((current) => ({
+        ...current,
+        ...Object.fromEntries(
+          mergeResult.insertedTestReferences.map((reference) => [
+            createTestReferenceKey(reference.blockKey, reference.testId),
+            true,
+          ]),
+        ),
+      }));
+      setActiveTab("tests");
+      setMergeImportPreview(null);
+
+      window.setTimeout(() => {
+        const firstReference = mergeResult.insertedTestReferences[0];
+
+        if (firstReference) {
+          scrollAndFocusReviewTarget(
+            `test-card-${toDomId(createTestReferenceKey(firstReference.blockKey, firstReference.testId))}`,
+          );
+        }
+      }, 80);
+    } finally {
+      setIsConfirmingMergeImport(false);
+    }
+  }
+
   async function confirmImport(): Promise<void> {
     if (!importPreview || isConfirmingImport) {
       return;
@@ -2345,6 +2509,13 @@ export default function App() {
 
     event.currentTarget.value = "";
     void handleImportBackupFile(file);
+  }
+
+  function handleMergeImportInputChange(event: ChangeEvent<HTMLInputElement>): void {
+    const file = event.currentTarget.files?.[0] ?? null;
+
+    event.currentTarget.value = "";
+    void handleMergeImportFile(file);
   }
 
   async function handleExportBackup(kind: DocumentKind = documentKindRef.current): Promise<void> {
@@ -2506,7 +2677,7 @@ export default function App() {
 
   const topBarStatusText = globalLoading?.label ?? draftStatus;
   const topBarStatusColor = globalLoading ? "blue" : draftStatusColor(draftStatus);
-  const topBarStatusIcon = isImporting || isImportingBackup ? (
+  const topBarStatusIcon = isImporting || isMergingImport || isImportingBackup ? (
     <FileUp size={14} />
   ) : isExporting || isBackingUp ? (
     <Download size={14} />
@@ -2617,6 +2788,13 @@ export default function App() {
                     onClick={() => backupImportInputRef.current?.click()}
                   >
                     Importar backup
+                  </Menu.Item>
+                  <Menu.Item
+                    leftSection={<ClipboardPaste size={15} />}
+                    disabled={isGlobalLoading && !isMergingImport}
+                    onClick={() => mergeImportInputRef.current?.click()}
+                  >
+                    Juntar DOCX
                   </Menu.Item>
                   <Menu.Item
                     leftSection={<Archive size={15} />}
@@ -3073,6 +3251,13 @@ export default function App() {
       </Tooltip>
     ) : null}
     </main>
+    <input
+      ref={mergeImportInputRef}
+      type="file"
+      accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      hidden
+      onChange={handleMergeImportInputChange}
+    />
     <ImportPreviewModal
       result={importPreview}
       isConfirming={isConfirmingImport}
@@ -3083,6 +3268,23 @@ export default function App() {
       }}
       onConfirm={() => {
         void confirmImport();
+      }}
+    />
+    <MergeImportModal
+      result={mergeImportPreview}
+      currentOtDocument={documentData}
+      currentTeaDocument={teaData}
+      isConfirming={isConfirmingMergeImport}
+      onClose={() => {
+        if (!isConfirmingMergeImport) {
+          setMergeImportPreview(null);
+        }
+      }}
+      onConfirmTea={(selection) => {
+        void confirmTeaMergeImport(selection);
+      }}
+      onConfirmOt={(selection) => {
+        void confirmOtMergeImport(selection);
       }}
     />
     <ExportImageErrorModal
@@ -7472,6 +7674,1107 @@ function ImportPreviewModal({
   );
 }
 
+function MergeImportModal({
+  result,
+  currentOtDocument,
+  currentTeaDocument,
+  isConfirming,
+  onClose,
+  onConfirmTea,
+  onConfirmOt,
+}: {
+  result: DocxImportResult | null;
+  currentOtDocument: OtDocument;
+  currentTeaDocument: TeaDocument;
+  isConfirming: boolean;
+  onClose: () => void;
+  onConfirmTea: (selection: TeaDocxMergeSelection) => void;
+  onConfirmOt: (selection: OtDocxMergeSelection) => void;
+}) {
+  return (
+    <Modal
+      opened={result !== null}
+      onClose={isConfirming ? () => undefined : onClose}
+      title="Juntar DOCX"
+      size="calc(100dvw - 32px)"
+      centered
+      closeOnClickOutside={!isConfirming}
+      closeOnEscape={!isConfirming}
+      classNames={{
+        content: "mergeImportModalContent",
+        body: "mergeImportModalBody",
+      }}
+    >
+      {result ? (
+        <Stack gap="md" className="mergeImportModalShell">
+          <div>
+            <Text fw={800}>
+              {result.kind === "tea"
+                ? result.summary.subject || result.sourceName
+                : result.summary.screen || result.sourceName}
+            </Text>
+            <Text size="sm" c="dimmed">
+              {result.sourceName}
+            </Text>
+          </div>
+
+          <div className="importMetrics">
+            {result.kind === "tea" ? (
+              <>
+                <ReviewMetric label="Atividades" value={result.summary.activities} />
+                <ReviewMetric label="Subtópicos" value={result.summary.subActivities} />
+                <ReviewMetric label="Blocos" value={result.summary.blocks} />
+              </>
+            ) : (
+              <>
+                <ReviewMetric label="Permissões" value={result.summary.selectedPermissions} />
+                <ReviewMetric label="Testes" value={result.summary.tests} />
+              </>
+            )}
+            <ReviewMetric label="Imagens" value={result.summary.images} />
+          </div>
+
+          <ImportWarnings warnings={result.warnings} />
+
+          {result.kind === "tea" ? (
+            <TeaMergeImportPanel
+              key={`tea-${result.sourceName}`}
+              result={result}
+              currentDocument={currentTeaDocument}
+              isConfirming={isConfirming}
+              onClose={onClose}
+              onConfirm={onConfirmTea}
+            />
+          ) : (
+            <OtMergeImportPanel
+              key={`ot-${result.sourceName}`}
+              result={result}
+              currentDocument={currentOtDocument}
+              isConfirming={isConfirming}
+              onClose={onClose}
+              onConfirm={onConfirmOt}
+            />
+          )}
+        </Stack>
+      ) : null}
+    </Modal>
+  );
+}
+
+type TeaReferencePreview =
+  | {
+      kind: "activity";
+      title: string;
+      activity: TeaActivity;
+    }
+  | {
+      kind: "subActivity";
+      title: string;
+      subActivity: TeaSubActivity;
+    };
+
+function TeaMergeImportPanel({
+  result,
+  currentDocument,
+  isConfirming,
+  onClose,
+  onConfirm,
+}: {
+  result: Extract<DocxImportResult, { kind: "tea" }>;
+  currentDocument: TeaDocument;
+  isConfirming: boolean;
+  onClose: () => void;
+  onConfirm: (selection: TeaDocxMergeSelection) => void;
+}) {
+  const [activityIds, setActivityIds] = useState<string[]>([]);
+  const [subActivityIds, setSubActivityIds] = useState<string[]>([]);
+  const [activityPositionValue, setActivityPositionValue] = useState("end");
+  const [subActivityTargetActivityId, setSubActivityTargetActivityId] = useState<string | null>(
+    currentDocument.activities[0]?.id ?? null,
+  );
+  const [subActivityPositionValue, setSubActivityPositionValue] = useState("end");
+  const [referencePreview, setReferencePreview] = useState<TeaReferencePreview | null>(null);
+  const selectedActivityIds = new Set(activityIds);
+  const selectedSubActivityIds = new Set(subActivityIds);
+  const looseSubActivityCount = result.document.activities.reduce(
+    (total, activity) =>
+      selectedActivityIds.has(activity.id)
+        ? total
+        : total +
+          activity.subActivities.filter((subActivity) =>
+            selectedSubActivityIds.has(subActivity.id),
+          ).length,
+    0,
+  );
+  const hasSelection = activityIds.length > 0 || looseSubActivityCount > 0;
+  const targetActivity = currentDocument.activities.find(
+    (activity) => activity.id === subActivityTargetActivityId,
+  );
+  const sourceActivityCount = result.document.activities.length;
+  const sourceSubActivityCount = result.document.activities.reduce(
+    (total, activity) => total + activity.subActivities.length,
+    0,
+  );
+  const selectedActivitySubActivityCount = result.document.activities.reduce(
+    (total, activity) =>
+      selectedActivityIds.has(activity.id) ? total + activity.subActivities.length : total,
+    0,
+  );
+  const selectedIncludedSubActivityCount = selectedActivitySubActivityCount + looseSubActivityCount;
+  const selectedItemCount = activityIds.length + looseSubActivityCount;
+  const activityPositionMode = getMergePositionMode(activityPositionValue);
+  const activityPositionTargetId = getMergePositionTargetId(activityPositionValue);
+  const subActivityPositionMode = getMergePositionMode(subActivityPositionValue);
+  const subActivityPositionTargetId = getMergePositionTargetId(subActivityPositionValue);
+  const activityReferenceOptions = buildTeaActivityReferenceOptions(currentDocument.activities);
+  const subActivityReferenceOptions = buildTeaSubActivityReferenceOptions(targetActivity);
+  const activityReferenceActivity = currentDocument.activities.find(
+    (activity) => activity.id === activityPositionTargetId,
+  );
+  const subActivityReferenceSubActivity = targetActivity?.subActivities.find(
+    (subActivity) => subActivity.id === subActivityPositionTargetId,
+  );
+  const activityReferenceDisabled =
+    activityIds.length === 0 ||
+    activityPositionMode === "end" ||
+    activityReferenceOptions.length === 0;
+  const subActivityReferenceDisabled =
+    looseSubActivityCount === 0 ||
+    subActivityPositionMode === "end" ||
+    subActivityReferenceOptions.length === 0;
+  const hasActivityPositionTarget =
+    activityPositionMode === "end" || Boolean(activityPositionTargetId);
+  const hasSubActivityPositionTarget =
+    subActivityPositionMode === "end" || Boolean(subActivityPositionTargetId);
+  const canConfirm =
+    hasSelection &&
+    (activityIds.length === 0 || hasActivityPositionTarget) &&
+    (looseSubActivityCount === 0 ||
+      (Boolean(subActivityTargetActivityId) && hasSubActivityPositionTarget));
+  const selectionSummary =
+    selectedItemCount === 0
+      ? "Selecione ao menos uma atividade ou subtópico do DOCX."
+      : `${activityIds.length} atividade(s) e ${selectedIncludedSubActivityCount} subtópico(s) serão juntados.`;
+  const destinationSummary = buildTeaMergeDestinationSummary({
+    selectedActivityCount: activityIds.length,
+    looseSubActivityCount,
+    activityPositionMode,
+    activityPositionTargetId,
+    subActivityTargetActivityId,
+    subActivityPositionMode,
+    subActivityPositionTargetId,
+    currentDocument,
+  });
+
+  function toggleActivity(activity: TeaActivity, checked: boolean): void {
+    setActivityIds((current) => toggleId(current, activity.id, checked));
+    setSubActivityIds((current) =>
+      checked
+        ? current.filter(
+            (subActivityId) =>
+              !activity.subActivities.some((subActivity) => subActivity.id === subActivityId),
+          )
+        : current,
+    );
+  }
+
+  function toggleSubActivity(subActivityId: string, checked: boolean): void {
+    setSubActivityIds((current) => toggleId(current, subActivityId, checked));
+  }
+
+  function selectAll(): void {
+    setActivityIds(result.document.activities.map((activity) => activity.id));
+    setSubActivityIds([]);
+  }
+
+  function clearSelection(): void {
+    setActivityIds([]);
+    setSubActivityIds([]);
+  }
+
+  function updateActivityPositionMode(mode: MergePositionMode): void {
+    setActivityPositionValue(
+      buildMergePositionValue(
+        mode,
+        activityPositionTargetId ?? currentDocument.activities[0]?.id ?? null,
+      ),
+    );
+  }
+
+  function updateSubActivityTargetActivity(activityId: string | null): void {
+    const nextTargetActivity = currentDocument.activities.find((activity) => activity.id === activityId);
+
+    setSubActivityTargetActivityId(activityId);
+    setSubActivityPositionValue(
+      buildMergePositionValue(
+        subActivityPositionMode,
+        subActivityPositionTargetId ?? nextTargetActivity?.subActivities[0]?.id ?? null,
+      ),
+    );
+  }
+
+  function updateSubActivityPositionMode(mode: MergePositionMode): void {
+    setSubActivityPositionValue(
+      buildMergePositionValue(
+        mode,
+        subActivityPositionTargetId ?? targetActivity?.subActivities[0]?.id ?? null,
+      ),
+    );
+  }
+
+  return (
+    <>
+      <Stack gap="md" className="mergeImportWorkspace">
+      <div className="mergeImportLayout">
+        <Paper withBorder p="md" className="mergeSourcePanel">
+          <Stack gap="sm">
+            <Group justify="space-between" align="flex-start" gap="sm">
+              <div>
+                <Text fw={800}>Itens do DOCX</Text>
+                <Text size="sm" c="dimmed">
+                  {sourceActivityCount} atividade(s), {sourceSubActivityCount} subtópico(s)
+                </Text>
+              </div>
+              <Group gap={6}>
+                <Button size="xs" variant="light" onClick={selectAll} disabled={isConfirming}>
+                  Selecionar tudo
+                </Button>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  color="gray"
+                  onClick={clearSelection}
+                  disabled={isConfirming}
+                >
+                  Limpar
+                </Button>
+              </Group>
+            </Group>
+
+            <div className="mergeSelectionList">
+              {result.document.activities.map((activity, activityIndex) => {
+                const activityTitle = formatTeaEditorTitle(
+                  `2.${activityIndex + 1}`,
+                  activity.title,
+                  "Atividade sem titulo",
+                );
+                const isActivitySelected = selectedActivityIds.has(activity.id);
+
+                return (
+                  <div key={activity.id} className="mergeSelectionCard" data-selected={isActivitySelected}>
+                    <label className="mergeSelectionRow">
+                      <Checkbox
+                        checked={isActivitySelected}
+                        onChange={(event) => toggleActivity(activity, event.currentTarget.checked)}
+                        aria-label={activityTitle}
+                        disabled={isConfirming}
+                      />
+                      <span className="mergeSelectionCopy">
+                        <Text fw={750}>{activityTitle}</Text>
+                        <Text size="xs" c="dimmed">
+                          {activity.subActivities.length} subtópico(s)
+                        </Text>
+                      </span>
+                    </label>
+
+                    {activity.subActivities.length > 0 ? (
+                      <div className="mergeNestedList">
+                        {activity.subActivities.map((subActivity, subIndex) => {
+                          const subActivityTitle = formatTeaEditorTitle(
+                            `2.${activityIndex + 1}.${subIndex + 1}`,
+                            subActivity.title,
+                            "Subtopico sem titulo",
+                          );
+                          const isIncludedByActivity = selectedActivityIds.has(activity.id);
+                          const isSubActivitySelected = selectedSubActivityIds.has(subActivity.id);
+
+                          return (
+                            <label
+                              key={subActivity.id}
+                              className="mergeSelectionRow mergeSelectionRow--nested"
+                              data-selected={isIncludedByActivity || isSubActivitySelected}
+                              data-disabled={isIncludedByActivity}
+                            >
+                              <Checkbox
+                                checked={isIncludedByActivity || isSubActivitySelected}
+                                onChange={(event) =>
+                                  toggleSubActivity(subActivity.id, event.currentTarget.checked)
+                                }
+                                aria-label={subActivityTitle}
+                                disabled={isConfirming || isIncludedByActivity}
+                              />
+                              <span className="mergeSelectionCopy">
+                                <Text fw={650}>{subActivityTitle}</Text>
+                                {isIncludedByActivity ? (
+                                  <Text size="xs" c="dimmed">
+                                    Incluído pela atividade
+                                  </Text>
+                                ) : null}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </Stack>
+        </Paper>
+
+        <Paper withBorder p="md" className="mergeDestinationPanel">
+          <Stack gap="md">
+            <div>
+              <Text fw={800}>Onde inserir</Text>
+              <Text size="sm" c="dimmed">
+                Escolha o destino antes de juntar.
+              </Text>
+            </div>
+
+            <div className="mergeDestinationBlock" data-disabled={activityIds.length === 0}>
+              <Group justify="space-between" gap="xs">
+                <Text fw={750}>Atividades selecionadas</Text>
+                <Badge variant="light">{activityIds.length}</Badge>
+              </Group>
+              <SegmentedControl
+                fullWidth
+                value={activityPositionMode}
+                onChange={(value) => updateActivityPositionMode(value as MergePositionMode)}
+                data={[
+                  { label: "Fim", value: "end" },
+                  { label: "Antes", value: "before" },
+                  { label: "Depois", value: "after" },
+                ]}
+                disabled={activityIds.length === 0 || isConfirming}
+              />
+              <div className="mergeReferenceControl">
+                <Select
+                  label="Atividade de referência"
+                  value={activityPositionTargetId}
+                  data={activityReferenceOptions}
+                  onChange={(value) =>
+                    setActivityPositionValue(buildMergePositionValue(activityPositionMode, value))
+                  }
+                  disabled={activityReferenceDisabled || isConfirming}
+                  className="mergeReferenceSelect"
+                />
+                <Tooltip label="Ver conteúdo da atividade de referência">
+                  <ActionIcon
+                    variant="light"
+                    size="lg"
+                    className="mergeReferencePreviewButton"
+                    aria-label="Ver atividade de referência"
+                    disabled={activityReferenceDisabled || isConfirming || !activityReferenceActivity}
+                    onClick={() => {
+                      if (!activityReferenceActivity) {
+                        return;
+                      }
+
+                      setReferencePreview({
+                        kind: "activity",
+                        title:
+                          findTeaActivityTitle(currentDocument, activityReferenceActivity.id) ??
+                          "Atividade de referência",
+                        activity: activityReferenceActivity,
+                      });
+                    }}
+                  >
+                    <Eye size={17} />
+                  </ActionIcon>
+                </Tooltip>
+              </div>
+            </div>
+
+            <div className="mergeDestinationBlock" data-disabled={looseSubActivityCount === 0}>
+              <Group justify="space-between" gap="xs">
+                <Text fw={750}>Subtópicos soltos</Text>
+                <Badge variant="light">{looseSubActivityCount}</Badge>
+              </Group>
+              <Select
+                label="Atividade destino"
+                value={subActivityTargetActivityId}
+                data={activityReferenceOptions}
+                onChange={updateSubActivityTargetActivity}
+                disabled={
+                  looseSubActivityCount === 0 ||
+                  currentDocument.activities.length === 0 ||
+                  isConfirming
+                }
+              />
+              <SegmentedControl
+                fullWidth
+                value={subActivityPositionMode}
+                onChange={(value) => updateSubActivityPositionMode(value as MergePositionMode)}
+                data={[
+                  { label: "Fim", value: "end" },
+                  { label: "Antes", value: "before" },
+                  { label: "Depois", value: "after" },
+                ]}
+                disabled={looseSubActivityCount === 0 || !targetActivity || isConfirming}
+              />
+              <div className="mergeReferenceControl">
+                <Select
+                  label="Subtópico de referência"
+                  value={subActivityPositionTargetId}
+                  data={subActivityReferenceOptions}
+                  onChange={(value) =>
+                    setSubActivityPositionValue(buildMergePositionValue(subActivityPositionMode, value))
+                  }
+                  disabled={subActivityReferenceDisabled || isConfirming}
+                  className="mergeReferenceSelect"
+                />
+                <Tooltip label="Ver conteúdo do subtópico de referência">
+                  <ActionIcon
+                    variant="light"
+                    size="lg"
+                    className="mergeReferencePreviewButton"
+                    aria-label="Ver subtópico de referência"
+                    disabled={subActivityReferenceDisabled || isConfirming || !subActivityReferenceSubActivity}
+                    onClick={() => {
+                      if (!subActivityReferenceSubActivity) {
+                        return;
+                      }
+
+                      setReferencePreview({
+                        kind: "subActivity",
+                        title:
+                          findTeaSubActivityTitle(
+                            currentDocument,
+                            subActivityTargetActivityId,
+                            subActivityReferenceSubActivity.id,
+                          ) ?? "Subtópico de referência",
+                        subActivity: subActivityReferenceSubActivity,
+                      });
+                    }}
+                  >
+                    <Eye size={17} />
+                  </ActionIcon>
+                </Tooltip>
+              </div>
+            </div>
+
+            <div className="mergeSummaryBox" role="status" aria-live="polite">
+              <Group gap="xs" align="flex-start">
+                <ListChecks size={18} />
+                <div>
+                  <Text fw={800}>Resumo</Text>
+                  <Text size="sm">{selectionSummary}</Text>
+                  <Text size="sm" c={canConfirm ? "dimmed" : "red"}>
+                    {destinationSummary}
+                  </Text>
+                </div>
+              </Group>
+            </div>
+          </Stack>
+        </Paper>
+      </div>
+
+      <Group justify="flex-end" gap="xs" className="mergeActionBar">
+        <Button variant="light" color="gray" onClick={onClose} disabled={isConfirming}>
+          Cancelar
+        </Button>
+        <Button
+          leftSection={<ClipboardPaste size={17} />}
+          loading={isConfirming}
+          disabled={!canConfirm}
+          onClick={() =>
+            onConfirm({
+              activityIds,
+              subActivityIds,
+              activityPosition: parseMergePosition(activityPositionValue),
+              subActivityTargetActivityId,
+              subActivityPosition: parseMergePosition(subActivityPositionValue),
+            })
+          }
+        >
+          Juntar selecionados
+        </Button>
+      </Group>
+      </Stack>
+
+      <TeaReferencePreviewModal
+        preview={referencePreview}
+        onClose={() => setReferencePreview(null)}
+      />
+    </>
+  );
+}
+
+function TeaReferencePreviewModal({
+  preview,
+  onClose,
+}: {
+  preview: TeaReferencePreview | null;
+  onClose: () => void;
+}) {
+  const isActivity = preview?.kind === "activity";
+  const summaryItems = preview
+    ? isActivity
+      ? buildTeaActivitySummaryItems(preview.activity)
+      : buildTeaSubActivitySummaryItems(preview.subActivity)
+    : [];
+
+  return (
+    <Modal
+      opened={preview !== null}
+      onClose={onClose}
+      title="Preview da referência"
+      size="lg"
+      centered
+      zIndex={2600}
+      classNames={{
+        content: "teaReferencePreviewModalContent",
+        body: "teaReferencePreviewModalBody",
+      }}
+    >
+      {preview ? (
+        <Stack gap="md" className="teaReferencePreview">
+          <div>
+            <Group gap="xs" justify="space-between" align="flex-start">
+              <div>
+                <Text fw={850} className="teaReferencePreviewTitle">
+                  {preview.title}
+                </Text>
+                <Text size="sm" c="dimmed">
+                  Conteúdo atual usado como referência de inserção.
+                </Text>
+              </div>
+              <Badge variant="light">{isActivity ? "Atividade" : "Subtópico"}</Badge>
+            </Group>
+            {summaryItems.length > 0 ? (
+              <Group gap={6} mt="sm">
+                {summaryItems.map((item) => (
+                  <Badge key={item} variant="outline" color="gray">
+                    {item}
+                  </Badge>
+                ))}
+              </Group>
+            ) : null}
+          </div>
+
+          {isActivity ? (
+            <>
+              <TeaReferenceBlockPreview
+                title="Blocos da atividade"
+                blocks={preview.activity.blocks}
+                emptyLabel="Esta atividade não tem blocos próprios."
+              />
+              <div className="teaReferencePreviewSection">
+                <Text fw={800}>Subtópicos da atividade</Text>
+                {preview.activity.subActivities.length > 0 ? (
+                  <Stack gap="xs" mt="xs">
+                    {preview.activity.subActivities.map((subActivity, index) => (
+                      <div key={subActivity.id} className="teaReferencePreviewSubActivity">
+                        <Text fw={750}>
+                          {formatTeaEditorTitle(
+                            `${index + 1}`,
+                            subActivity.title,
+                            "Subtopico sem titulo",
+                          )}
+                        </Text>
+                        <Group gap={6} mt={4}>
+                          {buildTeaSubActivitySummaryItems(subActivity).map((item) => (
+                            <Badge key={item} size="xs" variant="light" color="gray">
+                              {item}
+                            </Badge>
+                          ))}
+                        </Group>
+                        <TeaReferenceBlockPreview
+                          blocks={subActivity.blocks}
+                          emptyLabel="Este subtópico não tem blocos."
+                          compact
+                        />
+                      </div>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Text size="sm" c="dimmed" mt="xs">
+                    Esta atividade não tem subtópicos.
+                  </Text>
+                )}
+              </div>
+            </>
+          ) : (
+            <TeaReferenceBlockPreview
+              title="Blocos do subtópico"
+              blocks={preview.subActivity.blocks}
+              emptyLabel="Este subtópico não tem blocos."
+            />
+          )}
+        </Stack>
+      ) : null}
+    </Modal>
+  );
+}
+
+function TeaReferenceBlockPreview({
+  title,
+  blocks,
+  emptyLabel,
+  compact = false,
+}: {
+  title?: string;
+  blocks: TeaContentBlock[];
+  emptyLabel: string;
+  compact?: boolean;
+}) {
+  return (
+    <div className="teaReferencePreviewSection" data-compact={compact}>
+      {title ? <Text fw={800}>{title}</Text> : null}
+      {blocks.length > 0 ? (
+        <Stack gap="xs" mt={title ? "xs" : 0}>
+          {blocks.map((block) => (
+            <div key={block.id} className="teaReferencePreviewBlock">
+              <Group gap="xs" justify="space-between">
+                <Text fw={750}>{teaContentBlockLabels[block.type]}</Text>
+                <Badge size="xs" variant="light" color="gray">
+                  {buildTeaContentBlockSummaryItem(block)}
+                </Badge>
+              </Group>
+              <TeaReferenceBlockContent block={block} />
+            </div>
+          ))}
+        </Stack>
+      ) : (
+        <Text size="sm" c="dimmed" mt={title ? "xs" : 0}>
+          {emptyLabel}
+        </Text>
+      )}
+    </div>
+  );
+}
+
+function TeaReferenceBlockContent({ block }: { block: TeaContentBlock }) {
+  if (block.type === "text") {
+    return (
+      <Text size="sm" className="teaReferencePreviewText">
+        {block.text.trim() || "Texto vazio."}
+      </Text>
+    );
+  }
+
+  if (block.type === "list") {
+    const items = block.items.filter((item) => item.text.trim());
+
+    return items.length > 0 ? (
+      <ul className="teaReferencePreviewList">
+        {items.map((item) => (
+          <li key={item.id}>{item.text}</li>
+        ))}
+      </ul>
+    ) : (
+      <Text size="sm" c="dimmed" mt="xs">
+        Lista vazia.
+      </Text>
+    );
+  }
+
+  return block.images.length > 0 ? (
+    <div className="teaReferencePreviewImages">
+      {block.images.map((image) => (
+        <figure key={image.id} className="teaReferencePreviewImage">
+          {image.dataUrl ? (
+            <img
+              src={image.dataUrl}
+              alt={image.label.trim() || image.name.trim() || "Imagem da referência"}
+            />
+          ) : (
+            <div className="teaReferencePreviewImagePlaceholder">Imagem sem preview</div>
+          )}
+          <figcaption>{image.label.trim() || image.name.trim() || "Imagem"}</figcaption>
+        </figure>
+      ))}
+    </div>
+  ) : (
+    <Text size="sm" c="dimmed" mt="xs">
+      Nenhuma imagem.
+    </Text>
+  );
+}
+
+function OtMergeImportPanel({
+  result,
+  currentDocument,
+  isConfirming,
+  onClose,
+  onConfirm,
+}: {
+  result: Extract<DocxImportResult, { kind: "ot" }>;
+  currentDocument: OtDocument;
+  isConfirming: boolean;
+  onClose: () => void;
+  onConfirm: (selection: OtDocxMergeSelection) => void;
+}) {
+  const sourceGroups = buildOtMergeSourceGroups(result.document);
+  const [selectedTestIds, setSelectedTestIds] = useState<string[]>([]);
+  const [groupOptions, setGroupOptions] = useState<
+    Record<string, { targetValue: string; positionValue: string }>
+  >({});
+  const selectedTests = new Set(selectedTestIds);
+  const sourceTestCount = sourceGroups.reduce((total, group) => total + group.tests.length, 0);
+
+  function ensureGroupOptions(group: OtMergeSourceGroup) {
+    setGroupOptions((current) => {
+      if (current[group.key]) {
+        return current;
+      }
+
+      const defaultTarget = findMatchingOtMergeTarget(currentDocument, group.macro, group.micro);
+
+      return {
+        ...current,
+        [group.key]: {
+          targetValue: serializeOtMergeTarget(defaultTarget),
+          positionValue: "end",
+        },
+      };
+    });
+  }
+
+  function toggleTest(group: OtMergeSourceGroup, testId: string, checked: boolean): void {
+    ensureGroupOptions(group);
+    setSelectedTestIds((current) => toggleId(current, testId, checked));
+  }
+
+  function toggleGroup(group: OtMergeSourceGroup, checked: boolean): void {
+    ensureGroupOptions(group);
+    const groupTestIds = group.tests.map((test) => test.id);
+    setSelectedTestIds((current) =>
+      checked
+        ? Array.from(new Set([...current, ...groupTestIds]))
+        : current.filter((testId) => !groupTestIds.includes(testId)),
+    );
+  }
+
+  function updateGroupOption(
+    groupKey: string,
+    updates: Partial<{ targetValue: string; positionValue: string }>,
+  ): void {
+    setGroupOptions((current) => {
+      const previous = current[groupKey] ?? {
+        targetValue: "new",
+        positionValue: "end",
+      };
+
+      return {
+        ...current,
+        [groupKey]: {
+          ...previous,
+          ...updates,
+        },
+      };
+    });
+  }
+
+  function selectAll(): void {
+    setGroupOptions((current) => {
+      let next = current;
+
+      sourceGroups.forEach((group) => {
+        if (next[group.key]) {
+          return;
+        }
+
+        const defaultTarget = findMatchingOtMergeTarget(currentDocument, group.macro, group.micro);
+        next = {
+          ...next,
+          [group.key]: {
+            targetValue: serializeOtMergeTarget(defaultTarget),
+            positionValue: "end",
+          },
+        };
+      });
+
+      return next;
+    });
+    setSelectedTestIds(sourceGroups.flatMap((group) => group.tests.map((test) => test.id)));
+  }
+
+  function clearSelection(): void {
+    setSelectedTestIds([]);
+  }
+
+  const selectedGroups = sourceGroups.flatMap((group) => {
+    const testIds = group.tests
+      .filter((test) => selectedTests.has(test.id))
+      .map((test) => test.id);
+
+    if (testIds.length === 0) {
+      return [];
+    }
+
+    const options = groupOptions[group.key] ?? {
+      targetValue: serializeOtMergeTarget(
+        findMatchingOtMergeTarget(currentDocument, group.macro, group.micro),
+      ),
+      positionValue: "end",
+    };
+
+    return [
+      {
+        sourceMacroId: group.macro.id,
+        sourceMicroId: group.micro.id,
+        testIds,
+        target: parseOtMergeTarget(options.targetValue),
+        position: parseMergePosition(options.positionValue),
+      },
+    ];
+  });
+  const selectedTestCount = selectedTestIds.length;
+  const selectionSummary =
+    selectedTestCount === 0
+      ? "Selecione ao menos um teste do DOCX."
+      : `${selectedTestCount} teste(s) em ${selectedGroups.length} grupo(s) serão juntados.`;
+
+  return (
+    <Stack gap="md" className="mergeImportWorkspace">
+      <div className="mergeImportLayout">
+        <Paper withBorder p="md" className="mergeSourcePanel">
+          <Stack gap="sm">
+            <Group justify="space-between" align="flex-start" gap="sm">
+              <div>
+                <Text fw={800}>Itens do DOCX</Text>
+                <Text size="sm" c="dimmed">
+                  {sourceGroups.length} grupo(s), {sourceTestCount} teste(s)
+                </Text>
+              </div>
+              <Group gap={6}>
+                <Button size="xs" variant="light" onClick={selectAll} disabled={isConfirming}>
+                  Selecionar tudo
+                </Button>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  color="gray"
+                  onClick={clearSelection}
+                  disabled={isConfirming}
+                >
+                  Limpar
+                </Button>
+              </Group>
+            </Group>
+
+            <div className="mergeSelectionList">
+              {sourceGroups.map((group) => {
+                const selectedCount = group.tests.filter((test) => selectedTests.has(test.id)).length;
+                const allSelected = selectedCount === group.tests.length && group.tests.length > 0;
+                const someSelected = selectedCount > 0 && !allSelected;
+                const groupTitle = `${formatPermission(group.macro)} / ${formatPermission(group.micro)}`;
+                const suggestedTarget = findMatchingOtMergeTarget(currentDocument, group.macro, group.micro);
+                const options = groupOptions[group.key] ?? {
+                  targetValue: serializeOtMergeTarget(suggestedTarget),
+                  positionValue: "end",
+                };
+                const target = parseOtMergeTarget(options.targetValue);
+                const positionMode = getMergePositionMode(options.positionValue);
+                const positionTargetId = getMergePositionTargetId(options.positionValue);
+                const testReferenceOptions = buildOtTestReferenceOptions(currentDocument, target);
+                const targetSummary = formatOtMergeTargetSummary(currentDocument, target, group);
+
+                return (
+                  <Paper
+                    key={group.key}
+                    withBorder
+                    p="sm"
+                    className="mergeSelectionCard"
+                    data-selected={selectedCount > 0}
+                  >
+                    <Stack gap="xs">
+                      <label className="mergeSelectionRow">
+                        <Checkbox
+                          checked={allSelected}
+                          indeterminate={someSelected}
+                          onChange={(event) => toggleGroup(group, event.currentTarget.checked)}
+                          aria-label={groupTitle}
+                          disabled={isConfirming}
+                        />
+                        <span className="mergeSelectionCopy">
+                          <Group gap="xs" wrap="wrap">
+                            <Text fw={750}>{groupTitle}</Text>
+                            {suggestedTarget.kind === "existing" ? (
+                              <Badge size="xs" variant="light" color="green">
+                                Destino sugerido
+                              </Badge>
+                            ) : null}
+                          </Group>
+                          <Text size="xs" c="dimmed">
+                            {selectedCount} de {group.tests.length} teste(s) selecionado(s)
+                          </Text>
+                        </span>
+                      </label>
+                      <div className="mergeNestedList">
+                        {group.tests.map((test, index) => (
+                          <label
+                            key={test.id}
+                            className="mergeSelectionRow mergeSelectionRow--nested"
+                            data-selected={selectedTests.has(test.id)}
+                          >
+                            <Checkbox
+                              checked={selectedTests.has(test.id)}
+                              onChange={(event) =>
+                                toggleTest(group, test.id, event.currentTarget.checked)
+                              }
+                              aria-label={`${index + 1} - ${test.title || "Teste sem titulo"}`}
+                              disabled={isConfirming}
+                            />
+                            <span className="mergeSelectionCopy">
+                              <Text fw={650}>{`${index + 1} - ${test.title || "Teste sem titulo"}`}</Text>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+
+                      {selectedCount > 0 ? (
+                        <div className="mergeDestinationBlock mergeDestinationBlock--inline">
+                          <Select
+                            label="Destino"
+                            value={options.targetValue}
+                            data={buildOtTargetOptions(currentDocument, group)}
+                            onChange={(value) =>
+                              updateGroupOption(group.key, {
+                                targetValue: value ?? "new",
+                                positionValue: "end",
+                              })
+                            }
+                            disabled={isConfirming}
+                          />
+                          <Text size="xs" c="dimmed">
+                            {targetSummary}
+                          </Text>
+                          <SegmentedControl
+                            fullWidth
+                            value={positionMode}
+                            onChange={(value) =>
+                              updateGroupOption(group.key, {
+                                positionValue: buildMergePositionValue(
+                                  value as MergePositionMode,
+                                  positionTargetId ?? testReferenceOptions[0]?.value ?? null,
+                                ),
+                              })
+                            }
+                            data={[
+                              { label: "Fim", value: "end" },
+                              { label: "Antes", value: "before" },
+                              { label: "Depois", value: "after" },
+                            ]}
+                            disabled={isConfirming}
+                          />
+                          <Select
+                            label="Teste de referência"
+                            value={positionTargetId}
+                            data={testReferenceOptions}
+                            onChange={(value) =>
+                              updateGroupOption(group.key, {
+                                positionValue: buildMergePositionValue(positionMode, value),
+                              })
+                            }
+                            disabled={
+                              isConfirming ||
+                              positionMode === "end" ||
+                              testReferenceOptions.length === 0
+                            }
+                          />
+                        </div>
+                      ) : null}
+                    </Stack>
+                  </Paper>
+                );
+              })}
+            </div>
+          </Stack>
+        </Paper>
+
+        <Paper withBorder p="md" className="mergeDestinationPanel">
+          <Stack gap="md">
+            <div>
+              <Text fw={800}>Resumo da junção</Text>
+              <Text size="sm" c="dimmed">
+                Confira os grupos selecionados antes de juntar.
+              </Text>
+            </div>
+            <div className="mergeSummaryBox" role="status" aria-live="polite">
+              <Group gap="xs" align="flex-start">
+                <ListChecks size={18} />
+                <div>
+                  <Text fw={800}>Selecionados</Text>
+                  <Text size="sm">{selectionSummary}</Text>
+                  <Text size="sm" c={selectedGroups.length > 0 ? "dimmed" : "red"}>
+                    {selectedGroups.length > 0
+                      ? "Cada grupo será inserido no destino configurado no card."
+                      : "Selecione um teste ou um grupo inteiro para liberar a junção."}
+                  </Text>
+                </div>
+              </Group>
+            </div>
+
+            {selectedGroups.length > 0 ? (
+              <Stack gap="xs">
+                {selectedGroups.map((group) => {
+                  const sourceGroup = sourceGroups.find(
+                    (candidate) =>
+                      candidate.macro.id === group.sourceMacroId &&
+                      candidate.micro.id === group.sourceMicroId,
+                  );
+
+                  return (
+                    <div key={`${group.sourceMacroId}:${group.sourceMicroId}`} className="mergeSummaryLine">
+                      <Text fw={750}>
+                        {sourceGroup
+                          ? `${formatPermission(sourceGroup.macro)} / ${formatPermission(sourceGroup.micro)}`
+                          : "Grupo selecionado"}
+                      </Text>
+                      <Text size="sm" c="dimmed">
+                        {group.testIds.length} teste(s) para{" "}
+                        {formatOtMergeTargetSummary(currentDocument, group.target, sourceGroup)}
+                      </Text>
+                    </div>
+                  );
+                })}
+              </Stack>
+            ) : null}
+          </Stack>
+        </Paper>
+      </div>
+
+      <Group justify="flex-end" gap="xs" className="mergeActionBar">
+        <Button variant="light" color="gray" onClick={onClose} disabled={isConfirming}>
+          Cancelar
+        </Button>
+        <Button
+          leftSection={<ClipboardPaste size={17} />}
+          loading={isConfirming}
+          disabled={selectedGroups.length === 0}
+          onClick={() => onConfirm({ groups: selectedGroups })}
+        >
+          Juntar selecionados
+        </Button>
+      </Group>
+    </Stack>
+  );
+}
+function ImportWarnings({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="importWarnings" role="alert" aria-live="polite">
+      <Group gap="xs" mb={6}>
+        <AlertCircle size={17} />
+        <Text fw={700}>Avisos</Text>
+      </Group>
+      <Stack gap={4}>
+        {warnings.map((warning) => (
+          <Text key={warning} size="sm" c="dimmed">
+            {warning}
+          </Text>
+        ))}
+      </Stack>
+    </div>
+  );
+}
+
 function ReviewPanel({
   summary,
   onIssueClick,
@@ -10235,6 +11538,354 @@ function formatPermission(permission: PermissionItem): string {
   }
 
   return code || label || "Sem código";
+}
+
+type MergePositionMode = "end" | "before" | "after";
+
+function toggleId(values: string[], id: string, checked: boolean): string[] {
+  if (checked) {
+    return values.includes(id) ? values : [...values, id];
+  }
+
+  return values.filter((value) => value !== id);
+}
+
+function buildTeaActivityPositionOptions(
+  activities: TeaActivity[],
+): Array<{ value: string; label: string }> {
+  return [
+    { value: "end", label: "Fim das atividades" },
+    ...activities.flatMap((activity, index) => {
+      const title = formatTeaEditorTitle(
+        `2.${index + 1}`,
+        activity.title,
+        "Atividade sem titulo",
+      );
+
+      return [
+        { value: `before|${activity.id}`, label: `Antes de ${title}` },
+        { value: `after|${activity.id}`, label: `Depois de ${title}` },
+      ];
+    }),
+  ];
+}
+
+function buildTeaSubActivityPositionOptions(
+  activity: TeaActivity | undefined,
+): Array<{ value: string; label: string }> {
+  if (!activity) {
+    return [{ value: "end", label: "Fim dos subtÃ³picos" }];
+  }
+
+  return [
+    { value: "end", label: "Fim dos subtÃ³picos" },
+    ...activity.subActivities.flatMap((subActivity, index) => {
+      const title = formatTeaEditorTitle(
+        `2.${index + 1}`,
+        subActivity.title,
+        "Subtopico sem titulo",
+      );
+
+      return [
+        { value: `before|${subActivity.id}`, label: `Antes de ${title}` },
+        { value: `after|${subActivity.id}`, label: `Depois de ${title}` },
+      ];
+    }),
+  ];
+}
+
+function parseMergePosition(value: string | null): MergeInsertPosition {
+  if (!value || value === "end") {
+    return { mode: "end" };
+  }
+
+  const [mode, targetId] = value.split("|");
+
+  if ((mode === "before" || mode === "after") && targetId) {
+    return { mode, targetId };
+  }
+
+  return { mode: "end" };
+}
+
+function getMergePositionMode(value: string | null): MergePositionMode {
+  if (!value || value === "end") {
+    return "end";
+  }
+
+  const [mode] = value.split("|");
+
+  return mode === "before" || mode === "after" ? mode : "end";
+}
+
+function getMergePositionTargetId(value: string | null): string | null {
+  if (!value || value === "end") {
+    return null;
+  }
+
+  const [, targetId] = value.split("|");
+
+  return targetId || null;
+}
+
+function buildMergePositionValue(mode: MergePositionMode, targetId: string | null): string {
+  if (mode === "end" || !targetId) {
+    return "end";
+  }
+
+  return `${mode}|${targetId}`;
+}
+
+function buildTeaActivityReferenceOptions(
+  activities: TeaActivity[],
+): Array<{ value: string; label: string }> {
+  return activities.map((activity, index) => ({
+    value: activity.id,
+    label: formatTeaEditorTitle(`2.${index + 1}`, activity.title, "Atividade sem titulo"),
+  }));
+}
+
+function buildTeaSubActivityReferenceOptions(
+  activity: TeaActivity | undefined,
+): Array<{ value: string; label: string }> {
+  if (!activity) {
+    return [];
+  }
+
+  return activity.subActivities.map((subActivity, index) => ({
+    value: subActivity.id,
+    label: formatTeaEditorTitle(`2.${index + 1}`, subActivity.title, "Subtopico sem titulo"),
+  }));
+}
+
+function buildTeaMergeDestinationSummary({
+  selectedActivityCount,
+  looseSubActivityCount,
+  activityPositionMode,
+  activityPositionTargetId,
+  subActivityTargetActivityId,
+  subActivityPositionMode,
+  subActivityPositionTargetId,
+  currentDocument,
+}: {
+  selectedActivityCount: number;
+  looseSubActivityCount: number;
+  activityPositionMode: MergePositionMode;
+  activityPositionTargetId: string | null;
+  subActivityTargetActivityId: string | null;
+  subActivityPositionMode: MergePositionMode;
+  subActivityPositionTargetId: string | null;
+  currentDocument: TeaDocument;
+}): string {
+  if (selectedActivityCount === 0 && looseSubActivityCount === 0) {
+    return "Selecione ao menos um item para liberar a junção.";
+  }
+
+  if (selectedActivityCount > 0 && activityPositionMode !== "end" && !activityPositionTargetId) {
+    return "Escolha a atividade de referência para posicionar as atividades selecionadas.";
+  }
+
+  if (looseSubActivityCount > 0 && !subActivityTargetActivityId) {
+    return "Escolha a atividade destino para os subtópicos soltos.";
+  }
+
+  if (looseSubActivityCount > 0 && subActivityPositionMode !== "end" && !subActivityPositionTargetId) {
+    return "Escolha o subtópico de referência para posicionar os subtópicos soltos.";
+  }
+
+  const activitySummary =
+    selectedActivityCount > 0
+      ? `Atividades: ${formatMergePositionSummary(
+          activityPositionMode,
+          findTeaActivityTitle(currentDocument, activityPositionTargetId),
+          "fim da lista",
+        )}.`
+      : null;
+  const subActivitySummary =
+    looseSubActivityCount > 0
+      ? `Subtópicos: ${formatMergePositionSummary(
+          subActivityPositionMode,
+          findTeaSubActivityTitle(currentDocument, subActivityTargetActivityId, subActivityPositionTargetId),
+          "fim da atividade destino",
+        )}.`
+      : null;
+
+  return [activitySummary, subActivitySummary].filter(Boolean).join(" ");
+}
+
+function formatMergePositionSummary(
+  mode: MergePositionMode,
+  targetTitle: string | null,
+  endLabel: string,
+): string {
+  if (mode === "end") {
+    return endLabel;
+  }
+
+  const prefix = mode === "before" ? "antes de" : "depois de";
+
+  return targetTitle ? `${prefix} ${targetTitle}` : "referência pendente";
+}
+
+function findTeaActivityTitle(documentData: TeaDocument, activityId: string | null): string | null {
+  if (!activityId) {
+    return null;
+  }
+
+  const index = documentData.activities.findIndex((activity) => activity.id === activityId);
+  const activity = documentData.activities[index];
+
+  return activity
+    ? formatTeaEditorTitle(`2.${index + 1}`, activity.title, "Atividade sem titulo")
+    : null;
+}
+
+function findTeaSubActivityTitle(
+  documentData: TeaDocument,
+  activityId: string | null,
+  subActivityId: string | null,
+): string | null {
+  if (!activityId || !subActivityId) {
+    return null;
+  }
+
+  const activity = documentData.activities.find((candidate) => candidate.id === activityId);
+  const subActivityIndex =
+    activity?.subActivities.findIndex((subActivity) => subActivity.id === subActivityId) ?? -1;
+  const subActivity = activity?.subActivities[subActivityIndex];
+
+  return subActivity
+    ? formatTeaEditorTitle(
+        `2.${subActivityIndex + 1}`,
+        subActivity.title,
+        "Subtopico sem titulo",
+      )
+    : null;
+}
+
+function buildOtMergeSourceGroups(documentData: OtDocument): OtMergeSourceGroup[] {
+  return documentData.permissionGroups.flatMap((macro) =>
+    macro.microPermissions.flatMap((micro) => {
+      const key = createPermissionKey(macro.id, micro.id);
+      const tests = documentData.permissionBlocks[key]?.tests ?? [];
+
+      if (tests.length === 0) {
+        return [];
+      }
+
+      return [{ key, macro, micro, tests }];
+    }),
+  );
+}
+
+function buildOtTargetOptions(
+  documentData: OtDocument,
+  sourceGroup: OtMergeSourceGroup,
+): Array<{ value: string; label: string }> {
+  const existingOptions = documentData.permissionGroups.flatMap((macro) =>
+    macro.microPermissions.map((micro) => ({
+      value: serializeOtMergeTarget({
+        kind: "existing",
+        macroId: macro.id,
+        microId: micro.id,
+      }),
+      label: `${formatPermission(macro)} / ${formatPermission(micro)}`,
+    })),
+  );
+
+  return [
+    ...existingOptions,
+    {
+      value: "new",
+      label: `Criar ${formatPermission(sourceGroup.macro)} / ${formatPermission(
+        sourceGroup.micro,
+      )}`,
+    },
+  ];
+}
+
+function buildOtTestPositionOptions(
+  documentData: OtDocument,
+  target: OtDocxMergeTarget,
+): Array<{ value: string; label: string }> {
+  if (target.kind !== "existing") {
+    return [{ value: "end", label: "Fim dos testes" }];
+  }
+
+  const block =
+    documentData.permissionBlocks[createPermissionKey(target.macroId, target.microId)] ??
+    emptyPermissionBlock;
+
+  return [
+    { value: "end", label: "Fim dos testes" },
+    ...block.tests.flatMap((test, index) => {
+      const title = `${index + 1} - ${test.title || "Teste sem titulo"}`;
+
+      return [
+        { value: `before|${test.id}`, label: `Antes de ${title}` },
+        { value: `after|${test.id}`, label: `Depois de ${title}` },
+      ];
+    }),
+  ];
+}
+
+function buildOtTestReferenceOptions(
+  documentData: OtDocument,
+  target: OtDocxMergeTarget,
+): Array<{ value: string; label: string }> {
+  if (target.kind !== "existing") {
+    return [];
+  }
+
+  const block =
+    documentData.permissionBlocks[createPermissionKey(target.macroId, target.microId)] ??
+    emptyPermissionBlock;
+
+  return block.tests.map((test, index) => ({
+    value: test.id,
+    label: `${index + 1} - ${test.title || "Teste sem titulo"}`,
+  }));
+}
+
+function formatOtMergeTargetSummary(
+  documentData: OtDocument,
+  target: OtDocxMergeTarget,
+  sourceGroup: OtMergeSourceGroup | undefined,
+): string {
+  if (target.kind === "new") {
+    return sourceGroup
+      ? `criar ${formatPermission(sourceGroup.macro)} / ${formatPermission(sourceGroup.micro)}`
+      : "criar nova permissão";
+  }
+
+  const macro = documentData.permissionGroups.find((candidate) => candidate.id === target.macroId);
+  const micro = macro?.microPermissions.find((candidate) => candidate.id === target.microId);
+
+  return macro && micro
+    ? `${formatPermission(macro)} / ${formatPermission(micro)}`
+    : "destino selecionado";
+}
+
+function serializeOtMergeTarget(target: OtDocxMergeTarget): string {
+  if (target.kind === "new") {
+    return "new";
+  }
+
+  return `existing|${target.macroId}|${target.microId}`;
+}
+
+function parseOtMergeTarget(value: string | null): OtDocxMergeTarget {
+  if (!value || value === "new") {
+    return { kind: "new" };
+  }
+
+  const [kind, macroId, microId] = value.split("|");
+
+  if (kind === "existing" && macroId && microId) {
+    return { kind: "existing", macroId, microId };
+  }
+
+  return { kind: "new" };
 }
 
 function createEmptyBlock(): PermissionBlock {

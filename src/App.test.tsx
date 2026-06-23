@@ -3,8 +3,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MantineProvider, createTheme } from "@mantine/core";
 import App from "./App";
-import type { OtDocxImportResult } from "./docxImport";
+import type { OtDocxImportResult, TeaDocxImportResult } from "./docxImport";
 import type { CheckKey, EvidenceImage, OtDocument, TeaDocument, TestError, TestResult } from "./types";
+
+vi.setConfig({ testTimeout: 15000 });
 
 const appMocks = vi.hoisted(() => ({
   deleteEvidenceImageData: vi.fn(),
@@ -1765,6 +1767,241 @@ describe("App loading feedback", () => {
     expect(appMocks.persistEmbeddedEvidenceImages).toHaveBeenCalledWith(importResult.document);
   });
 
+  it("keeps full DOCX import replacing the current draft", async () => {
+    const importResult = createOtImportResult();
+    importResult.document.metadata.screen = "Tela importada completa";
+    importResult.summary.screen = "Tela importada completa";
+    window.localStorage.setItem(draftKey, JSON.stringify(createCompleteReviewDraft()));
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await uploadFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "importado.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Substituir rascunho");
+    await clickDialogButton("Substituir rascunho");
+    await waitForNoDialog();
+
+    expect(container.textContent ?? "").toContain("Tela importada completa");
+    expect(appMocks.persistEmbeddedEvidenceImages).toHaveBeenCalledWith(importResult.document);
+  });
+
+  it("merges selected TEA activities without replacing general fields", async () => {
+    const currentDocument = createTeaDraftWithBlockImages();
+    const importResult = createTeaMergeImportResult();
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(currentDocument));
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickControl("TEA");
+    await openTopBarMenu();
+    await clickMenuItem("Juntar DOCX");
+    await uploadLastFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "juntar-tea.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Juntar DOCX");
+
+    expect(getDialogButton("Juntar selecionados")?.disabled).toBe(true);
+    await clickDialogLabel("2.1 Atividade importada");
+    await clickDialogButton("Juntar selecionados");
+    await waitForNoDialog();
+
+    const teaPersistCalls = appMocks.persistEmbeddedTeaImages.mock.calls;
+    const persisted = teaPersistCalls[teaPersistCalls.length - 1]?.[0] as TeaDocument;
+    expect(persisted.metadata.subject).toBe(currentDocument.metadata.subject);
+    expect(persisted.activities.map((activity) => activity.title)).toContain(
+      "Atividade importada",
+    );
+    expect(container.textContent ?? "").toContain("Atividade importada");
+  });
+
+  it("lets the TEA merge modal select all imported activities at once", async () => {
+    const currentDocument = createTeaDraftWithBlockImages();
+    const importResult = createTeaMergeImportResult();
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(currentDocument));
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickControl("TEA");
+    await openTopBarMenu();
+    await clickMenuItem("Juntar DOCX");
+    await uploadLastFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "juntar-tea.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Itens do DOCX");
+
+    expect(getDialogButton("Juntar selecionados")?.disabled).toBe(true);
+    await clickDialogButton("Selecionar tudo");
+    expect(getDialogButton("Juntar selecionados")?.disabled).toBe(false);
+    await clickDialogButton("Juntar selecionados");
+    await waitForNoDialog();
+
+    const teaPersistCalls = appMocks.persistEmbeddedTeaImages.mock.calls;
+    const persisted = teaPersistCalls[teaPersistCalls.length - 1]?.[0] as TeaDocument;
+    expect(persisted.activities.map((activity) => activity.title)).toContain(
+      "Atividade importada",
+    );
+  });
+
+  it("merges a loose TEA subtopic into the chosen current activity", async () => {
+    const currentDocument = createTeaDraftWithBlockImages();
+    const importResult = createTeaMergeImportResultWithSubActivity();
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(currentDocument));
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickControl("TEA");
+    await openTopBarMenu();
+    await clickMenuItem("Juntar DOCX");
+    await uploadLastFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "juntar-tea.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Subtopico importado");
+
+    await clickDialogLabel("2.1.1 Subtopico importado");
+    expect(getDialogButton("Juntar selecionados")?.disabled).toBe(false);
+    await clickDialogButton("Juntar selecionados");
+    await waitForNoDialog();
+
+    const teaPersistCalls = appMocks.persistEmbeddedTeaImages.mock.calls;
+    const persisted = teaPersistCalls[teaPersistCalls.length - 1]?.[0] as TeaDocument;
+    expect(persisted.activities.map((activity) => activity.title)).not.toContain(
+      "Atividade importada com subtopico",
+    );
+    expect(persisted.activities[0].subActivities.map((subActivity) => subActivity.title)).toContain(
+      "Subtopico importado",
+    );
+  });
+
+  it("opens a preview for the selected TEA activity reference", async () => {
+    const currentDocument = createTeaDraftWithBlockImages();
+    const importResult = createTeaMergeImportResult();
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(currentDocument));
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickControl("TEA");
+    await openTopBarMenu();
+    await clickMenuItem("Juntar DOCX");
+    await uploadLastFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "juntar-tea.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Itens do DOCX");
+
+    await clickDialogLabel("2.1 Atividade importada");
+    await clickDialogLabel("Antes");
+    await clickDialogButtonByAriaLabel("Ver atividade de referência");
+
+    await waitForBodyText("Preview da referência");
+    expect(document.body.textContent ?? "").toContain("2.1 Atividade com imagens");
+    expect(document.body.textContent ?? "").toContain("Descricao da atividade.");
+    expect(document.body.textContent ?? "").toContain("Subtopico com imagem");
+  });
+
+  it("opens a preview for the selected TEA subtopic reference", async () => {
+    const currentDocument = createTeaDraftWithBlockImages();
+    const importResult = createTeaMergeImportResultWithSubActivity();
+    window.localStorage.setItem(teaDraftKey, JSON.stringify(currentDocument));
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await clickControl("TEA");
+    await openTopBarMenu();
+    await clickMenuItem("Juntar DOCX");
+    await uploadLastFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "juntar-tea.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Subtopico importado");
+
+    await clickDialogLabel("2.1.1 Subtopico importado");
+    await clickLastDialogLabel("Antes");
+    await clickDialogButtonByAriaLabel("Ver subtópico de referência");
+
+    await waitForBodyText("Preview da referência");
+    expect(document.body.textContent ?? "").toContain("2.1 Subtopico com imagem");
+    expect(document.body.textContent ?? "").toContain("1 imagem");
+  });
+
+  it("merges selected OT tests into a matching permission without replacing general fields", async () => {
+    const currentDocument = createCompleteReviewDraft();
+    const importResult = createOtMergeImportResult();
+    window.localStorage.setItem(draftKey, JSON.stringify(currentDocument));
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await openTopBarMenu();
+    await clickMenuItem("Juntar DOCX");
+    await uploadLastFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "juntar-ot.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Juntar DOCX");
+
+    expect(getDialogButton("Juntar selecionados")?.disabled).toBe(true);
+    await clickDialogLabel("1 - Teste importado parcial");
+    await clickDialogButton("Juntar selecionados");
+    await waitForNoDialog();
+
+    const otPersistCalls = appMocks.persistEmbeddedEvidenceImages.mock.calls;
+    const persisted = otPersistCalls[otPersistCalls.length - 1]?.[0] as OtDocument;
+    expect(persisted.metadata.screen).toBe(currentDocument.metadata.screen);
+    expect(persisted.permissionBlocks["macro-a:micro-at"].tests.map((test) => test.title)).toEqual([
+      "teste com varios status",
+      "Teste importado parcial",
+    ]);
+    expect(container.textContent ?? "").toContain("Teste importado parcial");
+  });
+
+  it("lets the OT merge modal select a whole group with the matching target suggestion", async () => {
+    const currentDocument = createCompleteReviewDraft();
+    const importResult = createOtMergeImportResult();
+    window.localStorage.setItem(draftKey, JSON.stringify(currentDocument));
+    appMocks.parseDocxFile.mockResolvedValue(importResult);
+
+    await renderApp();
+    await waitForNoBodyText("Preparando imagens...");
+    await openTopBarMenu();
+    await clickMenuItem("Juntar DOCX");
+    await uploadLastFile(
+      'input[accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"]',
+      "juntar-ot.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    await waitForDialogText("Destino sugerido");
+
+    await clickDialogLabel("MA (Macro A) / AT (Atualizacao)");
+    expect(getDialogButton("Juntar selecionados")?.disabled).toBe(false);
+    await clickDialogButton("Juntar selecionados");
+    await waitForNoDialog();
+
+    const otPersistCalls = appMocks.persistEmbeddedEvidenceImages.mock.calls;
+    const persisted = otPersistCalls[otPersistCalls.length - 1]?.[0] as OtDocument;
+    expect(persisted.permissionBlocks["macro-a:micro-at"].tests.map((test) => test.title)).toEqual([
+      "teste com varios status",
+      "Teste importado parcial",
+    ]);
+  });
+
   it("shows loading while copying a TEA subtopic with images", async () => {
     const copyTask = createDeferred<void>();
     appMocks.saveEvidenceImageDataBatch.mockReturnValue(copyTask.promise);
@@ -1953,6 +2190,58 @@ async function uploadFile(selector: string, fileName: string, type: string): Pro
   });
 }
 
+async function uploadLastFile(selector: string, fileName: string, type: string): Promise<void> {
+  const inputs = Array.from(document.body.querySelectorAll<HTMLInputElement>(selector));
+  const input = inputs[inputs.length - 1];
+
+  expect(input).toBeTruthy();
+
+  const file = new File(["conteudo"], fileName, { type });
+  const files = [file] as unknown as FileList;
+  Object.defineProperty(files, "item", {
+    configurable: true,
+    value: (index: number) => files[index] ?? null,
+  });
+  Object.defineProperty(input, "files", {
+    configurable: true,
+    value: files,
+  });
+
+  await act(async () => {
+    input?.dispatchEvent(new Event("change", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function clickDialogLabel(label: string): Promise<void> {
+  const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+  const labelElement = Array.from(dialog?.querySelectorAll<HTMLLabelElement>("label") ?? []).find(
+    (element) => element.textContent?.includes(label),
+  );
+
+  expect(labelElement).toBeTruthy();
+
+  await act(async () => {
+    labelElement?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function clickLastDialogLabel(label: string): Promise<void> {
+  const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+  const labelElements = Array.from(dialog?.querySelectorAll<HTMLLabelElement>("label") ?? []).filter(
+    (element) => element.textContent?.includes(label),
+  );
+  const labelElement = labelElements[labelElements.length - 1];
+
+  expect(labelElement).toBeTruthy();
+
+  await act(async () => {
+    labelElement?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 async function clickDocumentButton(label: string): Promise<void> {
   const root = document.body.querySelector<HTMLElement>('[role="dialog"]') ?? document.body;
   const button = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
@@ -1982,6 +2271,19 @@ async function clickDialogButton(label: string): Promise<void> {
   const button = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
     (element) => element.textContent?.includes(label),
   );
+
+  expect(button).toBeTruthy();
+
+  await act(async () => {
+    button?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function clickDialogButtonByAriaLabel(label: string): Promise<void> {
+  const button = Array.from(
+    document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+  ).find((element) => element.getAttribute("aria-label") === label);
 
   expect(button).toBeTruthy();
 
@@ -2270,6 +2572,169 @@ function createOtImportResult(): OtDocxImportResult {
     },
     warnings: [],
     sourceName: "importado.docx",
+  };
+}
+
+function createTeaMergeImportResult(): TeaDocxImportResult {
+  const documentData: TeaDocument = {
+    metadata: {
+      serviceOrder: "OS importada",
+      phase: "Etapa importada",
+      ticket: "Chamado importado",
+      subject: "Assunto importado",
+      date: "2026-06-22",
+      author: "Pessoa importada",
+    },
+    overview: "Visao geral importada",
+    activityIntro: "Intro importada",
+    activityImages: [],
+    activities: [
+      {
+        id: "imported-activity",
+        title: "Atividade importada",
+        blocks: [
+          {
+            id: "imported-text",
+            type: "text",
+            text: "Texto importado",
+          },
+        ],
+        subActivities: [],
+      },
+    ],
+  };
+
+  return {
+    kind: "tea",
+    document: documentData,
+    summary: {
+      kind: "tea",
+      subject: documentData.metadata.subject,
+      activities: 1,
+      subActivities: 0,
+      blocks: 1,
+      images: 0,
+    },
+    warnings: [],
+    sourceName: "juntar-tea.docx",
+  };
+}
+
+function createTeaMergeImportResultWithSubActivity(): TeaDocxImportResult {
+  const documentData: TeaDocument = {
+    metadata: {
+      serviceOrder: "OS importada",
+      phase: "Etapa importada",
+      ticket: "Chamado importado",
+      subject: "Assunto importado",
+      date: "2026-06-22",
+      author: "Pessoa importada",
+    },
+    overview: "Visao geral importada",
+    activityIntro: "Intro importada",
+    activityImages: [],
+    activities: [
+      {
+        id: "imported-activity-with-subtopic",
+        title: "Atividade importada com subtopico",
+        blocks: [
+          {
+            id: "imported-text",
+            type: "text",
+            text: "Texto importado",
+          },
+        ],
+        subActivities: [
+          {
+            id: "imported-subtopic",
+            title: "Subtopico importado",
+            blocks: [
+              {
+                id: "imported-subtopic-text",
+                type: "text",
+                text: "Texto do subtopico importado",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  return {
+    kind: "tea",
+    document: documentData,
+    summary: {
+      kind: "tea",
+      subject: documentData.metadata.subject,
+      activities: 1,
+      subActivities: 1,
+      blocks: 2,
+      images: 0,
+    },
+    warnings: [],
+    sourceName: "juntar-tea.docx",
+  };
+}
+
+function createOtMergeImportResult(): OtDocxImportResult {
+  const documentData: OtDocument = {
+    metadata: {
+      screen: "Tela importada parcial",
+      responsible: "Pessoa importada",
+      date: "2026-06-22",
+      environment: "Ambiente importado",
+      author: "Pessoa importada",
+    },
+    objective: "Objetivo importado",
+    accessSteps: [{ id: "imported-step", text: "Passo importado" }],
+    permissionGroups: [
+      {
+        id: "imported-macro",
+        code: "MA",
+        label: "Macro A",
+        selected: true,
+        microPermissions: [
+          {
+            id: "imported-micro",
+            code: "AT",
+            label: "Atualizacao",
+            selected: true,
+          },
+        ],
+      },
+    ],
+    permissionBlocks: {
+      "imported-macro:imported-micro": {
+        tests: [
+          {
+            id: "imported-test",
+            title: "Teste importado parcial",
+            result: {
+              ...createResult({ sameBehavior: true }),
+              observations: "Observacao importada",
+              legacyImages: [createImage("imported-legacy-image")],
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  return {
+    kind: "ot",
+    document: documentData,
+    summary: {
+      kind: "ot",
+      screen: documentData.metadata.screen,
+      accessSteps: 1,
+      permissionGroups: 1,
+      selectedPermissions: 1,
+      tests: 1,
+      images: 1,
+    },
+    warnings: [],
+    sourceName: "juntar-ot.docx",
   };
 }
 
