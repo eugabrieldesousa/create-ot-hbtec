@@ -1,5 +1,7 @@
 import {
   createDefaultDocument,
+  createEmptyTestErrorLegacyReference,
+  createEmptyTestErrorNewStatus,
   createEmptyTestCorrection,
   createEmptyTestResult,
   createPermissionKey,
@@ -348,6 +350,11 @@ function normalizeTestErrors(
       origin: "legacy",
       observation: textOrFallback(result.observations, ""),
       images: normalizeEvidenceImages(result.legacyImages),
+      legacyReference: createEmptyTestErrorLegacyReference(),
+      newStatus: {
+        ...createEmptyTestErrorNewStatus(),
+        images: normalizeEvidenceImages(result.newImages),
+      },
       correction: createEmptyTestCorrection(),
     });
   }
@@ -358,6 +365,8 @@ function normalizeTestErrors(
       origin: "new",
       observation: textOrFallback(result.observations, ""),
       images: normalizeEvidenceImages(result.newImages),
+      legacyReference: createEmptyTestErrorLegacyReference(),
+      newStatus: createEmptyTestErrorNewStatus(),
       correction: normalizeTestCorrection(legacyCorrection),
     });
   }
@@ -373,12 +382,45 @@ function normalizeTestError(error: TestError, fallbackId: string): TestError {
     origin,
     observation: textOrFallback(error.observation, ""),
     images: normalizeEvidenceImages(error.images),
+    legacyReference: normalizeTestErrorLegacyReference(error.legacyReference),
+    newStatus: normalizeTestErrorNewStatus(error.newStatus),
     correction: normalizeTestCorrection(error.correction),
   };
 }
 
 function normalizeTestErrorOrigin(origin: unknown): TestErrorOrigin {
   return origin === "legacy" ? "legacy" : "new";
+}
+
+function normalizeTestErrorLegacyReference(
+  reference: TestError["legacyReference"] | undefined,
+): TestError["legacyReference"] {
+  const fallback = createEmptyTestErrorLegacyReference();
+
+  if (!reference) {
+    return fallback;
+  }
+
+  return {
+    enabled: typeof reference.enabled === "boolean" ? reference.enabled : false,
+    description: textOrFallback(reference.description, ""),
+    images: normalizeEvidenceImages(reference.images),
+  };
+}
+
+function normalizeTestErrorNewStatus(
+  status: TestError["newStatus"] | undefined,
+): TestError["newStatus"] {
+  const fallback = createEmptyTestErrorNewStatus();
+
+  if (!status) {
+    return fallback;
+  }
+
+  return {
+    works: typeof status.works === "boolean" ? status.works : false,
+    images: normalizeEvidenceImages(status.images),
+  };
 }
 
 function normalizeTestCorrection(correction: TestCorrection | undefined): TestCorrection {
@@ -614,6 +656,8 @@ function getOtImageIds(document: OtDocument): string[] {
       ...test.result.newImages.map((image) => image.id),
       ...test.result.errors.flatMap((error) => [
         ...error.images.map((image) => image.id),
+        ...error.legacyReference.images.map((image) => image.id),
+        ...error.newStatus.images.map((image) => image.id),
         ...error.correction.beforeImages.map((image) => image.id),
         ...error.correction.afterImages.map((image) => image.id),
       ]),

@@ -228,6 +228,21 @@ export async function exportTeaDocument(documentData: TeaDocument): Promise<void
             spacing: { before: 220, after: 100 },
           },
         },
+        {
+          id: "Heading3",
+          name: "Heading 3",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: {
+            bold: true,
+            size: 24,
+            font: "Calibri",
+          },
+          paragraph: {
+            spacing: { before: 160, after: 80 },
+          },
+        },
       ],
     },
     sections: [
@@ -323,6 +338,21 @@ function validateOtDocumentImages(documentData: OtDocument): DocxExportImageProb
               location:
                 `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} ` +
                 `(${formatTestErrorOrigin(error.origin)})`,
+            }));
+          }
+
+          if (
+            error.origin === "legacy" &&
+            !error.newStatus.works &&
+            error.newStatus.images.length === 0
+          ) {
+            problems.push(createImageProblem("ot", {
+              label: "Print do erro no novo ausente",
+              detail:
+                "Adicione print do erro no Novo ou marque que o Novo funciona antes de exportar.",
+              location:
+                `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} ` +
+                `(${formatTestErrorOrigin(error.origin)}) > Novo`,
             }));
           }
         });
@@ -471,6 +501,18 @@ function collectOtTestImages(
         location:
           `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} ` +
           `(${formatTestErrorOrigin(error.origin)}) > Imagem ${imageIndex + 1}`,
+      })),
+      ...error.legacyReference.images.map((image, imageIndex) => ({
+        image,
+        location:
+          `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} > ` +
+          `Como e no legado que esta certo > Imagem ${imageIndex + 1}`,
+      })),
+      ...error.newStatus.images.map((image, imageIndex) => ({
+        image,
+        location:
+          `${testLocation} > Erros encontrados > Erro ${errorIndex + 1} > ` +
+          `Prints do erro no novo > Imagem ${imageIndex + 1}`,
       })),
       ...error.correction.beforeImages.map((image, imageIndex) => ({
         image,
@@ -721,6 +763,18 @@ async function optimizeOtDocumentImages(documentData: OtDocument): Promise<OtDoc
                   errors: await mapWithConcurrency(test.result.errors, async (error) => ({
                     ...error,
                     images: await optimizeEvidenceImagesForExport(error.images),
+                    legacyReference: {
+                      ...error.legacyReference,
+                      images: await optimizeEvidenceImagesForExport(
+                        error.legacyReference.images,
+                      ),
+                    },
+                    newStatus: {
+                      ...error.newStatus,
+                      images: await optimizeEvidenceImagesForExport(
+                        error.newStatus.images,
+                      ),
+                    },
                     correction: {
                       ...error.correction,
                       beforeImages: await optimizeEvidenceImagesForExport(
@@ -929,6 +983,7 @@ function teaHeading2(text: string): Paragraph {
 
 function teaSubHeading(text: string): Paragraph {
   return new Paragraph({
+    heading: HeadingLevel.HEADING_3,
     spacing: { before: 160, after: 80 },
     children: [teaRun(text, { bold: true })],
   });
@@ -1170,7 +1225,45 @@ function testErrorSection(error: TestError, index: number) {
       [28, 72],
     ),
     ...evidenceSection("Prints do erro:", error.images),
+    ...(error.origin === "new" ? legacyReferenceSection(error.legacyReference) : []),
+    ...(error.origin === "legacy" ? legacyNewStatusSection(error.newStatus) : []),
     ...(error.origin === "new" ? correctionSection(error.correction) : []),
+  ];
+}
+
+function legacyReferenceSection(reference: TestError["legacyReference"]) {
+  if (!hasMeaningfulLegacyReference(reference)) {
+    return [];
+  }
+
+  return [
+    new Paragraph({
+      spacing: { before: 120, after: 60 },
+      children: [run("Como e no legado que esta certo:", { bold: true, color: COLORS.title })],
+    }),
+    simpleTable(
+      [
+        [cell("Descricao", true), cell(reference.description.trim() || " ")],
+      ],
+      [28, 72],
+    ),
+    ...evidenceSection("Prints do legado correto:", reference.images),
+  ];
+}
+
+function legacyNewStatusSection(status: TestError["newStatus"]) {
+  return [
+    new Paragraph({
+      spacing: { before: 120, after: 60 },
+      children: [run("Situacao no novo:", { bold: true, color: COLORS.title })],
+    }),
+    simpleTable(
+      [
+        [cell("Situacao no novo", true), cell(status.works ? "Funciona" : "Tambem precisa ajuste")],
+      ],
+      [28, 72],
+    ),
+    ...(!status.works ? evidenceSection("Prints do erro no novo:", status.images) : []),
   ];
 }
 
@@ -1252,6 +1345,14 @@ function createImageRun(
     },
     type: parsedImage.extension,
   } as never);
+}
+
+function hasMeaningfulLegacyReference(reference: TestError["legacyReference"]): boolean {
+  return (
+    reference.enabled ||
+    Boolean(reference.description.trim()) ||
+    reference.images.length > 0
+  );
 }
 
 function hasImageData(image: EvidenceImage): image is ExportableEvidenceImage {

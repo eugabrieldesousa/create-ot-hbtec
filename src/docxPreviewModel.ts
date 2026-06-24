@@ -352,7 +352,41 @@ function testErrorSection(error: TestError, index: number): DocxPreviewBlock[] {
       [28, 72],
     ),
     ...evidenceSection("Prints do erro:", error.images),
+    ...(error.origin === "new" ? legacyReferenceSection(error.legacyReference) : []),
+    ...(error.origin === "legacy" ? legacyNewStatusSection(error.newStatus) : []),
     ...(error.origin === "new" ? correctionSection(error.correction) : []),
+  ];
+}
+
+function legacyReferenceSection(
+  reference: TestError["legacyReference"],
+): DocxPreviewBlock[] {
+  if (!hasMeaningfulLegacyReference(reference)) {
+    return [];
+  }
+
+  return [
+    paragraph("ot-label", "Como e no legado que esta certo:", {
+      runs: [{ text: "Como e no legado que esta certo:", bold: true }],
+    }),
+    simpleTable(
+      [[cell("Descricao", true), cell(reference.description.trim() || " ")]],
+      [28, 72],
+    ),
+    ...evidenceSection("Prints do legado correto:", reference.images),
+  ];
+}
+
+function legacyNewStatusSection(status: TestError["newStatus"]): DocxPreviewBlock[] {
+  return [
+    paragraph("ot-label", "Situacao no novo:", {
+      runs: [{ text: "Situacao no novo:", bold: true }],
+    }),
+    simpleTable(
+      [[cell("Situacao no novo", true), cell(status.works ? "Funciona" : "Tambem precisa ajuste")]],
+      [28, 72],
+    ),
+    ...(!status.works ? evidenceSection("Prints do erro no novo:", status.images) : []),
   ];
 }
 
@@ -701,6 +735,14 @@ function formatCloudStage(value: string): string {
   }
 
   return "Nao enviado";
+}
+
+function hasMeaningfulLegacyReference(reference: TestError["legacyReference"]): boolean {
+  return (
+    reference.enabled ||
+    Boolean(reference.description.trim()) ||
+    reference.images.length > 0
+  );
 }
 
 function formatTestErrorOrigin(origin: TestError["origin"]): string {

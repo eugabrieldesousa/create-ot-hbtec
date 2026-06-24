@@ -121,6 +121,36 @@ describe("buildOtPreviewModel", () => {
       true,
     );
   });
+
+  it("renders the correct legacy reference for Novo errors", () => {
+    const documentData = createOtPreviewDocument();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.errors = [createPreviewError("new")];
+
+    const model = buildOtPreviewModel(documentData);
+    const texts = model.blocks.map(blockText);
+
+    expect(texts).toContain("Como e no legado que esta certo:");
+    expect(texts).toContain("Prints do legado correto:");
+    expect(texts.some((text) => text.includes("Descricao") && text.includes("Legado correto."))).toBe(
+      true,
+    );
+  });
+
+  it("renders the new status for Legado errors", () => {
+    const documentData = createOtPreviewDocument();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.errors = [createPreviewError("legacy")];
+
+    const model = buildOtPreviewModel(documentData);
+    const texts = model.blocks.map(blockText);
+
+    expect(texts).toContain("Situacao no novo:");
+    expect(texts).toContain("Prints do erro no novo:");
+    expect(texts.some((text) => text.includes("Situacao no novo") && text.includes("Tambem precisa ajuste"))).toBe(
+      true,
+    );
+  });
 });
 
 describe("buildTeaPreviewModel", () => {
@@ -349,6 +379,15 @@ function createPreviewError(origin: "legacy" | "new"): TestError {
     origin,
     observation: origin === "new" ? "Falha no novo." : "Falha no legado.",
     images: [createImage(`error-${origin}`, "Print do erro", 100, 80)],
+    legacyReference: {
+      enabled: origin === "new",
+      description: origin === "new" ? "Legado correto." : "",
+      images: origin === "new" ? [createImage(`error-${origin}-legacy-reference`, "Legado correto", 100, 80)] : [],
+    },
+    newStatus: {
+      works: origin === "new",
+      images: origin === "legacy" ? [createImage(`error-${origin}-new-status`, "Erro no novo", 100, 80)] : [],
+    },
     correction: {
       corrected: true,
       hotfixTag: "hotfix 2.0.0",

@@ -54,11 +54,24 @@ export type TestCorrection = {
   cloudStage: CorrectionCloudStage;
 };
 
+export type TestErrorLegacyReference = {
+  enabled: boolean;
+  description: string;
+  images: EvidenceImage[];
+};
+
+export type TestErrorNewStatus = {
+  works: boolean;
+  images: EvidenceImage[];
+};
+
 export type TestError = {
   id: string;
   origin: TestErrorOrigin;
   observation: string;
   images: EvidenceImage[];
+  legacyReference: TestErrorLegacyReference;
+  newStatus: TestErrorNewStatus;
   correction: TestCorrection;
 };
 

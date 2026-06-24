@@ -1,4 +1,12 @@
-import type { CheckKey, OtDocument, TestCorrection, TestError, TestResult } from "./types";
+import type {
+  CheckKey,
+  OtDocument,
+  TestCorrection,
+  TestError,
+  TestErrorLegacyReference,
+  TestErrorNewStatus,
+  TestResult,
+} from "./types";
 
 export const checkLabels: Record<CheckKey, string> = {
   sameBehavior: "Funcionou legado e novo estão com o mesmo comportamento",
@@ -56,7 +64,7 @@ export function getEffectiveChecks(
       sameBehavior: checks.sameBehavior && errors.length === 0,
       bothIssue: hasLegacyError,
       newIssue: hasNewError,
-      errorReport: errors.length > 0,
+      errorReport: hasLegacyError,
     };
   }
 
@@ -77,12 +85,29 @@ export function createEmptyTestCorrection(): TestCorrection {
   };
 }
 
+export function createEmptyTestErrorLegacyReference(): TestErrorLegacyReference {
+  return {
+    enabled: false,
+    description: "",
+    images: [],
+  };
+}
+
+export function createEmptyTestErrorNewStatus(): TestErrorNewStatus {
+  return {
+    works: false,
+    images: [],
+  };
+}
+
 export function createEmptyTestError(id: string, origin: TestError["origin"]): TestError {
   return {
     id,
     origin,
     observation: "",
     images: [],
+    legacyReference: createEmptyTestErrorLegacyReference(),
+    newStatus: createEmptyTestErrorNewStatus(),
     correction: createEmptyTestCorrection(),
   };
 }

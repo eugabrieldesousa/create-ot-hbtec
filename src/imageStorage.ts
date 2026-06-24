@@ -1,4 +1,8 @@
-import { createEmptyTestCorrection } from "./defaultDocument";
+import {
+  createEmptyTestCorrection,
+  createEmptyTestErrorLegacyReference,
+  createEmptyTestErrorNewStatus,
+} from "./defaultDocument";
 import type {
   EvidenceImage,
   OtDocument,
@@ -152,6 +156,16 @@ export async function hydrateDocumentImages(documentData: OtDocument): Promise<O
             errors: test.result.errors.map((error) => ({
               ...error,
               images: hydrateImages(error.images),
+              legacyReference: {
+                ...createEmptyTestErrorLegacyReference(),
+                ...error.legacyReference,
+                images: hydrateImages(error.legacyReference?.images ?? []),
+              },
+              newStatus: {
+                ...createEmptyTestErrorNewStatus(),
+                ...error.newStatus,
+                images: hydrateImages(error.newStatus?.images ?? []),
+              },
               correction: {
                 ...createEmptyTestCorrection(),
                 ...error.correction,
@@ -219,6 +233,8 @@ function getDocumentImages(documentData: OtDocument): EvidenceImage[] {
       ...test.result.newImages,
       ...test.result.errors.flatMap((error) => [
         ...error.images,
+        ...(error.legacyReference?.images ?? []),
+        ...(error.newStatus?.images ?? []),
         ...error.correction.beforeImages,
         ...error.correction.afterImages,
       ]),
@@ -313,6 +329,16 @@ export function stripImageDataFromDocument(documentData: OtDocument): OtDocument
     errors: result.errors.map((error) => ({
       ...error,
       images: error.images.map(stripImageData),
+      legacyReference: {
+        ...createEmptyTestErrorLegacyReference(),
+        ...error.legacyReference,
+        images: (error.legacyReference?.images ?? []).map(stripImageData),
+      },
+      newStatus: {
+        ...createEmptyTestErrorNewStatus(),
+        ...error.newStatus,
+        images: (error.newStatus?.images ?? []).map(stripImageData),
+      },
       correction: {
         ...createEmptyTestCorrection(),
         ...error.correction,

@@ -406,6 +406,28 @@ describe("App OT card UX", () => {
 
   });
 
+  it("shows Novo status controls for Legado errors", async () => {
+    window.localStorage.setItem(draftKey, JSON.stringify(createReviewDraft()));
+
+    await renderApp();
+    await clickButton("Testes");
+    await clickElement(getToggleByControlPrefix("test-details"));
+    await clickButton("Adicionar erro no Legado");
+
+    const newStatusPanel = getLastNewStatusPanel();
+
+    expect(newStatusPanel?.textContent ?? "").toContain("No novo funciona");
+    expect(newStatusPanel?.textContent ?? "").toContain("Precisa ajustar no novo tambem");
+    expect(newStatusPanel?.textContent ?? "").toContain("Prints do erro no novo");
+
+    await clickLastLabel("No novo funciona");
+
+    const updatedNewStatusPanel = getLastNewStatusPanel();
+
+    expect(updatedNewStatusPanel?.textContent ?? "").toContain("Novo funcionando");
+    expect(updatedNewStatusPanel?.textContent ?? "").not.toContain("Prints do erro no novo");
+  });
+
   it("groups Novo tests in Para corrigir and reflects corrected state on test cards", async () => {
     const documentData = createCompleteReviewDraft();
     const test = documentData.permissionBlocks["macro-a:micro-at"].tests[0];
@@ -2227,6 +2249,33 @@ async function clickDialogLabel(label: string): Promise<void> {
   });
 }
 
+async function clickLabel(label: string): Promise<void> {
+  const labelElement = Array.from(container.querySelectorAll<HTMLLabelElement>("label")).find(
+    (element) => element.textContent?.includes(label),
+  );
+
+  expect(labelElement).toBeTruthy();
+
+  await act(async () => {
+    labelElement?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function clickLastLabel(label: string): Promise<void> {
+  const labelElements = Array.from(container.querySelectorAll<HTMLLabelElement>("label")).filter(
+    (element) => element.textContent?.includes(label),
+  );
+  const labelElement = labelElements[labelElements.length - 1];
+
+  expect(labelElement).toBeTruthy();
+
+  await act(async () => {
+    labelElement?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 async function clickLastDialogLabel(label: string): Promise<void> {
   const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
   const labelElements = Array.from(dialog?.querySelectorAll<HTMLLabelElement>("label") ?? []).filter(
@@ -2427,6 +2476,12 @@ function getToggleByControlPrefix(prefix: string): HTMLButtonElement | null {
   return container.querySelector<HTMLButtonElement>(
     `button[aria-controls^="${prefix}"][aria-expanded]`,
   );
+}
+
+function getLastNewStatusPanel(): HTMLElement | undefined {
+  const panels = Array.from(container.querySelectorAll<HTMLElement>(".newStatusPanel"));
+
+  return panels[panels.length - 1];
 }
 
 function getToggleByControlId(controlId: string): HTMLButtonElement | null {
@@ -3384,6 +3439,15 @@ function createTestError(origin: "legacy" | "new"): TestError {
     origin,
     observation: origin === "new" ? "Falha no novo." : "Falha no legado.",
     images: [createImage(`error-${origin}-image`)],
+    legacyReference: {
+      enabled: false,
+      description: "",
+      images: [],
+    },
+    newStatus: {
+      works: origin === "new",
+      images: origin === "legacy" ? [createImage("error-legacy-new-image")] : [],
+    },
     correction: {
       corrected: false,
       beforeImages: [],

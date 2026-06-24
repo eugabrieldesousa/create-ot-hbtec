@@ -109,6 +109,8 @@ describe("imageStorage batch APIs", () => {
       stripped.permissionBlocks["macro:micro"].tests[0].correction;
 
     expect(strippedError.images[0].dataUrl).toBeUndefined();
+    expect(strippedError.legacyReference.images[0].dataUrl).toBeUndefined();
+    expect(strippedError.newStatus.images[0].dataUrl).toBeUndefined();
     expect(strippedError.correction.beforeImages[0].dataUrl).toBeUndefined();
     expect(strippedError.correction.afterImages[0].dataUrl).toBeUndefined();
     expect(strippedCorrection?.beforeImages[0].dataUrl).toBeUndefined();
@@ -120,6 +122,12 @@ describe("imageStorage batch APIs", () => {
       hydrated.permissionBlocks["macro:micro"].tests[0].correction;
 
     expect(hydratedError.images[0].dataUrl).toBe("data:image/png;base64,ZXJyb3I=");
+    expect(hydratedError.legacyReference.images[0].dataUrl).toBe(
+      "data:image/png;base64,bGVnYWN5LXJlZmVyZW5jZQ==",
+    );
+    expect(hydratedError.newStatus.images[0].dataUrl).toBe(
+      "data:image/png;base64,bmV3LXN0YXR1cw==",
+    );
     expect(hydratedError.correction.beforeImages[0].dataUrl).toBe(
       "data:image/png;base64,ZXJyb3ItYmVmb3Jl",
     );
@@ -264,6 +272,22 @@ function createOtImageDocument(): OtDocument {
                   origin: "new",
                   observation: "Falha no novo.",
                   images: [createImage("error-image", "data:image/png;base64,ZXJyb3I=")],
+                  legacyReference: {
+                    enabled: true,
+                    description: "Legado correto.",
+                    images: [
+                      createImage(
+                        "legacy-reference-image",
+                        "data:image/png;base64,bGVnYWN5LXJlZmVyZW5jZQ==",
+                      ),
+                    ],
+                  },
+                  newStatus: {
+                    works: false,
+                    images: [
+                      createImage("new-status-image", "data:image/png;base64,bmV3LXN0YXR1cw=="),
+                    ],
+                  },
                   correction: {
                     corrected: true,
                     hotfixTag: "hotfix erro",

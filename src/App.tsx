@@ -75,6 +75,8 @@ import {
   checkLabels,
   checkOrder,
   createEmptyTestError,
+  createEmptyTestErrorLegacyReference,
+  createEmptyTestErrorNewStatus,
   createEmptyTestCorrection,
   createEmptyTestResult,
   createPermissionKey,
@@ -128,6 +130,8 @@ import type {
   TeaSubActivity,
   TestCorrection,
   TestError,
+  TestErrorLegacyReference,
+  TestErrorNewStatus,
   TestErrorOrigin,
   TestResult,
 } from "./types";
@@ -4452,11 +4456,13 @@ function SummaryChips({
 
 function CheckStatusChips({ result }: { result: TestResult }) {
   const selectedKeys = getSelectedCheckKeys(result);
+  const statusKeys = selectedKeys.slice(0, 2);
+  const hiddenStatusCount = selectedKeys.length - statusKeys.length;
 
   return (
     <div className="statusChips">
-      {selectedKeys.length > 0 ? (
-        selectedKeys.map((key) => (
+      {statusKeys.length > 0 ? (
+        statusKeys.map((key) => (
           <Badge
             key={key}
             size="xs"
@@ -4479,6 +4485,11 @@ function CheckStatusChips({ result }: { result: TestResult }) {
           Sem status
         </Badge>
       )}
+      {hiddenStatusCount > 0 ? (
+        <Badge size="xs" variant="outline" color="gray" className="statusChip">
+          +{hiddenStatusCount} status
+        </Badge>
+      ) : null}
     </div>
   );
 }
@@ -5879,12 +5890,14 @@ const BlockTestEditor = memo(function BlockTestEditor({
                 {displayTitle}
               </Text>
               <CheckStatusChips result={test.result} />
-              {correction.corrected ? (
-                <Badge size="xs" color="green" variant="light" className="correctionStatusBadge">
-                  Corrigido
-                </Badge>
-              ) : null}
-              <SummaryChips items={summaryItems} review={testReview} />
+              <div className="testSummaryLine">
+                {correction.corrected ? (
+                  <Badge size="xs" color="green" variant="light" className="correctionStatusBadge">
+                    Corrigido
+                  </Badge>
+                ) : null}
+                <SummaryChips items={summaryItems} review={testReview} />
+              </div>
             </div>
           </Group>
           <BlockTestActionsMenu
@@ -5911,10 +5924,14 @@ const BlockTestEditor = memo(function BlockTestEditor({
                 }}
               />
               <Paper withBorder p="sm" className="quickChecksPanel">
-                <Stack gap="xs">
-                  <Text fw={750} size="sm">
-                    Status geral
-                  </Text>
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center" gap="sm" className="quickChecksHeader">
+                    <div>
+                      <Text fw={750} size="sm">
+                        Status geral
+                      </Text>
+                    </div>
+                  </Group>
                   <Group gap={6} className="quickChecks">
                     {checkOrder.map((key) => {
                       const effectiveChecks = getEffectiveChecks(
@@ -6397,6 +6414,8 @@ function CorrectionGroupCard({
   const [isExpanded, setIsExpanded] = useState(false);
   const panelId = `correction-details-${toDomId(group.key)}`;
   const errorImages = group.error.images;
+  const legacyReference = group.error.legacyReference;
+  const hasLegacyReference = hasMeaningfulLegacyReference(legacyReference);
   const observations = [group.error.observation.trim()].filter(Boolean);
   const hasBeforeImage = group.correction.beforeImages.length > 0;
   const hasAfterImage = group.correction.afterImages.length > 0;
@@ -6494,10 +6513,22 @@ function CorrectionGroupCard({
                   )}
                 </CorrectionReadonlyField>
                 <CorrectionReadonlyField title="Legado">
-                  <ReadonlyImageStrip
-                    images={group.occurrences[0]?.test.result.legacyImages ?? []}
-                    emptyLabel="Sem evidencias gerais do legado."
-                  />
+                  {hasLegacyReference ? (
+                    <Stack gap="xs">
+                      {legacyReference.description.trim() ? (
+                        <ReadonlyMultilineText value={legacyReference.description.trim()} />
+                      ) : null}
+                      <ReadonlyImageStrip
+                        images={legacyReference.images}
+                        emptyLabel="Sem prints do legado correto."
+                      />
+                    </Stack>
+                  ) : (
+                    <ReadonlyImageStrip
+                      images={group.occurrences[0]?.test.result.legacyImages ?? []}
+                      emptyLabel="Sem evidencias gerais do legado."
+                    />
+                  )}
                 </CorrectionReadonlyField>
                 <CorrectionReadonlyField title="Erro no Novo">
                   <ReadonlyImageStrip images={errorImages} emptyLabel="Sem prints do erro." />
@@ -6789,7 +6820,7 @@ const TestResultEditor = memo(function TestResultEditor({
 
       <Paper withBorder p="sm" className="testErrorsPanel">
         <Stack gap="sm">
-          <Group justify="space-between" align="center" gap="sm">
+          <Group justify="space-between" align="flex-start" gap="sm" className="testErrorsHeader">
             <div>
               <Text fw={750} size="sm">
                 Erros encontrados
@@ -6798,7 +6829,7 @@ const TestResultEditor = memo(function TestResultEditor({
                 Cada erro deve indicar onde aconteceu e conter observacao e print.
               </Text>
             </div>
-            <Group gap="xs">
+            <Group gap="xs" className="testErrorActions">
               <Button
                 size="xs"
                 variant="light"
@@ -6887,6 +6918,167 @@ function TestErrorEditor({
     onChange((current) => ({ ...current, images: updater(current.images) }));
   }
 
+  function updateLegacyReferenceImages(
+    updater: (images: EvidenceImage[]) => EvidenceImage[],
+  ): void {
+    onChange((current) => ({
+      ...current,
+      legacyReference: {
+        ...current.legacyReference,
+        images: updater(current.legacyReference.images),
+      },
+    }));
+  }
+
+  function updateNewStatusImages(
+    updater: (images: EvidenceImage[]) => EvidenceImage[],
+  ): void {
+    onChange((current) => ({
+      ...current,
+      newStatus: {
+        ...current.newStatus,
+        images: updater(current.newStatus.images),
+      },
+    }));
+  }
+
+  function clearLegacyReference(): void {
+    void deleteEvidenceImageDataBatch(error.legacyReference.images.map((image) => image.id));
+    onChange((current) => ({
+      ...current,
+      legacyReference: createEmptyTestErrorLegacyReference(),
+    }));
+  }
+
+  function clearNewStatus(): void {
+    void deleteEvidenceImageDataBatch(error.newStatus.images.map((image) => image.id));
+    onChange((current) => ({
+      ...current,
+      newStatus: createEmptyTestErrorNewStatus(),
+    }));
+  }
+
+  function handleOriginChange(value: string): void {
+    const nextOrigin: TestErrorOrigin = value === "legacy" ? "legacy" : "new";
+
+    if (nextOrigin === error.origin) {
+      return;
+    }
+
+    if (nextOrigin === "legacy" && hasMeaningfulLegacyReference(error.legacyReference)) {
+      confirmAction(
+        {
+          title: "Remover referencia do legado correto?",
+          description:
+            "Ao trocar este erro para Legado, o campo \"Como e no legado que esta certo\" e seus prints serao removidos.",
+          confirmLabel: "Trocar para Legado",
+        },
+        () => {
+          void deleteEvidenceImageDataBatch(error.legacyReference.images.map((image) => image.id));
+          onChange((current) => ({
+            ...current,
+            origin: "legacy",
+            legacyReference: createEmptyTestErrorLegacyReference(),
+          }));
+        },
+      );
+      return;
+    }
+
+    if (nextOrigin === "new" && hasMeaningfulNewStatus(error.newStatus)) {
+      confirmAction(
+        {
+          title: "Remover situacao do novo?",
+          description:
+            "Ao trocar este erro para Novo, o campo \"No novo funciona\" e seus prints serao removidos.",
+          confirmLabel: "Trocar para Novo",
+        },
+        () => {
+          void deleteEvidenceImageDataBatch(error.newStatus.images.map((image) => image.id));
+          onChange((current) => ({
+            ...current,
+            origin: "new",
+            newStatus: createEmptyTestErrorNewStatus(),
+          }));
+        },
+      );
+      return;
+    }
+
+    onChange((current) => ({
+      ...current,
+      origin: nextOrigin,
+      legacyReference:
+        nextOrigin === "new"
+          ? current.legacyReference
+          : createEmptyTestErrorLegacyReference(),
+      newStatus:
+        nextOrigin === "legacy"
+          ? current.newStatus
+          : createEmptyTestErrorNewStatus(),
+    }));
+  }
+
+  function handleLegacyReferenceEnabledChange(checked: boolean): void {
+    if (checked) {
+      onChange((current) => ({
+        ...current,
+        legacyReference: {
+          ...current.legacyReference,
+          enabled: true,
+        },
+      }));
+      return;
+    }
+
+    if (hasMeaningfulLegacyReference(error.legacyReference)) {
+      confirmAction(
+        {
+          title: "Remover referencia do legado correto?",
+          description:
+            "O texto e os prints adicionados em \"Como e no legado que esta certo\" serao removidos.",
+          confirmLabel: "Remover referencia",
+        },
+        clearLegacyReference,
+      );
+      return;
+    }
+
+    clearLegacyReference();
+  }
+
+  function handleNewStatusWorksChange(checked: boolean): void {
+    if (checked && error.newStatus.images.length > 0) {
+      confirmAction(
+        {
+          title: "Remover prints do erro no novo?",
+          description:
+            "Ao marcar que o Novo funciona, os prints anexados em \"Prints do erro no novo\" serao removidos.",
+          confirmLabel: "Marcar como funcionando",
+        },
+        () => {
+          void deleteEvidenceImageDataBatch(error.newStatus.images.map((image) => image.id));
+          onChange((current) => ({
+            ...current,
+            newStatus: {
+              works: true,
+              images: [],
+            },
+          }));
+        },
+      );
+      return;
+    }
+
+    onChange((current) => ({
+      ...current,
+      newStatus: {
+        ...current.newStatus,
+        works: checked,
+      },
+    }));
+  }
+
   function confirmRemove(): void {
     confirmAction(
       {
@@ -6897,6 +7089,8 @@ function TestErrorEditor({
       () => {
         void deleteEvidenceImageDataBatch([
           ...error.images.map((image) => image.id),
+          ...error.legacyReference.images.map((image) => image.id),
+          ...error.newStatus.images.map((image) => image.id),
           ...error.correction.beforeImages.map((image) => image.id),
           ...error.correction.afterImages.map((image) => image.id),
         ]);
@@ -6906,9 +7100,9 @@ function TestErrorEditor({
   }
 
   return (
-    <Paper withBorder p="sm" className="testErrorCard">
+    <Paper withBorder p="sm" className={`testErrorCard testErrorCard--${error.origin}`}>
       <Stack gap="sm">
-        <Group justify="space-between" align="center" gap="sm">
+        <Group justify="space-between" align="flex-start" gap="sm" className="testErrorHeader">
           <Group gap="xs" align="center">
             <Badge color={error.origin === "new" ? "red" : "yellow"} variant="light">
               Erro {index + 1}
@@ -6924,17 +7118,21 @@ function TestErrorEditor({
           </Tooltip>
         </Group>
 
-        <SegmentedControl
-          size="xs"
-          data={errorOriginOptions}
-          value={error.origin}
-          onChange={(value) =>
-            onChange((current) => ({
-              ...current,
-              origin: value === "legacy" ? "legacy" : "new",
-            }))
-          }
-        />
+        <div className="testErrorMeta">
+          <SegmentedControl
+            size="xs"
+            data={errorOriginOptions}
+            value={error.origin}
+            onChange={handleOriginChange}
+          />
+          <div className="errorStatusBadges">
+            {buildErrorStatusBadges(error).map((badge) => (
+              <Badge key={badge.label} size="xs" color={badge.color} variant={badge.variant}>
+                {badge.label}
+              </Badge>
+            ))}
+          </div>
+        </div>
 
         <BufferedTextarea
           label="Observacao do erro"
@@ -6955,6 +7153,83 @@ function TestErrorEditor({
           <Text c="red" size="xs" fw={700}>
             Adicione ao menos um print para este erro.
           </Text>
+        ) : null}
+
+        {error.origin === "legacy" ? (
+          <Paper withBorder p="sm" className="newStatusPanel">
+            <Stack gap="sm">
+              <Group justify="space-between" gap="xs" align="center">
+                <Checkbox
+                  checked={error.newStatus.works}
+                  label="No novo funciona"
+                  onChange={(event) =>
+                    handleNewStatusWorksChange(event.currentTarget.checked)
+                  }
+                />
+                <Badge
+                  size="sm"
+                  color={error.newStatus.works ? "green" : "yellow"}
+                  variant="light"
+                >
+                  {error.newStatus.works ? "Novo funcionando" : "Precisa ajustar no novo tambem"}
+                </Badge>
+              </Group>
+              {!error.newStatus.works ? (
+                <>
+                  <EvidenceUploader
+                    title="Prints do erro no novo"
+                    tone="new"
+                    images={error.newStatus.images}
+                    onChange={updateNewStatusImages}
+                  />
+                  {error.newStatus.images.length === 0 ? (
+                    <Text c="red" size="xs" fw={700}>
+                      Adicione ao menos um print do erro no Novo ou marque que o Novo funciona.
+                    </Text>
+                  ) : null}
+                </>
+              ) : null}
+            </Stack>
+          </Paper>
+        ) : null}
+
+        {error.origin === "new" ? (
+          <Paper withBorder p="sm" className="legacyReferencePanel">
+            <Stack gap="sm">
+              <Checkbox
+                checked={error.legacyReference.enabled}
+                label="Adicionar como e no legado que esta certo"
+                onChange={(event) =>
+                  handleLegacyReferenceEnabledChange(event.currentTarget.checked)
+                }
+              />
+              {error.legacyReference.enabled ? (
+                <>
+                  <BufferedTextarea
+                    label="Como e no legado que esta certo"
+                    value={error.legacyReference.description}
+                    minRows={3}
+                    styles={{ input: { resize: "vertical" } }}
+                    onCommit={(value) =>
+                      onChange((current) => ({
+                        ...current,
+                        legacyReference: {
+                          ...current.legacyReference,
+                          description: value,
+                        },
+                      }))
+                    }
+                  />
+                  <EvidenceUploader
+                    title="Prints do legado correto"
+                    tone="legacy"
+                    images={error.legacyReference.images}
+                    onChange={updateLegacyReferenceImages}
+                  />
+                </>
+              ) : null}
+            </Stack>
+          </Paper>
         ) : null}
       </Stack>
     </Paper>
@@ -7100,6 +7375,7 @@ const EvidenceUploader = memo(function EvidenceUploader({
             {(props) => (
               <Button
                 {...props}
+                size="xs"
                 variant="light"
                 leftSection={<ImagePlus size={17} />}
                 loading={isProcessingFiles}
@@ -7162,7 +7438,7 @@ const EvidenceUploader = memo(function EvidenceUploader({
             ))}
           </Stack>
         ) : (
-          <Text c="dimmed" ta="center" py="md" className="evidenceEmpty">
+          <Text c="dimmed" ta="center" py="xs" className="evidenceEmpty">
             Sem imagens
           </Text>
         )}
@@ -9504,6 +9780,8 @@ function getTestImageCount(test: PermissionBlockTest): number {
     (total, error) =>
       total +
       error.images.length +
+      error.legacyReference.images.length +
+      error.newStatus.images.length +
       error.correction.beforeImages.length +
       error.correction.afterImages.length,
     0,
@@ -9537,7 +9815,15 @@ function testHasPendingReview(test: PermissionBlockTest): boolean {
     selectedCheckCount === 0 ||
     (!hasErrors && test.result.legacyImages.length === 0) ||
     (!hasErrors && test.result.newImages.length === 0) ||
-    test.result.errors.some((error) => !error.observation.trim() || error.images.length === 0)
+    test.result.errors.some(
+      (error) =>
+        !error.observation.trim() ||
+        error.images.length === 0 ||
+        (error.origin === "new" && !hasMeaningfulLegacyReference(error.legacyReference)) ||
+        (error.origin === "legacy" &&
+          !error.newStatus.works &&
+          error.newStatus.images.length === 0),
+    )
   );
 }
 
@@ -9705,18 +9991,12 @@ function buildPermissionBlockSummaryItems(block: PermissionBlock): string[] {
 }
 
 function buildTestSummaryItems(test: PermissionBlockTest): string[] {
-  const items = [
+  return [
     `${getSelectedCheckKeys(test.result).length}/${checkOrder.length} checks`,
     `Legado ${test.result.legacyImages.length}`,
     `Novo ${test.result.newImages.length}`,
     formatOtCount(test.result.errors.length, "erro", "erros"),
   ];
-
-  if (getTestCorrection(test).corrected) {
-    items.push("Corrigido");
-  }
-
-  return items;
 }
 
 function buildCorrectionGroups(
@@ -10428,6 +10708,37 @@ function buildReviewSummary(
             severity: "danger",
             label: "Print do erro ausente",
             detail: `${errorLabel}: adicione ao menos um print do erro.`,
+            tab: "tests",
+            targetId,
+            blockKey: entry.key,
+            testId: test.id,
+          });
+        }
+
+        if (error.origin === "new" && !hasMeaningfulLegacyReference(error.legacyReference)) {
+          summary.issues.push({
+            id: `missing-legacy-reference-${referenceKey}-${error.id}`,
+            severity: "warning",
+            label: "Referencia do legado ausente",
+            detail: `${errorLabel}: informe como e no legado que esta certo.`,
+            tab: "tests",
+            targetId,
+            blockKey: entry.key,
+            testId: test.id,
+          });
+        }
+
+        if (
+          error.origin === "legacy" &&
+          !error.newStatus.works &&
+          error.newStatus.images.length === 0
+        ) {
+          summary.issues.push({
+            id: `missing-new-status-image-${referenceKey}-${error.id}`,
+            severity: "danger",
+            label: "Print do erro no novo ausente",
+            detail:
+              `${errorLabel}: adicione print do erro no Novo ou marque que o Novo funciona.`,
             tab: "tests",
             targetId,
             blockKey: entry.key,
@@ -11353,6 +11664,49 @@ function hasMeaningfulTeaBlockContent(block: TeaContentBlock): boolean {
 
 function hasMeaningfulEvidenceImageContent(image: EvidenceImage): boolean {
   return Boolean(image.label.trim() || image.name.trim() || image.dataUrl);
+}
+
+function hasMeaningfulLegacyReference(reference: TestErrorLegacyReference): boolean {
+  return (
+    reference.enabled ||
+    Boolean(reference.description.trim()) ||
+    reference.images.some(hasMeaningfulEvidenceImageContent)
+  );
+}
+
+function hasMeaningfulNewStatus(status: TestErrorNewStatus): boolean {
+  return status.works || status.images.some(hasMeaningfulEvidenceImageContent);
+}
+
+function buildErrorStatusBadges(
+  error: TestError,
+): Array<{ label: string; color: string; variant: "light" | "outline" }> {
+  const badges: Array<{ label: string; color: string; variant: "light" | "outline" }> = [
+    error.origin === "legacy"
+      ? { label: "Erro no legado", color: "yellow", variant: "light" }
+      : { label: "Erro no novo", color: "red", variant: "light" },
+  ];
+
+  if (error.origin === "legacy") {
+    badges.push({ label: "Relatorio de Erros", color: "red", variant: "light" });
+    badges.push(
+      error.newStatus.works
+        ? { label: "Novo funcionando", color: "green", variant: "light" }
+        : { label: "Precisa ajustar no novo tambem", color: "yellow", variant: "light" },
+    );
+  }
+
+  if (
+    error.images.length === 0 ||
+    (error.origin === "legacy" &&
+      !error.newStatus.works &&
+      error.newStatus.images.length === 0) ||
+    (error.origin === "new" && !hasMeaningfulLegacyReference(error.legacyReference))
+  ) {
+    badges.push({ label: "Falta print", color: "red", variant: "outline" });
+  }
+
+  return badges;
 }
 
 async function duplicateTeaContentBlock(block: TeaContentBlock): Promise<TeaContentBlock> {

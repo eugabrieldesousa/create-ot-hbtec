@@ -1,5 +1,9 @@
 import JSZip from "jszip";
 import {
+  createEmptyTestErrorLegacyReference,
+  createEmptyTestErrorNewStatus,
+} from "./defaultDocument";
+import {
   hydrateDocumentImages,
   hydrateTeaDocumentImages,
   stripImageDataFromDocument,
@@ -161,6 +165,16 @@ export function removeAllOtImages(documentData: OtDocument): ClearImagesResult<O
     errors: (result.errors ?? []).map((error) => ({
       ...error,
       images: [],
+      legacyReference: {
+        ...createEmptyTestErrorLegacyReference(),
+        ...error.legacyReference,
+        images: [],
+      },
+      newStatus: {
+        ...createEmptyTestErrorNewStatus(),
+        ...error.newStatus,
+        images: [],
+      },
       correction: {
         ...error.correction,
         beforeImages: [],
@@ -321,6 +335,18 @@ function collectOtImages(documentData: OtDocument): LocatedImage[] {
             `${test.title || "Teste"} > Erro ${errorIndex + 1} > ` +
             `${error.origin === "legacy" ? "Legado" : "Novo"} > Imagem ${imageIndex + 1}`,
         })),
+        ...(error.legacyReference?.images ?? []).map((image, imageIndex) => ({
+          image,
+          location:
+            `${test.title || "Teste"} > Erro ${errorIndex + 1} > ` +
+            `Legado correto > Imagem ${imageIndex + 1}`,
+        })),
+        ...(error.newStatus?.images ?? []).map((image, imageIndex) => ({
+          image,
+          location:
+            `${test.title || "Teste"} > Erro ${errorIndex + 1} > ` +
+            `Erro no novo > Imagem ${imageIndex + 1}`,
+        })),
         ...error.correction.beforeImages.map((image, imageIndex) => ({
           image,
           location: `${test.title || "Teste"} > Erro ${errorIndex + 1} > Antes > Imagem ${imageIndex + 1}`,
@@ -387,6 +413,16 @@ function attachOtImageData(
     errors: (result.errors ?? []).map((error) => ({
       ...error,
       images: hydrateImages(error.images),
+      legacyReference: {
+        ...createEmptyTestErrorLegacyReference(),
+        ...error.legacyReference,
+        images: hydrateImages(error.legacyReference?.images ?? []),
+      },
+      newStatus: {
+        ...createEmptyTestErrorNewStatus(),
+        ...error.newStatus,
+        images: hydrateImages(error.newStatus?.images ?? []),
+      },
       correction: {
         ...error.correction,
         beforeImages: hydrateImages(error.correction.beforeImages),

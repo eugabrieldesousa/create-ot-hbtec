@@ -89,6 +89,8 @@ type ParserState = {
   currentError?: TestError;
   currentEvidence?: "legacyImages" | "newImages";
   currentErrorEvidence?: boolean;
+  currentLegacyReferenceEvidence?: boolean;
+  currentNewStatusEvidence?: boolean;
   currentCorrectionEvidence?: "beforeImages" | "afterImages";
   pendingImageLabel?: string;
   imageCount: number;
@@ -974,6 +976,8 @@ function parseTestError(token: Token, state: ParserState): boolean {
   if (normalized === "erros encontrados" || normalized === "erros encontrados:") {
     state.currentEvidence = undefined;
     state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = undefined;
     return true;
@@ -992,6 +996,8 @@ function parseTestError(token: Token, state: ParserState): boolean {
     state.currentError = error;
     state.currentEvidence = undefined;
     state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = undefined;
     return true;
@@ -1014,6 +1020,17 @@ function parseTestError(token: Token, state: ParserState): boolean {
     return true;
   }
 
+  if (label.includes("descricao") && state.currentError.origin === "new") {
+    state.currentError.legacyReference.enabled = true;
+    state.currentError.legacyReference.description = value;
+    return true;
+  }
+
+  if (label.includes("situacao no novo") && state.currentError.origin === "legacy") {
+    state.currentError.newStatus.works = parseNewStatusWorks(value);
+    return true;
+  }
+
   return false;
 }
 
@@ -1028,6 +1045,8 @@ function parseCorrection(token: Token, state: ParserState): boolean {
   if (normalized === "correcao:" || normalized === "correcao") {
     state.currentEvidence = undefined;
     state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = undefined;
     return true;
@@ -1068,32 +1087,107 @@ function parseEvidence(token: Token, state: ParserState): void {
     state.currentCorrectionEvidence = "beforeImages";
     state.currentEvidence = undefined;
     state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
     state.pendingImageLabel = extractCorrectionEvidenceLabel(token.text, "antes");
   } else if (isCorrectionAfterHeading(token.text)) {
     state.currentCorrectionEvidence = "afterImages";
     state.currentEvidence = undefined;
     state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
     state.pendingImageLabel = extractCorrectionEvidenceLabel(token.text, "depois");
+  } else if (isLegacyReferenceEvidenceHeading(token.text)) {
+    state.currentLegacyReferenceEvidence = true;
+    state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+    state.pendingImageLabel = extractLegacyReferenceEvidenceLabel(token.text);
+    if (state.currentError?.origin === "new") {
+      state.currentError.legacyReference.enabled = true;
+    }
+  } else if (isLegacyReferenceHeading(token.text)) {
+    state.currentLegacyReferenceEvidence = true;
+    state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+    state.pendingImageLabel = undefined;
+    if (state.currentError?.origin === "new") {
+      state.currentError.legacyReference.enabled = true;
+    }
+  } else if (isNewStatusEvidenceHeading(token.text)) {
+    state.currentNewStatusEvidence = true;
+    state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+    state.pendingImageLabel = extractNewStatusEvidenceLabel(token.text);
+    if (state.currentError?.origin === "legacy") {
+      state.currentError.newStatus.works = false;
+    }
+  } else if (isNewStatusHeading(token.text)) {
+    state.currentNewStatusEvidence = true;
+    state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+    state.pendingImageLabel = undefined;
   } else if (isErrorEvidenceHeading(token.text)) {
     state.currentErrorEvidence = true;
     state.currentEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = extractErrorEvidenceLabel(token.text);
+  } else if (
+    state.currentLegacyReferenceEvidence &&
+    state.currentError?.origin === "new" &&
+    token.images.length > 0
+  ) {
+    state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+  } else if (
+    state.currentNewStatusEvidence &&
+    state.currentError?.origin === "legacy" &&
+    token.images.length > 0
+  ) {
+    state.currentEvidence = undefined;
+    state.currentErrorEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
+  } else if (
+    state.currentErrorEvidence &&
+    state.currentError &&
+    token.images.length > 0
+  ) {
+    state.currentEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
+    state.currentCorrectionEvidence = undefined;
   } else if (normalized.includes("legado")) {
     state.currentEvidence = "legacyImages";
     state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = extractEvidenceLabel(token.text, "legado");
   } else if (normalized.includes("novo")) {
     state.currentEvidence = "newImages";
     state.currentErrorEvidence = undefined;
+    state.currentLegacyReferenceEvidence = undefined;
+    state.currentNewStatusEvidence = undefined;
     state.currentCorrectionEvidence = undefined;
     state.pendingImageLabel = extractEvidenceLabel(token.text, "novo");
   }
 
   if (!state.currentTest || token.images.length === 0) {
     if (
-      (state.currentEvidence || state.currentCorrectionEvidence) &&
+      (state.currentEvidence ||
+        state.currentCorrectionEvidence ||
+        state.currentLegacyReferenceEvidence ||
+        state.currentNewStatusEvidence) &&
       token.text &&
       !isEvidenceHeading(token.text)
     ) {
@@ -1113,6 +1207,42 @@ function parseEvidence(token: Token, state: ParserState): void {
     token.images.forEach((image) => {
       state.imageCount += 1;
       correction[field].push({
+        ...image,
+        id: createImportId("image", `${state.imageCount}-${image.dataUrl ?? image.name}`),
+        name: `imagem-importada-${state.imageCount}`,
+        label: label || state.pendingImageLabel || "",
+      });
+    });
+
+    state.pendingImageLabel = undefined;
+    return;
+  }
+
+  if (state.currentLegacyReferenceEvidence && state.currentError?.origin === "new") {
+    const label = extractLegacyReferenceEvidenceLabel(token.text);
+    state.currentError.legacyReference.enabled = true;
+
+    token.images.forEach((image) => {
+      state.imageCount += 1;
+      state.currentError?.legacyReference.images.push({
+        ...image,
+        id: createImportId("image", `${state.imageCount}-${image.dataUrl ?? image.name}`),
+        name: `imagem-importada-${state.imageCount}`,
+        label: label || state.pendingImageLabel || "",
+      });
+    });
+
+    state.pendingImageLabel = undefined;
+    return;
+  }
+
+  if (state.currentNewStatusEvidence && state.currentError?.origin === "legacy") {
+    const label = extractNewStatusEvidenceLabel(token.text);
+    state.currentError.newStatus.works = false;
+
+    token.images.forEach((image) => {
+      state.imageCount += 1;
+      state.currentError?.newStatus.images.push({
         ...image,
         id: createImportId("image", `${state.imageCount}-${image.dataUrl ?? image.name}`),
         name: `imagem-importada-${state.imageCount}`,
@@ -1242,6 +1372,12 @@ function parseTestErrorOrigin(value: string): TestError["origin"] {
   return "new";
 }
 
+function parseNewStatusWorks(value: string): boolean {
+  const normalized = normalizeText(value);
+
+  return normalized.includes("funciona") && !normalized.includes("ajuste");
+}
+
 function isCorrectionEvidenceHeading(text: string): boolean {
   return isCorrectionBeforeHeading(text) || isCorrectionAfterHeading(text);
 }
@@ -1256,6 +1392,40 @@ function isErrorEvidenceHeading(text: string): boolean {
     normalized.startsWith("print do erro ") ||
     normalized === "evidencias do erro" ||
     normalized.startsWith("evidencias do erro ")
+  );
+}
+
+function isLegacyReferenceHeading(text: string): boolean {
+  const normalized = normalizeText(text).replace(/:$/, "");
+
+  return normalized === "como e no legado que esta certo";
+}
+
+function isLegacyReferenceEvidenceHeading(text: string): boolean {
+  const normalized = normalizeText(text).replace(/:$/, "");
+
+  return (
+    normalized === "prints do legado correto" ||
+    normalized === "print do legado correto" ||
+    normalized.startsWith("prints do legado correto ") ||
+    normalized.startsWith("print do legado correto ")
+  );
+}
+
+function isNewStatusHeading(text: string): boolean {
+  const normalized = normalizeText(text).replace(/:$/, "");
+
+  return normalized === "situacao no novo";
+}
+
+function isNewStatusEvidenceHeading(text: string): boolean {
+  const normalized = normalizeText(text).replace(/:$/, "");
+
+  return (
+    normalized === "prints do erro no novo" ||
+    normalized === "print do erro no novo" ||
+    normalized.startsWith("prints do erro no novo ") ||
+    normalized.startsWith("print do erro no novo ")
   );
 }
 
@@ -1535,6 +1705,26 @@ function extractErrorEvidenceLabel(text: string): string {
   return cleaned;
 }
 
+function extractLegacyReferenceEvidenceLabel(text: string): string {
+  const cleaned = cleanText(text.replace(/^prints?\s+do\s+legado\s+correto\s*:?\s*/i, ""));
+
+  if (!cleaned || isLegacyReferenceEvidenceHeading(cleaned)) {
+    return "";
+  }
+
+  return cleaned;
+}
+
+function extractNewStatusEvidenceLabel(text: string): string {
+  const cleaned = cleanText(text.replace(/^prints?\s+do\s+erro\s+no\s+novo\s*:?\s*/i, ""));
+
+  if (!cleaned || isNewStatusEvidenceHeading(cleaned)) {
+    return "";
+  }
+
+  return cleaned;
+}
+
 function isEvidenceHeading(text: string): boolean {
   const normalized = normalizeText(text);
 
@@ -1544,6 +1734,10 @@ function isEvidenceHeading(text: string): boolean {
     normalized === "novo" ||
     normalized === "novo:" ||
     isErrorEvidenceHeading(text) ||
+    isLegacyReferenceHeading(text) ||
+    isLegacyReferenceEvidenceHeading(text) ||
+    isNewStatusHeading(text) ||
+    isNewStatusEvidenceHeading(text) ||
     isCorrectionEvidenceHeading(text)
   );
 }
@@ -1575,6 +1769,8 @@ function buildImportSummary(documentData: OtDocument): OtDocxImportSummary {
             (errorTotal, error) =>
               errorTotal +
               error.images.length +
+              error.legacyReference.images.length +
+              error.newStatus.images.length +
               error.correction.beforeImages.length +
               error.correction.afterImages.length,
             0,

@@ -76,6 +76,7 @@ vi.mock("docx", () => {
     HeadingLevel: {
       HEADING_1: "Heading1",
       HEADING_2: "Heading2",
+      HEADING_3: "Heading3",
       TITLE: "Title",
     },
     ImageRun,
@@ -224,6 +225,17 @@ describe("exportTeaDocument", () => {
         options: expect.objectContaining({ text: "entre", bold: true }),
       }),
     ]);
+  });
+
+  it("exports TEA subtopics as heading 3", async () => {
+    await exportTeaDocument(createTeaDocumentForExport());
+
+    const children = docxState.documents[0].options.sections[0].children;
+    const subtopicHeading = children.find((child) =>
+      readParagraphText(child).startsWith("2.1.1 - Subtopico:"),
+    );
+
+    expect(readParagraphHeading(subtopicHeading)).toBe("Heading3");
   });
 
   it("blocks TEA export when an image block is empty", async () => {
@@ -404,6 +416,38 @@ describe("exportOtDocument", () => {
     expect(paragraphTexts).toContain("Depois (corrigido):");
   });
 
+  it("exports the correct legacy reference for Novo errors", async () => {
+    const documentData = createOtDocumentForExport();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.errors = [createExportError("new")];
+
+    await exportOtDocument(documentData);
+
+    const children = docxState.documents[0].options.sections[0].children;
+    const paragraphTexts = children.map(readParagraphText).filter(Boolean);
+    const allTableText = children.map(readFullTableText).join(" ");
+
+    expect(paragraphTexts).toContain("Como e no legado que esta certo:");
+    expect(paragraphTexts).toContain("Prints do legado correto:");
+    expect(allTableText).toContain("Descricao Legado salva corretamente.");
+  });
+
+  it("exports the new status for Legado errors", async () => {
+    const documentData = createOtDocumentForExport();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    test.result.errors = [createExportError("legacy")];
+
+    await exportOtDocument(documentData);
+
+    const children = docxState.documents[0].options.sections[0].children;
+    const paragraphTexts = children.map(readParagraphText).filter(Boolean);
+    const allTableText = children.map(readFullTableText).join(" ");
+
+    expect(paragraphTexts).toContain("Situacao no novo:");
+    expect(paragraphTexts).toContain("Prints do erro no novo:");
+    expect(allTableText).toContain("Situacao no novo Tambem precisa ajuste");
+  });
+
   it("exports OT error cards without requiring or rendering hidden general images", async () => {
     const documentData = createOtDocumentForExport();
     const test = documentData.permissionBlocks["macro:micro"].tests[0];
@@ -435,6 +479,24 @@ describe("exportOtDocument", () => {
       problems: [
         expect.objectContaining({
           label: "Imagem do legado ausente",
+          documentKind: "ot",
+        }),
+      ],
+    });
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+  });
+
+  it("blocks OT export when Legado error also needs Novo adjustment without a Novo print", async () => {
+    const documentData = createOtDocumentForExport();
+    const test = documentData.permissionBlocks["macro:micro"].tests[0];
+    const error = createExportError("legacy");
+    error.newStatus = { works: false, images: [] };
+    test.result.errors = [error];
+
+    await expect(exportOtDocument(documentData)).rejects.toMatchObject({
+      problems: [
+        expect.objectContaining({
+          label: "Print do erro no novo ausente",
           documentKind: "ot",
         }),
       ],
@@ -490,6 +552,10 @@ function readFullTableText(node: unknown): string {
     .flatMap((row) => row.options?.children ?? [])
     .flatMap((cell) => readCellParagraphs(cell).map(readParagraphText))
     .join(" ");
+}
+
+function readParagraphHeading(node: unknown): string | undefined {
+  return (node as { options?: { heading?: string } }).options?.heading;
 }
 
 function readTableRowsText(node: unknown): string[] {
@@ -559,7 +625,13 @@ function createTeaDocumentForExport(): TeaDocument {
             text: "Texto **final**",
           },
         ],
-        subActivities: [],
+        subActivities: [
+          {
+            id: "subactivity",
+            title: "Subtopico",
+            blocks: [{ id: "sub-text", type: "text", text: "Texto do subtropico" }],
+          },
+        ],
       },
     ],
   };
@@ -650,6 +722,15 @@ function createExportError(origin: "legacy" | "new"): TestError {
     origin,
     observation: origin === "new" ? "Falha ao salvar no novo." : "Falha no legado.",
     images: [createExportImage(`error-${origin}-image`, "Print do erro")],
+    legacyReference: {
+      enabled: origin === "new",
+      description: origin === "new" ? "Legado salva corretamente." : "",
+      images: origin === "new" ? [createExportImage(`error-${origin}-legacy-reference`, "Legado correto")] : [],
+    },
+    newStatus: {
+      works: origin === "new",
+      images: origin === "legacy" ? [createExportImage(`error-${origin}-new-status`, "Erro no novo")] : [],
+    },
     correction: {
       corrected: true,
       hotfixTag: "hotfix 2.0.0",

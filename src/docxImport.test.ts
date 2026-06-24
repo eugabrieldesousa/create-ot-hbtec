@@ -268,6 +268,12 @@ describe("parseOtHtml", () => {
         </table>
         <p><strong>Prints do erro:</strong></p>
         <p>Falha visivel<img src="${pngDataUrl}" /></p>
+        <p><strong>Como e no legado que esta certo:</strong></p>
+        <table>
+          <tr><td>Descricao</td><td>Legado salva corretamente.</td></tr>
+        </table>
+        <p><strong>Prints do legado correto:</strong></p>
+        <p>Legado correto<img src="${pngDataUrl}" /></p>
         <p><strong>Correcao:</strong></p>
         <table>
           <tr><td>Corrigido</td><td>Sim</td></tr>
@@ -297,6 +303,12 @@ describe("parseOtHtml", () => {
     });
     expect(error.images).toHaveLength(1);
     expect(error.images[0].label).toBe("Falha visivel");
+    expect(error.legacyReference).toMatchObject({
+      enabled: true,
+      description: "Legado salva corretamente.",
+    });
+    expect(error.legacyReference.images).toHaveLength(1);
+    expect(error.legacyReference.images[0].label).toBe("Legado correto");
     expect(error.correction).toMatchObject({
       corrected: true,
       hotfixTag: "hotfix 2.0.0",
@@ -305,7 +317,57 @@ describe("parseOtHtml", () => {
     });
     expect(error.correction.beforeImages[0].label).toBe("Antes da correcao");
     expect(error.correction.afterImages[0].label).toBe("Depois da correcao");
-    expect(result.summary.images).toBe(3);
+    expect(result.summary.images).toBe(4);
+  });
+
+  it("imports Legado errors with Novo status and Novo error prints", () => {
+    const result = parseOtHtml(
+      `
+        <h2>TESTES</h2>
+        <table>
+          <tr><td>MACRO-PERMISSÃƒO</td><td>Tipo de usuÃ¡rio: AO (Administrador Geral)</td></tr>
+          <tr><td>MICRO-PERMISSÃƒO</td><td>Tipo de permissÃ£o: AT (AtualizaÃ§Ã£o)</td></tr>
+        </table>
+        <table>
+          <tr><td colspan="2">1 - QUESTIONARIO</td></tr>
+          <tr><td>(   )</td><td>Funcionou legado e novo estÃ£o com o mesmo comportamento</td></tr>
+          <tr><td>(   )</td><td>PossÃ­vel problema de lÃ³gica ou regra de negÃ³cio</td></tr>
+          <tr><td>( X )</td><td>Erro no legado</td></tr>
+          <tr><td>(   )</td><td>Erro no novo</td></tr>
+          <tr><td>( X )</td><td>RelatÃ³rio de Erros</td></tr>
+        </table>
+        <p><strong>Erros encontrados:</strong></p>
+        <p><strong>Erro 1 - Legado</strong></p>
+        <table>
+          <tr><td>Origem</td><td>Legado</td></tr>
+          <tr><td>Observacao</td><td>Falha no legado.</td></tr>
+        </table>
+        <p><strong>Prints do erro:</strong></p>
+        <p>Falha legado<img src="${pngDataUrl}" /></p>
+        <p><strong>Situacao no novo:</strong></p>
+        <table>
+          <tr><td>Situacao no novo</td><td>Tambem precisa ajuste</td></tr>
+        </table>
+        <p><strong>Prints do erro no novo:</strong></p>
+        <p>Falha novo<img src="${pngDataUrl}" /></p>
+      `,
+      { sourceName: "OT - Questionario.docx" },
+    );
+
+    const macro = result.document.permissionGroups[0];
+    const micro = macro.microPermissions[0];
+    const test = result.document.permissionBlocks[`${macro.id}:${micro.id}`].tests[0];
+    const error = test.result.errors[0];
+
+    expect(error).toMatchObject({
+      origin: "legacy",
+      observation: "Falha no legado.",
+    });
+    expect(error.images[0].label).toBe("Falha legado");
+    expect(error.newStatus.works).toBe(false);
+    expect(error.newStatus.images).toHaveLength(1);
+    expect(error.newStatus.images[0].label).toBe("Falha novo");
+    expect(result.summary.images).toBe(2);
   });
 });
 
